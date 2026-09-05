@@ -22,6 +22,7 @@ export interface TranscriptSegment {
   text: string;
   speaker?: string;
   confidence?: number;
+  suspicious?: boolean;
 }
 
 export interface Marker {
@@ -44,12 +45,17 @@ export interface Flashcard {
   tags: string[];
   status: CardStatus;
   ankiId?: number;
+  /** Last Anki deck this note was placed in, for incremental deck moves. */
+  ankiDeck?: string;
 }
 
 export interface LectureData {
   lectureId: string;
   notes: string;
   slideText?: string;
+  /** Extracted locally, one entry per PDF page, for source-aware slide use. */
+  slidePages?: string[];
+  slideMappings?: Record<string, { page: number; confidence: number }>;
   audioAssetId?: string;
   audioName?: string;
   /**
@@ -57,6 +63,12 @@ export interface LectureData {
    * duration metadata to Chromium, so recordings retain their measured length.
    */
   audioDuration?: number;
+  /** Ordered, immutable source recordings for a lecture with breaks. */
+  audioParts?: {
+    assetId: string;
+    name: string;
+    duration?: number;
+  }[];
   slideAssetId?: string;
   slideName?: string;
 }
@@ -64,24 +76,48 @@ export interface LectureData {
 export interface ThemePalette {
   id: string;
   name: string;
+
+  // Layout
   background: string;
   surface: string;
   surfaceMuted: string;
   surfaceHover: string;
+
+  // Text
   text: string;
   textMuted: string;
   textSubtle: string;
+
+  // Borders
   border: string;
   borderStrong: string;
+
+  // Primary / brand
   primary: string;
   primaryHover: string;
-  primarySoft: string;
-  primarySoftHover: string;
-  primaryText: string;
-  accentText: string;
+  primaryMuted: string;
+  primaryMutedHover: string;
+  primaryForeground: string;
+  accent: string;
   focusRing: string;
-  hero: string;
-  heroText: string;
+
+  // Hero sections
+  heroBackground: string;
+  heroForeground: string;
+
+  // Semantic status colors
+  success: string;
+  successMuted: string;
+  successForeground: string;
+  warning: string;
+  warningMuted: string;
+  warningForeground: string;
+  danger: string;
+  dangerMuted: string;
+  dangerForeground: string;
+  info: string;
+  infoMuted: string;
+  infoForeground: string;
 }
 
 export interface AppSettings {
@@ -109,11 +145,15 @@ export interface AppSettings {
 export interface StoredAsset {
   id: string;
   lectureId: string;
+  /** Owning library object for reusable course/module/topic context files. */
+  nodeId?: string;
   kind: "audio" | "slides" | "file";
   name: string;
   mimeType: string;
   blob: Blob;
   createdAt: string;
+  /** Text extracted locally from a supported context file. */
+  extractedText?: string;
 }
 
 export interface RecordingSession {
@@ -133,7 +173,7 @@ export interface RecordingChunk {
   blob: Blob;
 }
 
-export type BackgroundJobKind = "download" | "transcription";
+export type BackgroundJobKind = "download" | "transcription" | "library";
 export type BackgroundJobStatus = "active" | "complete" | "error";
 
 export interface BackgroundJob {

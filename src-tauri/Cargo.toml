@@ -29,3 +29,4 @@ tauri-plugin-fs = "2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 tokio = { version = "1", features = ["fs", "io-util", "process"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
+keyring = "3"

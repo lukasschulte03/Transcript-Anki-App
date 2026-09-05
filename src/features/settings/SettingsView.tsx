@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   AudioLines,
-  Download,
+  FileDown,
+  FileUp,
   KeyRound,
   Languages,
   Palette,
   MonitorCog,
   PlugZap,
   ShieldCheck,
-  Upload,
   Cpu,
   DownloadCloud,
   Trash2,
@@ -25,7 +25,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import { getDecks, testAnki } from "../../services/anki";
 import { toast } from "sonner";
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { strFromU8, strToU8, unzip, zip } from "fflate";
 import { db } from "../../core/database";
 import { confirmStorageForImport, downloadBlob } from "../../lib/utils";
 import type { StoredAsset, ThemePalette } from "../../core/types";
@@ -76,15 +76,28 @@ function validateLibraryPayload(data: Record<string, unknown>) {
     throw new Error("Exporten saknar föreläsningsdata");
 }
 
+const zipAsync = (files: Record<string, Uint8Array>) =>
+  new Promise<Uint8Array>((resolve, reject) => {
+    zip(files, { level: 6 }, (error, data) =>
+      error ? reject(error) : resolve(data),
+    );
+  });
+
+const unzipAsync = (data: Uint8Array) =>
+  new Promise<Record<string, Uint8Array>>((resolve, reject) => {
+    unzip(data, (error, files) => (error ? reject(error) : resolve(files)));
+  });
+
 export function SettingsView() {
   const store = useAppStore();
-  const { settings, nodes, updateSettings, importLibrary } = store;
+  const { settings, nodes, updateSettings, importLibrary, upsertJob } = store;
   const [tab, setTab] = useState("profile");
   const [ankiOk, setAnkiOk] = useState(false);
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [paletteDraft, setPaletteDraft] =
     useState<ThemePalette>(defaultCustomPalette);
+  const [libraryBusy, setLibraryBusy] = useState(false);
   const storageSummary = useLiveQuery(async () => {
     const [assets, sessions, chunks] = await Promise.all([
       db.assets.toArray(),
@@ -192,73 +205,147 @@ export function SettingsView() {
       customPalettes: settings.customPalettes.filter(
         (palette) => palette.id !== settings.selectedPaletteId,
       ),
-      selectedPaletteId: "chalk",
+      selectedPaletteId: "chalk-neutral",
     });
   };
   const exportAll = async () => {
+    if (libraryBusy) return;
+    setLibraryBusy(true);
+    const jobId = "library:export";
     const { nodes, lectures, segments, markers, cards, settings } =
       useAppStore.getState();
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      nodes,
-      lectures,
-      segments,
-      markers,
-      cards,
-      settings,
-    };
-    const files: Record<string, Uint8Array> = {
-      "library.json": strToU8(JSON.stringify(payload, null, 2)),
-      "README.txt": strToU8(
-        "Lectio-export. Strukturerad metadata finns i library.json och originalfiler i media/.",
-      ),
-    };
-    const assetManifest: Array<Omit<StoredAsset, "blob"> & { path: string }> =
-      [];
-    for (const asset of await db.assets.toArray()) {
-      const safeName = asset.name.replace(/[<>:"/\\|?*]/g, "_");
-      const path = `media/${asset.lectureId}/${asset.id}-${asset.kind}-${safeName}`;
-      files[path] = new Uint8Array(await asset.blob.arrayBuffer());
-      const { blob: _blob, ...metadata } = asset;
-      void _blob;
-      assetManifest.push({ ...metadata, path });
+    try {
+      const assets = await db.assets.toArray();
+      const total = assets.length + 2;
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Exporterar bibliotek",
+        phase: "exporting",
+        status: "active",
+        current: 0,
+        total,
+        detail: "Förbereder biblioteket…",
+      });
+      const payload = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        nodes,
+        lectures,
+        segments,
+        markers,
+        cards,
+        settings,
+      };
+      const files: Record<string, Uint8Array> = {
+        "library.json": strToU8(JSON.stringify(payload, null, 2)),
+        "README.txt": strToU8(
+          "Lectio-export. Strukturerad metadata finns i library.json och originalfiler i media/.",
+        ),
+      };
+      const assetManifest: Array<
+        Omit<StoredAsset, "blob"> & { path: string }
+      > = [];
+      for (const [index, asset] of assets.entries()) {
+        const safeName = asset.name.replace(/[<>:"/\\|?*]/g, "_");
+        const path = `media/${asset.lectureId}/${asset.id}-${asset.kind}-${safeName}`;
+        files[path] = new Uint8Array(await asset.blob.arrayBuffer());
+        const { blob: _blob, ...metadata } = asset;
+        void _blob;
+        assetManifest.push({ ...metadata, path });
+        upsertJob({
+          id: jobId,
+          kind: "library",
+          label: "Exporterar bibliotek",
+          phase: "exporting",
+          status: "active",
+          current: index + 1,
+          total,
+          detail: `Förbereder ${index + 1} av ${assets.length} filer…`,
+        });
+      }
+      files["assets.json"] = strToU8(JSON.stringify(assetManifest, null, 2));
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Exporterar bibliotek",
+        phase: "packing",
+        status: "active",
+        current: total - 1,
+        total,
+        detail: "Komprimerar exporten…",
+      });
+      const archive = await zipAsync(files);
+      const verification = await unzipAsync(archive);
+      if (!verification["library.json"] || !verification["assets.json"])
+        throw new Error("Exporten kunde inte verifieras");
+      downloadBlob(
+        `lectio-export-${new Date().toISOString().slice(0, 10)}.zip`,
+        new Blob([archive.buffer as ArrayBuffer], { type: "application/zip" }),
+      );
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Exporterar bibliotek",
+        phase: "complete",
+        status: "complete",
+        current: total,
+        total,
+        detail: "Exporten är klar.",
+      });
+      toast.success("Hela biblioteket exporterades");
+    } catch (error) {
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Exporterar bibliotek",
+        phase: "error",
+        status: "error",
+        current: 0,
+        detail: "Exporten kunde inte slutföras.",
+      });
+      toast.error(error instanceof Error ? error.message : "Exporten misslyckades");
+    } finally {
+      setLibraryBusy(false);
     }
-    files["assets.json"] = strToU8(JSON.stringify(assetManifest, null, 2));
-    const zip = zipSync(files, { level: 6 });
-    const verification = unzipSync(zip);
-    if (!verification["library.json"] || !verification["assets.json"])
-      throw new Error("Exporten kunde inte verifieras");
-    downloadBlob(
-      `lectio-export-${new Date().toISOString().slice(0, 10)}.zip`,
-      new Blob([zip.buffer as ArrayBuffer], { type: "application/zip" }),
-    );
-    toast.success("Hela biblioteket exporterades");
   };
   const importAll = async (file?: File) => {
-    if (!file) return;
+    if (!file || libraryBusy) return;
     if (!(await confirmStorageForImport(file, "biblioteksimporten"))) return;
+    setLibraryBusy(true);
+    const jobId = "library:import";
     try {
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Importerar bibliotek",
+        phase: "importing",
+        status: "active",
+        current: 0,
+        detail: "Läser importfilen…",
+      });
       let data: Record<string, unknown>;
       if (file.name.toLowerCase().endsWith(".zip")) {
-        const archive = unzipSync(new Uint8Array(await file.arrayBuffer()));
+        upsertJob({
+          id: jobId,
+          kind: "library",
+          label: "Importerar bibliotek",
+          phase: "importing",
+          status: "active",
+          current: 0,
+          detail: "Packar upp arkivet…",
+        });
+        const archive = await unzipAsync(new Uint8Array(await file.arrayBuffer()));
         if (!archive["library.json"]) throw new Error("library.json saknas");
         data = JSON.parse(strFromU8(archive["library.json"]));
         validateLibraryPayload(data);
         if (archive["assets.json"]) {
           const manifest = JSON.parse(
             strFromU8(archive["assets.json"]),
-          ) as Array<{
-            id: string;
-            lectureId: string;
-            kind: "audio" | "slides" | "file";
-            name: string;
-            mimeType: string;
-            createdAt: string;
-            path: string;
-          }>;
+          ) as Array<Omit<StoredAsset, "blob"> & { path: string }>;
+          const total = manifest.length + 1;
           await db.transaction("rw", db.assets, async () => {
-            for (const item of manifest) {
+            for (const [index, item] of manifest.entries()) {
               const bytes = archive[item.path];
               if (bytes)
                 await db.assets.put({
@@ -267,6 +354,16 @@ export function SettingsView() {
                     type: item.mimeType,
                   }),
                 });
+              upsertJob({
+                id: jobId,
+                kind: "library",
+                label: "Importerar bibliotek",
+                phase: "importing",
+                status: "active",
+                current: index + 1,
+                total,
+                detail: `Återställer ${index + 1} av ${manifest.length} filer…`,
+              });
             }
           });
         }
@@ -275,11 +372,32 @@ export function SettingsView() {
         validateLibraryPayload(data);
       }
       importLibrary(data);
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Importerar bibliotek",
+        phase: "complete",
+        status: "complete",
+        current: 1,
+        total: 1,
+        detail: "Biblioteket är klart.",
+      });
       toast.success("Biblioteket importerades");
     } catch (error) {
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Importerar bibliotek",
+        phase: "error",
+        status: "error",
+        current: 0,
+        detail: "Importen kunde inte slutföras.",
+      });
       toast.error(
         error instanceof Error ? error.message : "Filen kunde inte importeras",
       );
+    } finally {
+      setLibraryBusy(false);
     }
   };
   const tabs = [
@@ -332,7 +450,7 @@ export function SettingsView() {
                     <option value="en">English (förhandsvisning)</option>
                   </Select>
                 </Field>
-                <div className="border-t border-slate-100 pt-5">
+                <div className="border-t border-slate-100 pt-6">
                   <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                     <Palette className="size-4 text-violet-500" /> Färgpalett
                   </div>
@@ -409,7 +527,7 @@ export function SettingsView() {
                     ))}
                   </div>
                 </div>
-                <div className="border-t border-slate-100 pt-5">
+                <div className="border-t border-slate-100 pt-6">
                   <h3 className="text-sm font-semibold text-slate-800">
                     Bibliotek
                   </h3>
@@ -419,9 +537,10 @@ export function SettingsView() {
                   <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <button
                       onClick={() => void exportAll()}
-                      className="rounded-xl border border-slate-200 bg-white p-5 text-left hover:border-violet-300"
+                      disabled={libraryBusy}
+                      className="rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 disabled:cursor-wait disabled:opacity-60"
                     >
-                      <Download className="size-5 text-violet-600" />
+                      <FileDown className="size-5 text-violet-600" />
                       <div className="mt-3 text-sm font-semibold">
                         Exportera bibliotek
                       </div>
@@ -429,8 +548,8 @@ export function SettingsView() {
                         ZIP med JSON, ljud, slides och andra originalfiler.
                       </div>
                     </button>
-                    <label className="cursor-pointer rounded-xl border border-slate-200 bg-white p-5 text-left hover:border-violet-300">
-                      <Upload className="size-5 text-violet-600" />
+                    <label className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 ${libraryBusy ? "pointer-events-none opacity-60" : ""}`}>
+                      <FileUp className="size-5 text-violet-600" />
                       <div className="mt-3 text-sm font-semibold">
                         Importera bibliotek
                       </div>
@@ -466,7 +585,7 @@ export function SettingsView() {
                     </div>
                     {!!storageSummary?.files.length && (
                       <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
-                        <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
                           Största filer
                         </div>
                         {storageSummary.files.slice(0, 5).map((file) => (
@@ -495,6 +614,7 @@ export function SettingsView() {
                         inspelningar
                       </Button>
                     )}
+                    <LocalAiStorageSummary />
                   </div>
                 </div>
               </Section>
@@ -535,7 +655,7 @@ export function SettingsView() {
                     text="Lectio skapar en komplett prompt. Du väljer själv ChatGPT, Claude eller Gemini och klistrar tillbaka svaret för granskning."
                   />
                 ) : (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <Field label="AI-provider">
                         <Select
@@ -582,7 +702,7 @@ export function SettingsView() {
                     placeholder="Exempel: Svara på svenska och prioritera kliniska samband."
                   />
                 </Field>
-                <div className="border-t border-slate-100 pt-5">
+                <div className="border-t border-slate-100 pt-6">
                   <h3 className="text-sm font-semibold text-slate-800">
                     AnkiConnect
                   </h3>
@@ -690,7 +810,7 @@ export function SettingsView() {
                 {settings.transcriptionProvider === "local" ? (
                   <LocalModelManager />
                 ) : (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <Field label="Provider">
                         <Select
@@ -836,26 +956,26 @@ export function SettingsView() {
               setPalette={setPaletteDraft}
             />
             <PaletteColor
-              label="Primär bakgrund"
-              field="primarySoft"
+              label="Dämpad primär"
+              field="primaryMuted"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
             <PaletteColor
-              label="Vald hover-yta"
-              field="primarySoftHover"
+              label="Dämpad primär hover"
+              field="primaryMutedHover"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
             <PaletteColor
               label="Text på primär"
-              field="primaryText"
+              field="primaryForeground"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
             <PaletteColor
-              label="Text på vald yta"
-              field="accentText"
+              label="Accent / länkar"
+              field="accent"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
@@ -866,14 +986,86 @@ export function SettingsView() {
               setPalette={setPaletteDraft}
             />
             <PaletteColor
-              label="Framhävd yta"
-              field="hero"
+              label="Hero-bakgrund"
+              field="heroBackground"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
             <PaletteColor
-              label="Text på framhävd yta"
-              field="heroText"
+              label="Hero-text"
+              field="heroForeground"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Framgång"
+              field="success"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Framgång, dämpad"
+              field="successMuted"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Text på framgång"
+              field="successForeground"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Varning"
+              field="warning"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Varning, dämpad"
+              field="warningMuted"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Text på varning"
+              field="warningForeground"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Fel"
+              field="danger"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Fel, dämpad"
+              field="dangerMuted"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Text på fel"
+              field="dangerForeground"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Information"
+              field="info"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Information, dämpad"
+              field="infoMuted"
+              palette={paletteDraft}
+              setPalette={setPaletteDraft}
+            />
+            <PaletteColor
+              label="Text på information"
+              field="infoForeground"
               palette={paletteDraft}
               setPalette={setPaletteDraft}
             />
@@ -933,7 +1125,7 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
+    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
       <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
       <p className="mt-1 text-sm text-slate-400">{description}</p>
       <div className="mt-6 space-y-5">{children}</div>
@@ -961,7 +1153,7 @@ function ChoiceCard({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`group flex min-h-24 items-start gap-3 rounded-2xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`group flex min-h-24 items-start gap-3 rounded-xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
         selected
           ? "border-violet-400 bg-violet-50 ring-2 ring-violet-100"
           : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
@@ -998,7 +1190,7 @@ function InfoPanel({
   text: string;
 }) {
   return (
-    <div className="flex gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
+    <div className="flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
       <Icon className="mt-0.5 size-5 shrink-0 text-emerald-600" />
       <div>
         <div className="text-sm font-semibold">{title}</div>
@@ -1093,6 +1285,14 @@ function LocalModelManager() {
     }
   };
   const remove = async (model: LocalModel) => {
+    const name =
+      localModels.find((candidate) => candidate.id === model)?.name ?? model;
+    if (
+      !confirm(
+        `Ta bort Whisper ${name} från datorn? Modellen kan laddas ner igen senare.`,
+      )
+    )
+      return;
     setWorking(model);
     try {
       await removeLocalModel(model);
@@ -1125,6 +1325,12 @@ function LocalModelManager() {
     }
   };
   const removeGpu = async () => {
+    if (
+      !confirm(
+        "Ta bort NVIDIA-stödet för lokal transkribering? Det kan installeras igen senare.",
+      )
+    )
+      return;
     setWorkingEngine(true);
     try {
       await removeNvidiaRuntime();
@@ -1140,7 +1346,7 @@ function LocalModelManager() {
   const acceleration = settings.localTranscriptionAcceleration ?? "auto";
   return (
     <div className="space-y-4">
-      <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 sm:p-5">
+      <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="flex items-center gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-100 text-emerald-700">
@@ -1219,14 +1425,14 @@ function LocalModelManager() {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 p-4 sm:p-5">
+      <div className="rounded-xl border border-slate-200 p-4 sm:p-6">
         <div className="flex items-center gap-2">
           <Cpu className="size-4 text-violet-600" />
           <div>
             <div className="text-sm font-semibold text-slate-800">
               Lokal Whisper
             </div>
-            <div className="text-[11px] text-slate-400">
+            <div className="text-xs text-slate-400">
               Gratis, offline och privat
             </div>
           </div>
@@ -1255,13 +1461,13 @@ function LocalModelManager() {
                     <span className="size-2 rounded-full bg-emerald-500" />
                   )}
                 </div>
-                <div className="mt-1 text-[10px] text-slate-400">
+                <div className="mt-1 text-xs text-slate-400">
                   {model.size} · {model.hint}
                 </div>
                 {installed ? (
                   <button
                     type="button"
-                    className="mt-3 text-[11px] font-medium text-violet-700 hover:text-violet-900"
+                    className="mt-3 text-xs font-medium text-violet-700 hover:text-violet-900"
                     onClick={() =>
                       updateSettings({
                         localTranscriptionModel: model.id,
@@ -1274,7 +1480,7 @@ function LocalModelManager() {
                 ) : (
                   <button
                     type="button"
-                    className="mt-3 text-[11px] font-medium text-violet-600 hover:text-violet-800 disabled:cursor-not-allowed disabled:text-slate-400"
+                    className="mt-3 text-xs font-medium text-violet-600 hover:text-violet-800 disabled:cursor-not-allowed disabled:text-slate-400"
                     onClick={() => void download(model.id)}
                     disabled={working !== null}
                   >
@@ -1311,6 +1517,126 @@ function LocalModelManager() {
             </Button>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function LocalAiStorageSummary() {
+  const [models, setModels] = useState<LocalModelStatus[]>([]);
+  const [engine, setEngine] = useState<LocalEngineStatus | null>(null);
+  const [working, setWorking] = useState<string | null>(null);
+
+  const refresh = async () => {
+    const [modelStatuses, engineStatus] = await Promise.all([
+      Promise.all(localModels.map((model) => getLocalModelStatus(model.id))),
+      getLocalEngineStatus(),
+    ]);
+    setModels(modelStatuses.filter((model) => model.installed));
+    setEngine(engineStatus);
+  };
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  const removeModel = async (model: LocalModel, name: string) => {
+    if (
+      !confirm(
+        `Ta bort Whisper ${name} från datorn? Modellen kan laddas ner igen senare.`,
+      )
+    )
+      return;
+    setWorking(model);
+    try {
+      await removeLocalModel(model);
+      await refresh();
+      toast.success(`Whisper ${name} togs bort`);
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const removeGpu = async () => {
+    if (
+      !confirm(
+        "Ta bort NVIDIA-stödet för lokal transkribering? Det kan installeras igen senare.",
+      )
+    )
+      return;
+    setWorking("nvidia");
+    try {
+      await removeNvidiaRuntime();
+      await refresh();
+      toast.success("NVIDIA-stödet togs bort");
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setWorking(null);
+    }
+  };
+
+  const resources = [
+    ...models.map((model) => ({
+      id: model.model,
+      name: `Whisper ${localModels.find((item) => item.id === model.model)?.name ?? model.model}`,
+      size: model.size,
+      onRemove: () =>
+        void removeModel(
+          model.model,
+          localModels.find((item) => item.id === model.model)?.name ??
+            model.model,
+        ),
+    })),
+    ...(engine?.nvidiaRuntimeInstalled
+      ? [
+          {
+            id: "nvidia",
+            name: "NVIDIA-stöd för Whisper",
+            size: engine.nvidiaRuntimeSize,
+            onRemove: () => void removeGpu(),
+          },
+        ]
+      : []),
+  ];
+
+  if (!resources.length) return null;
+
+  return (
+    <div className="mt-4 border-t border-slate-200 pt-3">
+      <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+        Lokala AI-resurser
+      </div>
+      <p className="mt-1 text-xs leading-5 text-slate-500">
+        Whisper-modeller och acceleratorstöd lagras separat från
+        föreläsningsmaterial.
+      </p>
+      <div className="mt-2 space-y-2">
+        {resources.map((resource) => (
+          <div
+            key={resource.id}
+            className="flex items-center justify-between gap-3 text-xs"
+          >
+            <span className="min-w-0 truncate text-slate-600">
+              {resource.name}
+            </span>
+            <div className="flex shrink-0 items-center gap-2 tabular-nums text-slate-400">
+              <span>{formatBytes(resource.size)}</span>
+              <button
+                type="button"
+                className="text-slate-500 hover:text-red-600 disabled:text-slate-300"
+                onClick={resource.onRemove}
+                disabled={working !== null}
+                aria-label={`Ta bort ${resource.name}`}
+                title={`Ta bort ${resource.name}`}
+              >
+                <Trash2 className="size-3.5" />
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );

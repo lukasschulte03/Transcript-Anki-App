@@ -5,36 +5,20 @@ import {
 } from "./transcription";
 import { createCardPrompt, parseCardResponse } from "./ai";
 import { parseWhisperJson } from "./localStt";
-import { lectureDeckName, withoutStructuralTags } from "./anki";
+import { lectureDeckName, needsAnkiSync, withoutStructuralTags } from "./anki";
+import { builtInPalettes, validateTheme } from "../core/theme";
+import { suggestSlideMappings } from "./slideMatching";
+
+describe("teman", () => {
+  it("har komplett kontrastvaliderad tokenuppsättning", () => {
+    expect(builtInPalettes.flatMap(validateTheme)).toEqual([]);
+  });
+});
 
 describe("transkriptimport", () => {
-  it("kombinerar ordlista med närliggande föreläsningscontext", () => {
-    const prompt = buildTranscriptionPrompt(
-      [
-        {
-          id: "course",
-          parentId: null,
-          type: "course",
-          title: "KM3",
-          context: "Medicinsk svenska",
-          createdAt: "",
-          settings: {},
-        },
-        {
-          id: "lecture",
-          parentId: "course",
-          type: "lecture",
-          title: "Akut buk",
-          context: "Termer: ileus och peritonit",
-          createdAt: "",
-          settings: {},
-        },
-      ],
-      "lecture",
-      "ABCDE, CRP",
-    );
-    expect(prompt).toContain("ABCDE, CRP");
-    expect(prompt).toContain("Akut buk: Termer: ileus och peritonit");
+  it("använder bara STT-ordlistan, inte ärvd kurscontext", () => {
+    const prompt = buildTranscriptionPrompt("ABCDE, CRP");
+    expect(prompt).toBe("ABCDE, CRP");
   });
 
   it("läser svenska tidsstämplar", () => {
@@ -58,6 +42,41 @@ describe("transkriptimport", () => {
       end: 2.5,
       text: "Hej världen",
     });
+  });
+  it("flaggar sannolika Whisper-upprepningar för granskning", () => {
+    const result = parseWhisperJson(
+      '{"transcription":[{"offsets":{"from":0,"to":4000},"text":"Det här viktiga begreppet kommer på tentamen."},{"offsets":{"from":4000,"to":8000},"text":"Det här viktiga begreppet kommer på tentamen."}]}',
+    );
+    expect(result.segments[1].suspicious).toBe(true);
+  });
+});
+
+describe("slidekoppling", () => {
+  it("matchar transkript mot slide-text i presentationsordning", () => {
+    const result = suggestSlideMappings(
+      [
+        "Introduktion till sepsis och qSOFA",
+        "Behandling med vätska och antibiotika",
+      ],
+      [
+        {
+          id: "one",
+          lectureId: "lecture",
+          start: 0,
+          end: 4,
+          text: "qSOFA används vid sepsis",
+        },
+        {
+          id: "two",
+          lectureId: "lecture",
+          start: 5,
+          end: 9,
+          text: "vätska och antibiotika är första behandling",
+        },
+      ],
+    );
+    expect(result.one.page).toBe(1);
+    expect(result.two.page).toBe(2);
   });
 });
 
@@ -101,6 +120,23 @@ describe("kortformat", () => {
     expect(
       withoutStructuralTags(["course::km3", "lecture::akut-buk", "tentamen"]),
     ).toEqual(["tentamen"]);
+  });
+
+  it("synkar bara Anki-kort som är nya, ändrade eller har flyttats", () => {
+    const card = {
+      id: "card",
+      lectureId: "lecture",
+      type: "basic" as const,
+      front: "Fråga",
+      back: "Svar",
+      tags: [],
+      status: "synced" as const,
+      ankiId: 42,
+      ankiDeck: "Kirurgi - Lectio::Akut buk",
+    };
+    expect(needsAnkiSync(card, "Kirurgi - Lectio::Akut buk")).toBe(false);
+    expect(needsAnkiSync(card, "Kirurgi - Lectio::Trauma")).toBe(true);
+    expect(needsAnkiSync({ ...card, status: "approved" }, card.ankiDeck)).toBe(true);
   });
 
   it("rensar kodblock och validerar JSON", () => {

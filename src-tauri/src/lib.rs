@@ -1,11 +1,89 @@
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     io,
     path::PathBuf,
+    sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{fs, io::AsyncWriteExt, process::Command};
+
+static CANCELLED_DOWNLOADS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn cancelled_downloads() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_DOWNLOADS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn begin_download(id: &str) {
+    if let Ok(mut downloads) = cancelled_downloads().lock() {
+        downloads.remove(id);
+    }
+}
+
+fn download_is_cancelled(id: &str) -> bool {
+    cancelled_downloads()
+        .lock()
+        .map(|downloads| downloads.contains(id))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn cancel_download(job_id: String) -> Result<(), String> {
+    let mut downloads = cancelled_downloads()
+        .lock()
+        .map_err(|_| "Kunde inte avbryta nedladdningen".to_string())?;
+    downloads.insert(job_id);
+    Ok(())
+}
+
+fn credential_entry(key: &str) -> Result<keyring::Entry, String> {
+    if key.is_empty() || !key.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, ':' | '-' | '_')) {
+        return Err("Ogiltigt credential-namn".into());
+    }
+    keyring::Entry::new("Lectio", key).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn read_credential(key: String) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let entry = credential_entry(&key)?;
+        match entry.get_password() {
+            Ok(secret) => Ok(Some(secret)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn write_credential(key: String, secret: String) -> Result<(), String> {
+    if secret.trim().is_empty() {
+        return Err("API-nyckeln kan inte vara tom".into());
+    }
+    tokio::task::spawn_blocking(move || {
+        credential_entry(&key)?
+            .set_password(&secret)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn delete_credential(key: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let entry = credential_entry(&key)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,6 +241,7 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
     if find_file(&runtime_dir, "whisper-cli.exe").is_some() {
         return engine_status(&app).await;
     }
+    begin_download(job_id);
     let parent = runtime_dir
         .parent()
         .ok_or_else(|| "Ogiltig runtime-sökväg".to_string())?;
@@ -189,6 +268,11 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
         .await
         .map_err(|error| error.to_string())?;
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if download_is_cancelled(job_id) {
+            drop(archive_file);
+            emit_progress(&app, job_id, "download", label, "error", "error", downloaded, total, Some("Nedladdningen avbröts. Delvis fil kan återanvändas vid nästa försök.".into()));
+            return Err("Nedladdningen avbröts".into());
+        }
         archive_file
             .write_all(&chunk)
             .await
@@ -204,6 +288,10 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
         .await
         .map_err(|error| error.to_string())?;
     drop(archive_file);
+    if total.is_some_and(|expected| expected != downloaded) {
+        emit_progress(&app, job_id, "download", label, "error", "error", downloaded, total, Some("Filstorleken stämmer inte; försök igen.".into()));
+        return Err("NVIDIA-paketets storlek stämmer inte med nedladdningen".into());
+    }
     emit_progress(&app, job_id, "download", label, "extracting", "active", downloaded, total, Some("Packar upp CUDA-runtime…".into()));
 
     let archive_for_extract = archive_path.clone();
@@ -278,25 +366,56 @@ async fn download_local_model(app: AppHandle, model: String) -> Result<LocalMode
     let destination = directory.join(format!("ggml-{model}.bin"));
     let partial = directory.join(format!("ggml-{model}.bin.part"));
     let url = format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin");
+    begin_download(&job_id);
+    let existing_size = fs::metadata(&partial)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
     let client = reqwest::Client::builder()
         .user_agent("Lectio/0.1")
         .build()
         .map_err(|error| error.to_string())?;
-    let mut response = client
-        .get(url)
+    let mut request = client.get(url);
+    if existing_size > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={existing_size}-"));
+    }
+    let mut response = request
         .send()
         .await
         .map_err(|error| error.to_string())?
         .error_for_status()
         .map_err(|error| error.to_string())?;
-    let total = response.content_length();
-    let mut downloaded = 0_u64;
-    let mut last_reported = 0_u64;
-    emit_progress(&app, &job_id, "download", &label, "downloading", "active", 0, total, None);
-    let mut file = fs::File::create(&partial)
-        .await
-        .map_err(|error| error.to_string())?;
+    let resumed = existing_size > 0 && response.status() == reqwest::StatusCode::PARTIAL_CONTENT;
+    let mut downloaded = if resumed { existing_size } else { 0 };
+    let total = response.content_length().map(|size| size + downloaded);
+    let mut last_reported = downloaded;
+    emit_progress(
+        &app,
+        &job_id,
+        "download",
+        &label,
+        "downloading",
+        "active",
+        downloaded,
+        total,
+        if resumed {
+            Some("Återupptar tidigare nedladdning…".into())
+        } else {
+            None
+        },
+    );
+    let mut file = if resumed {
+        fs::OpenOptions::new().append(true).open(&partial).await
+    } else {
+        fs::File::create(&partial).await
+    }
+    .map_err(|error| error.to_string())?;
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if download_is_cancelled(&job_id) {
+            drop(file);
+            emit_progress(&app, &job_id, "download", &label, "error", "error", downloaded, total, Some("Nedladdningen avbröts. Delvis fil kan återupptas senare.".into()));
+            return Err("Nedladdningen avbröts".into());
+        }
         file.write_all(&chunk)
             .await
             .map_err(|error| error.to_string())?;
@@ -308,6 +427,10 @@ async fn download_local_model(app: AppHandle, model: String) -> Result<LocalMode
     }
     file.flush().await.map_err(|error| error.to_string())?;
     drop(file);
+    if total.is_some_and(|expected| expected != downloaded) {
+        emit_progress(&app, &job_id, "download", &label, "error", "error", downloaded, total, Some("Filstorleken stämmer inte; försök igen.".into()));
+        return Err("Modellfilens storlek stämmer inte med nedladdningen".into());
+    }
     fs::rename(&partial, &destination)
         .await
         .map_err(|error| error.to_string())?;
@@ -376,6 +499,9 @@ async fn transcribe_local(
     if !input.starts_with(&app_data) {
         return Err("Ljudfilen ligger utanför appens tillåtna lagring".into());
     }
+    if !input.is_file() {
+        return Err("Ljudfilen kunde inte hittas lokalt. Importera ljudfilen igen och försök på nytt.".into());
+    }
     let model_path = models_dir(&app)?.join(format!("ggml-{model}.bin"));
     if !model_path.exists() {
         return Err(format!("Whisper {model} är inte nedladdad"));
@@ -383,7 +509,7 @@ async fn transcribe_local(
     let resource_dir = app
         .path()
         .resource_dir()
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("Kunde inte starta ljudkonverteraren: {error}"))?;
     let ffmpeg = resource_dir.join("ffmpeg").join("ffmpeg.exe");
     let cpu_whisper_dir = resource_dir.join("whisper");
     let requested_acceleration = acceleration.unwrap_or_else(|| "auto".into());
@@ -459,12 +585,15 @@ async fn transcribe_local(
         .arg("-t")
         .arg(threads)
         .arg("-l")
-        .arg(language.unwrap_or_else(|| "auto".into()));
+        .arg(language.unwrap_or_else(|| "auto".into()))
+        .arg("--no-context");
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
         command.arg("-p").arg(prompt);
     }
     emit_progress(&app, &job_id, "transcription", label, "starting", "active", 0, None, Some(if use_nvidia { "Startar Whisper med NVIDIA…".into() } else { "Startar Whisper på processorn…".into() }));
-    let child = command.spawn().map_err(|error| error.to_string())?;
+    let child = command
+        .spawn()
+        .map_err(|error| format!("Kunde inte starta Whisper: {error}"))?;
     let mut result = Box::pin(child.wait_with_output());
     let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -497,6 +626,74 @@ async fn transcribe_local(
     Ok(json)
 }
 
+/// Converts oversized recordings into conservative, provider-safe API chunks.
+/// The originals remain in the library; these are temporary upload artefacts.
+#[tauri::command]
+async fn prepare_api_audio(app: AppHandle, input_path: String) -> Result<Vec<String>, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let input = PathBuf::from(&input_path);
+    if !input.starts_with(&app_data) || !input.is_file() {
+        return Err("Ljudfilen kunde inte hittas i Lectios lokala lagring".into());
+    }
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    let ffmpeg = resource_dir.join("ffmpeg").join("ffmpeg.exe");
+    if !ffmpeg.exists() {
+        return Err("FFmpeg saknas i Lectios installation".into());
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
+    let output_dir = app_data.join("api-audio").join(stamp.to_string());
+    fs::create_dir_all(&output_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let output_pattern = output_dir.join("part-%03d.m4a");
+    let result = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&input)
+        .args([
+            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac",
+            "-b:a", "64k", "-f", "segment", "-segment_time", "480", "-reset_timestamps", "1",
+            "-segment_format", "mp4",
+        ])
+        .arg(&output_pattern)
+        .output()
+        .await
+        .map_err(|error| format!("Kunde inte starta ljudkonverteraren: {error}"))?;
+    if !result.status.success() {
+        let _ = fs::remove_dir_all(&output_dir).await;
+        return Err(format!(
+            "Kunde inte förbereda ljudfilen för API-transkribering: {}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
+    }
+    let mut entries = fs::read_dir(&output_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut paths = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
+        let path = entry.path();
+        if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("m4a")) {
+            paths.push(path);
+        }
+    }
+    paths.sort();
+    if paths.is_empty() {
+        return Err("Ljudkonverteringen skapade inga uppladdningsdelar".into());
+    }
+    Ok(paths
+        .into_iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -504,6 +701,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .invoke_handler(tauri::generate_handler![
+            cancel_download,
+            read_credential,
+            write_credential,
+            delete_credential,
             local_engine_status,
             install_nvidia_runtime,
             remove_nvidia_runtime,
@@ -511,7 +712,8 @@ pub fn run() {
             download_local_model,
             remove_local_model,
             open_anki_desktop,
-            transcribe_local
+            transcribe_local,
+            prepare_api_audio
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

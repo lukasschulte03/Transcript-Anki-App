@@ -1,4 +1,4 @@
-import type { AppSettings, LibraryNode } from "../core/types";
+import type { AppSettings } from "../core/types";
 import { netFetch } from "./platform";
 
 export interface TranscriptionResult {
@@ -8,6 +8,7 @@ export interface TranscriptionResult {
     text: string;
     speaker?: string;
     confidence?: number;
+    suspicious?: boolean;
   }[];
 }
 export interface TranscriptionProvider {
@@ -20,30 +21,12 @@ export interface TranscriptionProvider {
   ): Promise<TranscriptionResult>;
 }
 
-export function buildTranscriptionPrompt(
-  nodes: LibraryNode[],
-  lectureId: string,
-  glossary?: string,
-) {
-  const chain: LibraryNode[] = [];
-  let current = nodes.find((node) => node.id === lectureId);
-  while (current) {
-    chain.unshift(current);
-    current = current.parentId
-      ? nodes.find((node) => node.id === current?.parentId)
-      : undefined;
-  }
-  const sections = [
-    (glossary ?? "").trim(),
-    ...chain
-      .reverse()
-      .map((node) =>
-        (node.context ?? "").trim()
-          ? `${node.title}: ${(node.context ?? "").trim()}`
-          : "",
-      ),
-  ].filter(Boolean);
-  return sections.join("\n").slice(0, 1_200);
+/**
+ * Whisper's prompt is a short phrase lexicon, not lecture context. Inherited
+ * course context can bias decoding toward terms that are irrelevant here.
+ */
+export function buildTranscriptionPrompt(glossary?: string) {
+  return (glossary ?? "").trim().slice(0, 1_200);
 }
 
 export const cloudApiTranscription: TranscriptionProvider = {

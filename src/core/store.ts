@@ -12,9 +12,15 @@ import type {
 } from "./types";
 import { uid } from "../lib/utils";
 import { db } from "./database";
+import { normalizePalette } from "./theme";
 
 const now = () => new Date().toISOString();
 const workspaceId = "workspace-main";
+const initialPaletteId =
+  typeof window !== "undefined" &&
+  window.matchMedia("(prefers-color-scheme: dark)").matches
+    ? "graphite"
+    : "chalk-neutral";
 const seedNodes: LibraryNode[] = [
   {
     id: workspaceId,
@@ -33,6 +39,8 @@ interface AppState {
   segments: TranscriptSegment[];
   markers: Marker[];
   cards: Flashcard[];
+  /** Notes removed locally but not yet confirmed deleted by AnkiConnect. */
+  pendingAnkiDeletions: number[];
   selectedId: string;
   activeView: "dashboard" | "workspace" | "cards" | "settings";
   settings: AppSettings;
@@ -52,9 +60,11 @@ interface AppState {
   addMarker: (marker: Omit<Marker, "id" | "createdAt">) => void;
   updateMarker: (id: string, note: string) => void;
   removeMarker: (id: string) => void;
+  removeSuspiciousSegments: (lectureId: string) => void;
   addCards: (cards: Omit<Flashcard, "id">[]) => void;
   updateCard: (id: string, patch: Partial<Flashcard>) => void;
   removeCard: (id: string) => void;
+  resolveAnkiNoteDeletion: (ankiId: number) => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
   upsertJob: (
     job: Omit<BackgroundJob, "startedAt" | "updatedAt"> & {
@@ -76,13 +86,14 @@ export const useAppStore = create<AppState>()(
       segments: [],
       markers: [],
       cards: [],
+      pendingAnkiDeletions: [],
       selectedId: workspaceId,
       activeView: "dashboard",
       settings: {
         locale: "sv",
         onboardingDismissed: false,
         librarySidebarCollapsed: false,
-        selectedPaletteId: "chalk",
+        selectedPaletteId: initialPaletteId,
         customPalettes: [],
         userContext:
           "Svara på svenska. Skapa tydliga kort med ett koncept per kort.",
@@ -185,6 +196,17 @@ export const useAppStore = create<AppState>()(
             segments: s.segments.filter((x) => !descendants.has(x.lectureId)),
             markers: s.markers.filter((x) => !descendants.has(x.lectureId)),
             cards: s.cards.filter((x) => !descendants.has(x.lectureId)),
+            pendingAnkiDeletions: [
+              ...new Set([
+                ...s.pendingAnkiDeletions,
+                ...s.cards
+                  .filter(
+                    (card) =>
+                      descendants.has(card.lectureId) && card.ankiId !== undefined,
+                  )
+                  .map((card) => card.ankiId as number),
+              ]),
+            ],
           };
         }),
       selectNode: (id) => set({ selectedId: id }),
@@ -222,6 +244,12 @@ export const useAppStore = create<AppState>()(
         })),
       removeMarker: (id) =>
         set((s) => ({ markers: s.markers.filter((x) => x.id !== id) })),
+      removeSuspiciousSegments: (lectureId) =>
+        set((s) => ({
+          segments: s.segments.filter(
+            (segment) => segment.lectureId !== lectureId || !segment.suspicious,
+          ),
+        })),
       addCards: (cards) =>
         set((s) => ({
           cards: [...s.cards, ...cards.map((x) => ({ ...x, id: uid() }))],
@@ -231,7 +259,22 @@ export const useAppStore = create<AppState>()(
           cards: s.cards.map((x) => (x.id === id ? { ...x, ...patch } : x)),
         })),
       removeCard: (id) =>
-        set((s) => ({ cards: s.cards.filter((x) => x.id !== id) })),
+        set((s) => {
+          const card = s.cards.find((item) => item.id === id);
+          return {
+            cards: s.cards.filter((item) => item.id !== id),
+            pendingAnkiDeletions:
+              card?.ankiId === undefined
+                ? s.pendingAnkiDeletions
+                : [...new Set([...s.pendingAnkiDeletions, card.ankiId])],
+          };
+        }),
+      resolveAnkiNoteDeletion: (ankiId) =>
+        set((s) => ({
+          pendingAnkiDeletions: s.pendingAnkiDeletions.filter(
+            (noteId) => noteId !== ankiId,
+          ),
+        })),
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
       upsertJob: (job) =>
@@ -272,12 +315,20 @@ export const useAppStore = create<AppState>()(
         set((s) => ({
           ...s,
           ...data,
-          settings: { ...s.settings, ...(data.settings ?? {}) },
+          settings: {
+            ...s.settings,
+            ...(data.settings ?? {}),
+            customPalettes: Array.isArray(data.settings?.customPalettes)
+              ? data.settings.customPalettes.map((palette) =>
+                  normalizePalette(palette),
+                )
+              : s.settings.customPalettes,
+          },
         })),
     }),
     {
       name: "lectio-state-v1",
-      version: 7,
+      version: 9,
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
         const legacySettings = previous.settings as AppSettings & {
@@ -322,7 +373,9 @@ export const useAppStore = create<AppState>()(
                   ? "fjord"
                   : "chalk"),
             customPalettes: Array.isArray(legacySettings.customPalettes)
-              ? legacySettings.customPalettes
+              ? legacySettings.customPalettes.map((palette) =>
+                  normalizePalette(palette),
+                )
               : [],
           },
           // Visa den nya översikten en gång efter uppgraderingen. Allt lokalt
@@ -331,6 +384,7 @@ export const useAppStore = create<AppState>()(
           // Ett pågående native-jobb överlever inte en omstart. Rensa därför
           // gamla indikatorer i stället för att visa ett falskt förlopp.
           jobs: [],
+          pendingAnkiDeletions: previous.pendingAnkiDeletions ?? [],
         };
       },
     },

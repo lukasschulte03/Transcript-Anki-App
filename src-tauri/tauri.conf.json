@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "node scripts/ensure-vite-dev-server.mjs",
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
@@ -19,6 +19,7 @@
         "minHeight": 680,
         "center": true,
         "resizable": true,
+        "decorations": false,
         "fullscreen": false
       }
     ],

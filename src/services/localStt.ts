@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { appDataDir, join } from "@tauri-apps/api/path";
-import { mkdir, remove, writeFile } from "@tauri-apps/plugin-fs";
+import { mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { uid } from "../lib/utils";
 import { isTauri } from "./platform";
 import type { TranscriptionResult } from "./transcription";
@@ -58,6 +58,45 @@ export async function removeLocalModel(model: LocalModel) {
   return invoke<void>("remove_local_model", { model });
 }
 
+export async function cancelDownload(jobId: string) {
+  if (!isTauri()) return;
+  return invoke<void>("cancel_download", { jobId });
+}
+
+const cloudUploadLimitBytes = 20 * 1024 * 1024;
+
+/**
+ * Cloud speech providers commonly cap uploads around 25 MB. Oversized files
+ * are converted locally into low-bitrate eight-minute chunks before any bytes
+ * leave the computer. Small files preserve their original format untouched.
+ */
+export async function prepareAudioForCloudTranscription(audio: Blob) {
+  if (audio.size <= cloudUploadLimitBytes) return [audio];
+  if (!isTauri())
+    throw new Error(
+      "Den här ljudfilen är för stor för API-transkribering i webbläget. Öppna den i desktopappen eller dela upp den först.",
+    );
+  const directory = await join(await appDataDir(), "api-input");
+  await mkdir(directory, { recursive: true });
+  const inputPath = await join(directory, `${uid()}.source`);
+  await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
+  let preparedPaths: string[] = [];
+  try {
+    preparedPaths = await invoke<string[]>("prepare_api_audio", { inputPath });
+    return await Promise.all(
+      preparedPaths.map(async (path) => {
+        const bytes = await readFile(path);
+        return new Blob([bytes.buffer as ArrayBuffer], { type: "audio/mp4" });
+      }),
+    );
+  } finally {
+    await Promise.all([
+      remove(inputPath).catch(() => undefined),
+      ...preparedPaths.map((path) => remove(path).catch(() => undefined)),
+    ]);
+  }
+}
+
 export async function transcribeWithLocalWhisper(
   audio: Blob,
   model: LocalModel,
@@ -100,13 +139,34 @@ export function parseWhisperJson(raw: string): TranscriptionResult {
       timestamps?: { from?: string; to?: string };
     }>;
   };
-  const segments = (parsed.transcription ?? [])
+  const segments: TranscriptionResult["segments"] = (parsed.transcription ?? [])
     .map((entry, index) => ({
       start: Number(entry.offsets?.from ?? index * 10_000) / 1000,
       end: Number(entry.offsets?.to ?? (index + 1) * 10_000) / 1000,
       text: String(entry.text ?? "").trim(),
     }))
     .filter((segment) => segment.text.length > 0);
+  for (let index = 1; index < segments.length; index++) {
+    if (isLikelyDecoderLoop(segments[index - 1].text, segments[index].text))
+      segments[index].suspicious = true;
+  }
   if (!segments.length) throw new Error("Whisper returnerade inget tal.");
   return { segments };
+}
+
+function isLikelyDecoderLoop(previous: string, current: string) {
+  const normalize = (value: string) =>
+    value
+      .toLocaleLowerCase("sv")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const left = normalize(previous);
+  const right = normalize(current);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (left.length < 18 || right.length < 18) return false;
+  const shorter = left.length < right.length ? left : right;
+  const longer = left.length < right.length ? right : left;
+  return shorter.length / longer.length > 0.82 && longer.includes(shorter);
 }

@@ -16,3 +16,8 @@ db.version(2).stores({
   recordingSessions: "id, lectureId, status, createdAt",
   recordingChunks: "id, sessionId, [sessionId+sequence]",
 });
+db.version(3).stores({
+  assets: "id, lectureId, nodeId, kind, createdAt",
+  recordingSessions: "id, lectureId, status, createdAt",
+  recordingChunks: "id, sessionId, [sessionId+sequence]",
+});

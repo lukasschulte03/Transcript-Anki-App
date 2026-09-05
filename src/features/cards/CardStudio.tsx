@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useLiveQuery } from "dexie-react-hooks";
 import {
   Check,
   CheckCheck,
@@ -16,6 +17,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useAppStore } from "../../core/store";
+import { db } from "../../core/database";
 import type { CardType, Flashcard } from "../../core/types";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -27,13 +29,20 @@ import {
 } from "../../services/ai";
 import {
   ensureDeck,
+  deleteNote,
   lectureDeckName,
+  needsAnkiSync,
   openAnkiDesktop,
   syncCard,
   testAnki,
   withoutStructuralTags,
 } from "../../services/anki";
 import { openExternal } from "../../services/platform";
+import {
+  deleteCredential,
+  readCredential,
+  writeCredential,
+} from "../../services/credentials";
 import { toast } from "sonner";
 
 const cardTypes: { id: CardType; label: string }[] = [
@@ -63,6 +72,8 @@ export function CardStudio() {
     addCards,
     updateCard,
     removeCard,
+    pendingAnkiDeletions,
+    resolveAnkiNoteDeletion,
     updateSettings,
     inheritedContext,
   } = useAppStore();
@@ -95,14 +106,13 @@ export function CardStudio() {
   const scopedLectures = lecturesList.filter((lecture) =>
     scopedLectureIds.has(lecture.id),
   );
-  const initial =
-    nodes.find((n) => n.id === selectedId)?.type === "lecture"
-      ? selectedId
-      : (lecturesList[0]?.id ?? "");
-  const [selectedLectureId, setLectureId] = useState(initial);
-  const lectureId = scopedLectureIds.has(selectedLectureId)
-    ? selectedLectureId
-    : (scopedLectures[0]?.id ?? "");
+  // Navigation in the library decides which lecture is in focus. Keeping a
+  // second picker here made the current view and the selected library item
+  // disagree, especially when switching course or module.
+  const lectureId =
+    selectedNode?.type === "lecture" && scopedLectureIds.has(selectedNode.id)
+      ? selectedNode.id
+      : (scopedLectures[0]?.id ?? "");
   const [count, setCount] = useState(20);
   const [types, setTypes] = useState<CardType[]>(["basic", "concept"]);
   const [sources, setSources] = useState({
@@ -122,12 +132,50 @@ export function CardStudio() {
   const [openingAnki, setOpeningAnki] = useState(false);
   const [response, setResponse] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [rememberApiKey, setRememberApiKey] = useState(true);
+  const [savedApiKey, setSavedApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState<
     "all" | "generated" | "approved" | "synced"
   >("all");
+  const credentialKey = `ai:${settings.aiProvider}`;
+  useEffect(() => {
+    let cancelled = false;
+    if (settings.aiMode !== "api") return;
+    void readCredential(credentialKey)
+      .then((secret) => {
+        if (cancelled) return;
+        setSavedApiKey(Boolean(secret));
+        if (secret) setApiKey(secret);
+      })
+      .catch(() => {
+        if (!cancelled) setSavedApiKey(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [credentialKey, settings.aiMode]);
   const node = nodes.find((n) => n.id === lectureId);
   const lecture = lectures[lectureId];
+  const contextNodeIds = useMemo(() => {
+    const chain: string[] = [];
+    let current = nodes.find((item) => item.id === lectureId);
+    while (current) {
+      chain.unshift(current.id);
+      current = current.parentId
+        ? nodes.find((item) => item.id === current?.parentId)
+        : undefined;
+    }
+    return chain;
+  }, [lectureId, nodes]);
+  const contextNodeKey = contextNodeIds.join(":");
+  const contextFiles = useLiveQuery(
+    () => db.assets.where("nodeId").anyOf(contextNodeIds).toArray(),
+    [contextNodeKey],
+  );
+  const [excludedContextFileIds, setExcludedContextFileIds] = useState<
+    string[]
+  >([]);
   const inheritedSettings = useMemo(() => {
     const chain = [];
     let current = nodes.find((item) => item.id === lectureId);
@@ -146,6 +194,41 @@ export function CardStudio() {
     (c) =>
       c.lectureId === lectureId && (filter === "all" || c.status === filter),
   );
+  const generatedCards = cards.filter(
+    (card) => card.lectureId === lectureId && card.status === "generated",
+  );
+  const approvedCards = cards.filter(
+    (card) => card.lectureId === lectureId && card.status === "approved",
+  );
+  const approveAllGenerated = () => {
+    if (!generatedCards.length) return;
+    generatedCards.forEach((card) =>
+      updateCard(card.id, { status: "approved" }),
+    );
+    toast.success(`${generatedCards.length} kort godkändes`);
+  };
+  const undoAllApproved = () => {
+    if (!approvedCards.length) return;
+    approvedCards.forEach((card) =>
+      updateCard(card.id, { status: "generated" }),
+    );
+    toast.success(`${approvedCards.length} godkännanden ångrades`);
+  };
+  const deleteVisibleCards = () => {
+    if (!lectureCards.length) return;
+    if (
+      !window.confirm(
+        `Ta bort ${lectureCards.length} visade kort? Detta kan inte ångras.`,
+      )
+    )
+      return;
+    lectureCards.forEach((card) => removeCard(card.id));
+    toast.success(`${lectureCards.length} kort togs bort`);
+  };
+  const includedContextFiles = (contextFiles ?? []).filter(
+    (file) =>
+      file.extractedText?.trim() && !excludedContextFileIds.includes(file.id),
+  );
   const contextPreview = useMemo(
     () => [
       ...(settings.userContext.trim()
@@ -155,8 +238,21 @@ export function CardStudio() {
         title,
         context,
       })),
+      ...includedContextFiles.map((file) => ({
+        title: `${nodes.find((item) => item.id === file.nodeId)?.title ?? "Context"} · ${file.name}`,
+        context: file.extractedText?.trim() ?? "",
+      })),
     ],
-    [lectureId, settings.userContext, inheritedContext],
+    [
+      lectureId,
+      settings.userContext,
+      inheritedContext,
+      includedContextFiles,
+      nodes,
+    ],
+  );
+  const contextTokenEstimate = Math.ceil(
+    contextPreview.reduce((total, item) => total + item.context.length, 0) / 4,
   );
   const prompt = useMemo(
     () =>
@@ -240,6 +336,13 @@ export function CardStudio() {
     }
     setBusy(true);
     try {
+      if (rememberApiKey) {
+        await writeCredential(credentialKey, apiKey);
+        setSavedApiKey(true);
+      } else if (savedApiKey) {
+        await deleteCredential(credentialKey);
+        setSavedApiKey(false);
+      }
       const raw = await generateCardsWithApi(prompt, settings, apiKey);
       setResponse(raw);
       toast.success("AI-svaret är klart – granska och importera");
@@ -250,27 +353,50 @@ export function CardStudio() {
     }
   };
   const syncApproved = async () => {
-    const approved = cards.filter(
+    const eligibleCards = cards.filter(
       (c) =>
         c.lectureId === lectureId &&
         (c.status === "approved" || c.status === "synced"),
     );
-    if (!approved.length) return toast.error("Godkänn minst ett kort först");
+    if (!eligibleCards.length && !pendingAnkiDeletions.length)
+      return toast.error("Godkänn minst ett kort först");
     setBusy(true);
     try {
       await testAnki(settings.ankiUrl);
-      const deck = await ensureDeck(
-        settings.ankiUrl,
-        lectureDeckName(nodes, lectureId, settings.defaultDeck),
+      let deleted = 0;
+      let deletionFailure = "";
+      for (const noteId of pendingAnkiDeletions) {
+        try {
+          await deleteNote(settings.ankiUrl, noteId);
+          resolveAnkiNoteDeletion(noteId);
+          deleted++;
+        } catch (error) {
+          if (!deletionFailure)
+            deletionFailure = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const deck = eligibleCards.length
+        ? await ensureDeck(
+            settings.ankiUrl,
+            lectureDeckName(nodes, lectureId, settings.defaultDeck),
+          )
+        : "";
+      const cardsToSync = eligibleCards.filter((card) =>
+        needsAnkiSync(card, deck),
       );
       let done = 0;
       const failed: string[] = [];
       let firstFailure = "";
-      for (const card of approved) {
+      for (const card of cardsToSync) {
         try {
           const tags = [...new Set(withoutStructuralTags(card.tags))];
           const id = await syncCard(settings.ankiUrl, deck, { ...card, tags });
-          updateCard(card.id, { status: "synced", ankiId: id, tags });
+          updateCard(card.id, {
+            status: "synced",
+            ankiId: id,
+            ankiDeck: deck,
+            tags,
+          });
           done++;
         } catch (error) {
           failed.push(card.front);
@@ -280,11 +406,20 @@ export function CardStudio() {
           }
         }
       }
-      if (done) toast.success(`${done} kort synkades till Anki`);
+      if (done || deleted)
+        toast.success(
+          [done ? `${done} kort synkades` : "", deleted ? `${deleted} kort togs bort` : ""]
+            .filter(Boolean)
+            .join(" · ") + " i Anki",
+        );
+      if (!done && !deleted && !failed.length && !deletionFailure)
+        toast.message("Anki är redan uppdaterat");
       if (failed.length)
         toast.error(
           `${failed.length} kort kunde inte synkas${firstFailure ? `: ${firstFailure}` : "."}`,
         );
+      if (deletionFailure)
+        toast.error(`Ett borttaget kort kunde inte tas bort i Anki: ${deletionFailure}`);
     } catch {
       setAnkiHelpOpen(true);
     } finally {
@@ -338,28 +473,17 @@ export function CardStudio() {
           <p className="text-xs text-slate-400">Generera, granska och synka</p>
         </div>
         <div className="flex items-center gap-2">
-          <Select
-            value={lectureId}
-            onChange={(e) => setLectureId(e.target.value)}
-            className="w-56"
-          >
-            {scopedLectures.map((n) => (
-              <option key={n.id} value={n.id}>
-                {n.title}
-              </option>
-            ))}
-          </Select>
           <Button variant="secondary" onClick={syncApproved} disabled={busy}>
             <Send className="size-4" /> Synka godkända
           </Button>
         </div>
       </header>
       <div className="grid min-h-0 flex-1 grid-cols-[330px_1fr] gap-px bg-slate-200">
-        <aside className="overflow-auto bg-white p-5">
+        <aside className="overflow-auto bg-white p-6">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
             <Sparkles className="size-4 text-violet-500" /> Generera nya kort
           </div>
-          <div className="mt-5">
+          <div className="mt-6">
             <Label>Antal kort: {count}</Label>
             <input
               type="range"
@@ -370,12 +494,12 @@ export function CardStudio() {
               onChange={(e) => setCount(Number(e.target.value))}
               className="mt-2 w-full accent-violet-600"
             />
-            <div className="flex justify-between text-[10px] text-slate-400">
+            <div className="flex justify-between text-xs text-slate-400">
               <span>Få</span>
               <span>Många</span>
             </div>
           </div>
-          <div className="mt-5">
+          <div className="mt-6">
             <Label>Korttyper</Label>
             <div className="space-y-2">
               {cardTypes.map((t) => (
@@ -440,6 +564,50 @@ export function CardStudio() {
               Förhandsgranska context som används
             </summary>
             <div className="mt-3 space-y-2 text-xs leading-5 text-slate-500">
+              {sources.context && (contextFiles?.length ?? 0) > 0 && (
+                <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-2">
+                  <div className="mb-1 font-semibold text-[var(--palette-text)]">
+                    Bifogade filer
+                  </div>
+                  {(contextFiles ?? []).map((file) => {
+                    const available = Boolean(file.extractedText?.trim());
+                    const included =
+                      available && !excludedContextFileIds.includes(file.id);
+                    return (
+                      <label
+                        key={file.id}
+                        className="flex cursor-pointer items-center gap-2 py-0.5 text-[var(--palette-text-muted)]"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={included}
+                          disabled={!available}
+                          onChange={() =>
+                            setExcludedContextFileIds((current) =>
+                              current.includes(file.id)
+                                ? current.filter((id) => id !== file.id)
+                                : [...current, file.id],
+                            )
+                          }
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {file.name}
+                        </span>
+                        <span className="shrink-0 text-[var(--palette-text-subtle)]">
+                          {available
+                            ? `${Math.ceil((file.extractedText?.length ?? 0) / 4).toLocaleString("sv-SE")} tokens`
+                            : "Ingen text"}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+              {sources.context && contextTokenEstimate > 12_000 && (
+                <p className="rounded-lg bg-[var(--palette-warning-muted)] px-2 py-1.5 text-[var(--palette-warning)]">
+                  Den valda contexten är ungefär {contextTokenEstimate.toLocaleString("sv-SE")} tokens. Mycket material skickas till vald AI-tjänst när du genererar.
+                </p>
+              )}
               {sources.context && contextPreview.length ? (
                 contextPreview.map((item) => (
                   <div key={item.title} className="rounded-lg bg-slate-50 p-2">
@@ -486,14 +654,14 @@ export function CardStudio() {
             </div>
           </div>
           <Button
-            className="mt-5 w-full"
+            className="mt-6 w-full"
             disabled={!types.length}
             onClick={() => setPromptOpen(true)}
           >
             <Sparkles className="size-4" /> Fortsätt
           </Button>
         </aside>
-        <main className="ui-app-bg min-w-0 overflow-auto p-5">
+        <main className="ui-app-bg min-w-0 overflow-auto p-6">
           <div className="mb-4 flex items-center justify-between">
             <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
               {(["all", "generated", "approved", "synced"] as const).map(
@@ -518,6 +686,35 @@ export function CardStudio() {
               {lectureCards.length} kort
             </span>
           </div>
+          <div className="mb-4 flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={approveAllGenerated}
+              disabled={!generatedCards.length}
+            >
+              <CheckCheck className="size-3.5" /> Godkänn alla nya
+              {generatedCards.length ? ` (${generatedCards.length})` : ""}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={undoAllApproved}
+              disabled={!approvedCards.length}
+            >
+              <RefreshCw className="size-3.5" /> Ångra godkända
+              {approvedCards.length ? ` (${approvedCards.length})` : ""}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={deleteVisibleCards}
+              disabled={!lectureCards.length}
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" /> Radera visade
+            </Button>
+          </div>
           <div className="grid gap-3">
             {lectureCards.map((card) => (
               <CardRow
@@ -528,7 +725,7 @@ export function CardStudio() {
               />
             ))}
             {!lectureCards.length && (
-              <div className="grid min-h-72 place-items-center rounded-2xl border-2 border-dashed border-slate-200 bg-white/50 text-center">
+              <div className="grid min-h-72 place-items-center rounded-xl border-2 border-dashed border-slate-200 bg-white/50 text-center">
                 <div>
                   <FileJson className="mx-auto size-9 text-slate-300" />
                   <p className="mt-3 text-sm font-semibold text-slate-600">
@@ -583,7 +780,7 @@ export function CardStudio() {
               <div className="mt-2 text-xs font-semibold text-slate-800">
                 Copy/paste
               </div>
-              <div className="text-[10px] text-slate-500">
+              <div className="text-xs text-slate-500">
                 Standard · befintlig AI-tjänst
               </div>
             </button>
@@ -593,7 +790,7 @@ export function CardStudio() {
             >
               <Cloud className="size-4 text-slate-500" />
               <div className="mt-2 text-xs font-semibold">Eget API</div>
-              <div className="text-[10px] text-slate-500">
+              <div className="text-xs text-slate-500">
                 {settings.aiProvider} · {settings.aiModel}
               </div>
             </button>
@@ -605,7 +802,7 @@ export function CardStudio() {
                 <Textarea
                   readOnly
                   value={prompt}
-                  className="h-36 font-mono text-[10px]"
+                  className="h-36 font-mono text-xs"
                 />
               </div>
               <div className="flex flex-wrap gap-2">
@@ -642,8 +839,8 @@ export function CardStudio() {
           ) : (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="mb-3 text-xs text-slate-500">
-                {settings.aiProvider} · {settings.aiModel}. Nyckeln används bara
-                för denna körning och sparas inte.
+                {settings.aiProvider} · {settings.aiModel}. Nyckeln sparas bara
+                om du väljer det nedan, i Windows Credential Manager.
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
@@ -662,6 +859,32 @@ export function CardStudio() {
                   Generera
                 </Button>
               </div>
+              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={rememberApiKey}
+                    onChange={(event) =>
+                      setRememberApiKey(event.target.checked)
+                    }
+                  />
+                  Kom ihåg nyckeln säkert på den här datorn
+                </label>
+                {savedApiKey && (
+                  <button
+                    type="button"
+                    className="font-medium text-violet-700 hover:text-violet-900"
+                    onClick={async () => {
+                      await deleteCredential(credentialKey);
+                      setApiKey("");
+                      setSavedApiKey(false);
+                      toast.success("Den sparade API-nyckeln togs bort");
+                    }}
+                  >
+                    Glöm sparad nyckel
+                  </button>
+                )}
+              </div>
             </div>
           )}
           <div className="border-t border-slate-100 pt-4">
@@ -673,7 +896,7 @@ export function CardStudio() {
             <Textarea
               value={response}
               onChange={(e) => setResponse(e.target.value)}
-              className="h-28 font-mono text-[10px]"
+              className="h-28 font-mono text-xs"
               placeholder='{"cards":[…]}'
             />
             {settings.aiMode === "clipboard" && (
@@ -776,11 +999,11 @@ function CardRow({
             </>
           )}
           <div className="mt-3 flex items-center gap-2">
-            <span className="text-[10px] font-medium text-slate-500">
+            <span className="text-xs font-medium text-slate-500">
               {card.type}
             </span>
             {card.tags.map((t) => (
-              <span key={t} className="text-[10px] text-slate-400">
+              <span key={t} className="text-xs text-slate-400">
                 #{t}
               </span>
             ))}

@@ -3,8 +3,9 @@ import {
   BookText,
   ChevronRight,
   Clock3,
+  FileText,
   FileUp,
-  Maximize2,
+  Presentation,
   MessageSquareText,
   MoreHorizontal,
   Plus,
@@ -20,7 +21,10 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { parseTimestampedText } from "../../services/transcription";
+import { extractPdfPages, formatSlideText } from "../../services/pdf";
+import { suggestSlideMappings } from "../../services/slideMatching";
 import { AudioPanel } from "./AudioPanel";
+import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "sonner";
 
 export function LectureWorkspace({ lectureId }: { lectureId: string }) {
@@ -34,6 +38,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     updateSegment,
     updateMarker,
     removeMarker,
+    removeSuspiciousSegments,
     setSegments,
     setActiveView,
   } = useAppStore();
@@ -78,12 +83,36 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       segment.text.toLocaleLowerCase().includes(query),
     );
   }, [transcript, transcriptQuery]);
+  const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
+  const slideMappings = lecture.slideMappings ?? {};
+  const suggestSlides = () => {
+    if (!lecture.slidePages?.length || !transcript.length) return;
+    const mappings = suggestSlideMappings(lecture.slidePages, transcript);
+    updateLecture(lectureId, { slideMappings: mappings });
+    toast.success(`${Object.keys(mappings).length} slidekopplingar föreslogs`);
+  };
   useEffect(() => {
     if (activeSegment)
       transcriptPane.current
         ?.querySelector(`[data-segment="${activeSegment}"]`)
         ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [activeSegment]);
+  useEffect(() => {
+    const focusTranscriptSearch = () => {
+      document
+        .querySelector<HTMLInputElement>("[data-lectio-transcript-search]")
+        ?.focus();
+    };
+    window.addEventListener(
+      "lectio:focus-transcript-search",
+      focusTranscriptSearch,
+    );
+    return () =>
+      window.removeEventListener(
+        "lectio:focus-transcript-search",
+        focusTranscriptSearch,
+      );
+  }, []);
   const importSlides = async (file?: File) => {
     if (!file) return;
     if (!(await confirmStorageForImport(file, "slidefilen"))) return;
@@ -97,8 +126,34 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       blob: file,
       createdAt: new Date().toISOString(),
     });
-    updateLecture(lectureId, { slideAssetId: id, slideName: file.name });
-    toast.success("Slides importerade");
+    updateLecture(lectureId, {
+      slideAssetId: id,
+      slideName: file.name,
+      slideText: undefined,
+      slidePages: undefined,
+    });
+    if (
+      file.type === "application/pdf" ||
+      file.name.toLowerCase().endsWith(".pdf")
+    ) {
+      try {
+        const pages = await extractPdfPages(file);
+        updateLecture(lectureId, {
+          slideText: formatSlideText(pages),
+          slidePages: pages,
+        });
+        const foundText = pages.filter(Boolean).length;
+        toast.success(
+          foundText
+            ? `Slides importerade · text hittades på ${foundText} sidor`
+            : "Slides importerade · ingen valbar text hittades i PDF:en",
+        );
+      } catch {
+        toast.success("Slides importerade · text kan läggas till manuellt");
+      }
+    } else {
+      toast.success("Slides importerade");
+    }
   };
   const path = (() => {
     const result = [];
@@ -137,9 +192,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   };
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-5">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
         <div className="min-w-0">
-          <div className="flex items-center gap-1 text-[11px] text-slate-400">
+          <div className="flex items-center gap-1 text-xs text-slate-400">
             {path.slice(1, -1).map((p) => (
               <span className="flex items-center gap-1" key={p.id}>
                 {p.title}
@@ -172,47 +227,46 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
         </div>
       </header>
       <main className="ui-app-bg grid min-h-0 flex-1 grid-cols-[minmax(320px,1fr)_minmax(360px,0.9fr)] gap-3 overflow-hidden p-3">
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-slate-100 shadow-sm">
-          <div className="flex h-11 items-center justify-between border-b border-slate-200 bg-white px-4">
-            <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-slate-700">
-              <Maximize2 className="size-4 shrink-0 text-slate-400" />
+        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)]">
+          <div className="flex h-11 items-center justify-between border-b border-[var(--palette-border)] bg-[var(--palette-surface)] px-4">
+            <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-[var(--palette-text)]">
+              <Presentation className="size-4 shrink-0 text-[var(--palette-text-subtle)]" />
               <span className="shrink-0">Slides</span>
               {slideAsset?.name && (
                 <span
-                  className="min-w-0 truncate border-l border-slate-200 pl-2 font-normal text-slate-400"
+                  className="min-w-0 truncate border-l border-[var(--palette-border)] pl-2 font-normal text-[var(--palette-text-subtle)]"
                   title={slideAsset.name}
                 >
                   {slideAsset.name}
                 </span>
               )}
             </div>
-            <label className="cursor-pointer rounded-md px-2 py-1 text-xs font-medium text-violet-600 hover:bg-violet-50">
-              <FileUp className="mr-1 inline size-3.5" /> Lägg till
-              <input
-                type="file"
-                accept="application/pdf,image/*"
-                className="hidden"
-                onChange={(e) => importSlides(e.target.files?.[0])}
-              />
-            </label>
-          </div>
-          <div className="grid min-h-0 flex-1 place-items-center p-4">
-            {slideUrl ? (
-              slideAsset?.mimeType === "application/pdf" ? (
-                <iframe
-                  className="h-full w-full rounded-lg bg-white shadow-sm"
-                  src={slideUrl}
-                  title="Slides"
+            <Button variant="ghost" size="sm" asChild>
+              <label className="cursor-pointer">
+                <FileUp className="size-3.5" /> Lägg till
+                <input
+                  type="file"
+                  accept="application/pdf,image/*"
+                  className="hidden"
+                  onChange={(e) => importSlides(e.target.files?.[0])}
                 />
+              </label>
+            </Button>
+          </div>
+          <div className="grid min-h-0 flex-1 place-items-center p-3">
+            {slideUrl ? (
+              slideAsset?.mimeType === "application/pdf" ||
+              slideAsset?.name.toLowerCase().endsWith(".pdf") ? (
+                <PdfSlideViewer blob={slideAsset.blob} name={slideAsset.name} />
               ) : (
                 <img
                   src={slideUrl}
                   alt="Slides"
-                  className="max-h-full max-w-full rounded-lg object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain"
                 />
               )
             ) : (
-              <label className="flex cursor-pointer flex-col items-center rounded-2xl border-2 border-dashed border-slate-300 bg-white/60 px-14 py-12 text-center hover:border-violet-300 hover:bg-white">
+              <label className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-300 bg-white/60 px-12 py-12 text-center hover:border-violet-300 hover:bg-white">
                 <div className="grid size-12 place-items-center rounded-xl bg-violet-50 text-violet-600">
                   <FileUp className="size-5" />
                 </div>
@@ -233,26 +287,50 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
           </div>
         </section>
         <section className="grid min-h-0 grid-rows-[minmax(240px,1.1fr)_minmax(180px,0.8fr)] gap-3 bg-transparent">
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
             <div className="flex h-11 items-center justify-between border-b border-slate-100 px-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <MessageSquareText className="size-4 text-slate-400" />{" "}
                 Transkript{" "}
-                <span className="text-[10px] text-slate-500">
+                <span className="text-xs text-slate-500">
                   {transcript.length}
                 </span>
               </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setImportOpen(true)}
-              >
-                <Plus className="size-3.5" /> Importera text
-              </Button>
+              <div className="flex items-center gap-1">
+                {lecture.slidePages?.length && transcript.length > 0 && (
+                  <Button variant="ghost" size="sm" onClick={suggestSlides}>
+                    Koppla slides
+                  </Button>
+                )}
+                {suspiciousSegments.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `Ta bort ${suspiciousSegments.length} misstänkta upprepningar? Detta kan inte ångras.`,
+                        )
+                      )
+                        removeSuspiciousSegments(lectureId);
+                    }}
+                  >
+                    Rensa {suspiciousSegments.length}
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setImportOpen(true)}
+                >
+                  <Plus className="size-3.5" /> Importera text
+                </Button>
+              </div>
             </div>
             {transcript.length > 0 && (
               <div className="flex flex-wrap gap-2 border-b border-slate-100 bg-slate-50 px-3 py-2">
                 <Input
+                  data-lectio-transcript-search
                   value={transcriptQuery}
                   onChange={(event) => setTranscriptQuery(event.target.value)}
                   placeholder="Sök i transkript"
@@ -288,20 +366,49 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                     <div
                       key={s.id}
                       data-segment={s.id}
-                      className={`group flex gap-3 rounded-lg px-2 py-2 transition-colors ${activeSegment === s.id ? "bg-violet-50 ring-1 ring-violet-100" : "hover:bg-slate-50"}`}
+                      className={`group flex items-start gap-3 rounded-lg border px-2 py-2 transition-colors ${activeSegment === s.id ? "border-[var(--palette-border-strong)] bg-[var(--palette-primary-muted)]" : "border-transparent hover:bg-[var(--palette-surface-hover)]"}`}
                     >
                       <button
                         onClick={() => seek(s.start)}
-                        className="mt-0.5 shrink-0 font-mono text-[11px] font-medium text-violet-600"
+                        className="mt-0.5 shrink-0 font-mono text-xs font-medium text-[var(--palette-accent)]"
                       >
                         {formatTime(s.start)}
                       </button>
                       <textarea
                         value={s.text}
                         onChange={(e) => updateSegment(s.id, e.target.value)}
-                        rows={Math.max(1, Math.ceil(s.text.length / 65))}
-                        className="min-w-0 flex-1 resize-none bg-transparent text-sm leading-5 text-slate-700 outline-none"
+                        rows={Math.min(
+                          5,
+                          Math.max(1, Math.ceil(s.text.length / 65)),
+                        )}
+                        className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
                       />
+                      {s.suspicious && (
+                        <span className="mt-1 shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                          Misstänkt upprepning
+                        </span>
+                      )}
+                      {lecture.slidePages?.length && (
+                        <Select
+                          value={slideMappings[s.id]?.page ?? 0}
+                          onChange={(event) => {
+                            const page = Number(event.target.value);
+                            const next = { ...slideMappings };
+                            if (page) next[s.id] = { page, confidence: 100 };
+                            else delete next[s.id];
+                            updateLecture(lectureId, { slideMappings: next });
+                          }}
+                          className="mt-0.5 h-7 w-24 shrink-0 py-1 text-xs"
+                          title="Kopplad slide"
+                        >
+                          <option value={0}>Ingen slide</option>
+                          {lecture.slidePages.map((_, index) => (
+                            <option key={index} value={index + 1}>
+                              Slide {index + 1}
+                            </option>
+                          ))}
+                        </Select>
+                      )}
                     </div>
                   ))
                 ) : (
@@ -326,7 +433,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
             </div>
           </div>
           <div className="grid min-h-0 grid-cols-2 gap-3 bg-transparent">
-            <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
               <div className="flex h-10 items-center gap-2 border-b border-slate-100 px-4 text-xs font-semibold text-slate-700">
                 <BookText className="size-4 text-slate-400" /> Anteckningar
               </div>
@@ -339,7 +446,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 className="min-h-0 flex-1 rounded-none border-0 p-4 shadow-none focus:ring-0"
               />
             </div>
-            <div className="flex min-h-0 flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-sm">
+            <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
               <div className="flex h-10 items-center gap-2 border-b border-slate-100 px-4 text-xs font-semibold text-slate-700">
                 <Star className="size-4 text-amber-500" /> Markeringar{" "}
                 <span className="text-slate-400">{marks.length}</span>
@@ -350,7 +457,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                     key={m.id}
                     className="group flex items-start gap-2 rounded-lg p-2 hover:bg-slate-50"
                   >
-                    <span className="mt-1 flex items-center gap-1 font-mono text-[10px] font-medium text-amber-600">
+                    <span className="mt-1 flex items-center gap-1 font-mono text-xs font-medium text-amber-600">
                       <Clock3 className="size-3" />
                       {formatTime(m.time)}
                     </span>
@@ -407,6 +514,13 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
               }
               placeholder="Klistra in eller korrigera text från presentationen. Den kan väljas som källa för Anki-kort."
             />
+            {lecture.slidePages?.length ? (
+              <p className="mt-2 text-xs leading-5 text-slate-500">
+                Texten extraherades lokalt från {lecture.slidePages.length}{" "}
+                slides. Sidindelningen behålls lokalt och används för framtida
+                slidekopplingar.
+              </p>
+            ) : null}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -479,6 +593,73 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
   const node = nodes.find((n) => n.id === nodeId)!;
   const children = nodes.filter((n) => n.parentId === nodeId);
   const context = inheritedContext(nodeId);
+  const contextNodeIds = useMemo(() => {
+    const chain: string[] = [];
+    let current = nodes.find((item) => item.id === nodeId);
+    while (current) {
+      chain.unshift(current.id);
+      current = current.parentId
+        ? nodes.find((item) => item.id === current?.parentId)
+        : undefined;
+    }
+    return chain;
+  }, [nodeId, nodes]);
+  const contextNodeKey = contextNodeIds.join(":");
+  const inheritedFiles = useLiveQuery(
+    () => db.assets.where("nodeId").anyOf(contextNodeIds).toArray(),
+    [contextNodeKey],
+  );
+  const contextFileInput = useRef<HTMLInputElement>(null);
+  const contextFiles = useLiveQuery(
+    () => db.assets.where("nodeId").equals(nodeId).toArray(),
+    [nodeId],
+  );
+  const importContextFiles = async (fileList?: FileList) => {
+    const files = Array.from(fileList ?? []);
+    if (!files.length) return;
+    const unsupported = files.find(
+      (file) =>
+        file.type !== "application/pdf" && !/\.(pdf|txt|md)$/i.test(file.name),
+    );
+    if (unsupported) {
+      toast.error("Context stöder PDF-, TXT- och Markdown-filer.");
+      return;
+    }
+    for (const file of files) {
+      if (!(await confirmStorageForImport(file, "contextfilen"))) return;
+    }
+    for (const file of files) {
+      let extractedText = "";
+      try {
+        extractedText =
+          file.type === "application/pdf" || /\.pdf$/i.test(file.name)
+            ? formatSlideText(await extractPdfPages(file))
+            : await file.text();
+      } catch {
+        toast.warning(`${file.name} sparades, men text kunde inte extraheras.`);
+      }
+      await db.assets.put({
+        id: uid(),
+        lectureId: nodeId,
+        nodeId,
+        kind: "file",
+        name: file.name,
+        mimeType: file.type || "text/plain",
+        blob: file,
+        extractedText: extractedText.slice(0, 120_000),
+        createdAt: new Date().toISOString(),
+      });
+    }
+    if (contextFileInput.current) contextFileInput.current.value = "";
+    toast.success(
+      files.length === 1 ? "Contextfil tillagd" : `${files.length} contextfiler tillagda`,
+    );
+  };
+  const removeContextFile = async (id: string, name: string) => {
+    if (!confirm(`Ta bort contextfilen ${name}?`)) return;
+    await db.assets.delete(id);
+    toast.success("Contextfilen togs bort");
+  };
   return (
     <div className="ui-app-bg min-w-0 flex-1 overflow-auto">
       <div className="mx-auto max-w-4xl px-8 py-10">
@@ -517,9 +698,9 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             </Button>
           )}
         </div>
-        <div className="mt-8 grid grid-cols-[1fr_280px] gap-5">
+        <div className="mt-8 grid grid-cols-[1fr_280px] gap-6">
           <div className="space-y-5">
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <MessageSquareText className="size-4 text-violet-500" /> Kontext
                 för detta objekt
@@ -535,8 +716,68 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 }
                 placeholder="Exempel: Kursens lärandemål, notation, tentamensformat eller särskilda instruktioner…"
               />
+              <div className="mt-4 border-t border-[var(--palette-border)] pt-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-semibold text-[var(--palette-text)]">
+                      Bifogade contextfiler
+                    </div>
+                    <p className="mt-1 text-xs text-[var(--palette-text-muted)]">
+                      PDF, TXT och Markdown extraheras lokalt och ärvs nedåt.
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" asChild>
+                    <label className="cursor-pointer">
+                      <FileUp className="size-3.5" /> Lägg till filer
+                      <input
+                        ref={contextFileInput}
+                        type="file"
+                        accept="application/pdf,.pdf,text/plain,.txt,text/markdown,.md"
+                        multiple
+                        className="hidden"
+                        onChange={(event) =>
+                          void importContextFiles(event.target.files ?? undefined)
+                        }
+                      />
+                    </label>
+                  </Button>
+                </div>
+                {contextFiles?.length ? (
+                  <ul className="mt-3 divide-y divide-[var(--palette-border)] rounded-lg border border-[var(--palette-border)]">
+                    {contextFiles.map((file) => (
+                      <li
+                        key={file.id}
+                        className="flex items-center gap-2 px-3 py-2 text-xs"
+                      >
+                        <BookText className="size-3.5 shrink-0 text-[var(--palette-text-subtle)]" />
+                        <span className="min-w-0 flex-1 truncate font-medium text-[var(--palette-text)]">
+                          {file.name}
+                        </span>
+                        <span className="shrink-0 text-[var(--palette-text-subtle)]">
+                          {file.extractedText?.trim()
+                            ? `${Math.ceil(file.extractedText.length / 4).toLocaleString("sv-SE")} tokens`
+                            : "Ingen text"}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          onClick={() => void removeContextFile(file.id, file.name)}
+                          aria-label={`Ta bort ${file.name}`}
+                          title="Ta bort contextfil"
+                        >
+                          <Trash2 className="size-3.5 text-destructive" />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-3 text-xs text-[var(--palette-text-subtle)]">
+                    Inga filer har lagts till på den här nivån.
+                  </p>
+                )}
+              </div>
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Settings2 className="size-4 text-violet-500" /> Egna
                 inställningar
@@ -588,33 +829,52 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             </div>
           </div>
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Settings2 className="size-4 text-slate-400" /> Ärvt context
               </div>
-              <div className="mt-3 space-y-2">
-                {context.length ? (
-                  context.map((c) => (
+              <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+                {context.map((c) => (
+                  <div
+                    key={`${c.type}-${c.title}`}
+                    className="rounded-lg bg-slate-50 p-2 text-xs"
+                  >
+                    <div className="font-semibold text-slate-600">
+                      {c.title}
+                    </div>
+                    <div className="mt-1 whitespace-pre-wrap text-slate-400">
+                      {c.context}
+                    </div>
+                  </div>
+                ))}
+                {inheritedFiles?.map((file) => {
+                  const owner = nodes.find((item) => item.id === file.nodeId);
+                  return (
                     <div
-                      key={c.title}
+                      key={file.id}
                       className="rounded-lg bg-slate-50 p-2 text-xs"
                     >
-                      <div className="font-semibold text-slate-600">
-                        {c.title}
+                      <div className="flex items-center gap-1.5 font-semibold text-slate-600">
+                        <FileText className="size-3.5 shrink-0" />
+                        <span className="truncate">{file.name}</span>
                       </div>
-                      <div className="mt-1 line-clamp-2 text-slate-400">
-                        {c.context}
+                      <div className="mt-1 text-slate-400">
+                        {owner?.title ?? "Överordnat objekt"}
+                        {file.extractedText?.trim()
+                          ? ` · ${Math.ceil(file.extractedText.length / 4).toLocaleString("sv-SE")} tokens`
+                          : " · Ingen text kunde extraheras"}
                       </div>
                     </div>
-                  ))
-                ) : (
+                  );
+                })}
+                {!context.length && !inheritedFiles?.length && (
                   <p className="text-xs leading-5 text-slate-400">
-                    Ingen context har lagts till högre upp.
+                    Ingen context eller bifogad fil har lagts till högre upp.
                   </p>
                 )}
               </div>
             </div>
-            <div className="rounded-2xl bg-violet-600 p-5 text-white shadow-sm">
+            <div className="rounded-xl bg-violet-600 p-6 text-white">
               <div className="text-sm font-semibold">Modulärt bibliotek</div>
               <p className="mt-2 text-xs leading-5 text-violet-100">
                 Varje nivå kan ha egen kontext och egna inställningar som ärvs

@@ -1,8 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   AlertTriangle,
+  ArrowDown,
+  ArrowUp,
   CircleStop,
   FileAudio,
+  FileDown,
+  Gauge,
   Mic,
   Pause,
   Play,
@@ -11,14 +22,13 @@ import {
   Sparkles,
   Star,
   Trash2,
-  Upload,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
-import { Input, Label, Select } from "../../components/ui/Form";
+import { Input, Label } from "../../components/ui/Form";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import {
   buildTranscriptionPrompt,
@@ -28,8 +38,49 @@ import { toast } from "sonner";
 import {
   downloadLocalModel,
   getLocalModelStatus,
+  prepareAudioForCloudTranscription,
   transcribeWithLocalWhisper,
 } from "../../services/localStt";
+import {
+  deleteCredential,
+  readCredential,
+  writeCredential,
+} from "../../services/credentials";
+
+async function measureAudioDuration(blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    return await new Promise<number>((resolve) => {
+      const probe = new Audio();
+      const finish = (value: number) => {
+        probe.removeAttribute("src");
+        probe.load();
+        resolve(Number.isFinite(value) && value > 0 ? value : 0);
+      };
+      probe.preload = "metadata";
+      probe.onloadedmetadata = () => finish(probe.duration);
+      probe.onerror = () => finish(0);
+      probe.src = url;
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+const playbackSpeeds = [0.75, 1, 1.25, 1.5, 2] as const;
+
+type CachedApiChunk = {
+  assetId: string;
+  index: number;
+  duration: number;
+  segments: Awaited<
+    ReturnType<typeof cloudApiTranscription.transcribe>
+  >["segments"];
+};
+
+// Kept outside the component so the user can retry a failed API run from the
+// dialog without re-uploading chunks that already succeeded.
+const apiChunkCache = new Map<string, CachedApiChunk[]>();
 
 export function AudioPanel({
   lectureId,
@@ -42,15 +93,33 @@ export function AudioPanel({
   const updateLecture = useAppStore((s) => s.updateLecture);
   const addMarker = useAppStore((s) => s.addMarker);
   const settings = useAppStore((s) => s.settings);
-  const nodes = useAppStore((s) => s.nodes);
   const setSegments = useAppStore((s) => s.setSegments);
   const setActiveView = useAppStore((s) => s.setActiveView);
   const upsertJob = useAppStore((s) => s.upsertJob);
-  const asset = useLiveQuery(
-    () =>
-      lecture?.audioAssetId ? db.assets.get(lecture.audioAssetId) : undefined,
-    [lecture?.audioAssetId],
+  const audioParts = useMemo(() => {
+    if (lecture?.audioParts?.length) return lecture.audioParts;
+    return lecture?.audioAssetId
+      ? [
+          {
+            assetId: lecture.audioAssetId,
+            name: lecture.audioName ?? "Ljudinspelning",
+            duration: lecture.audioDuration,
+          },
+        ]
+      : [];
+  }, [
+    lecture?.audioAssetId,
+    lecture?.audioDuration,
+    lecture?.audioName,
+    lecture?.audioParts,
+  ]);
+  const audioPartKey = audioParts.map((part) => part.assetId).join(":");
+  const [activeAudioPart, setActiveAudioPart] = useState(0);
+  const assets = useLiveQuery(
+    () => db.assets.bulkGet(audioParts.map((part) => part.assetId)),
+    [audioPartKey],
   );
+  const asset = assets?.[activeAudioPart];
   const recoverableSession = useLiveQuery(
     () =>
       db.recordingSessions
@@ -65,27 +134,37 @@ export function AudioPanel({
     [asset],
   );
   const transcriptionPrompt = useMemo(
-    () =>
-      buildTranscriptionPrompt(nodes, lectureId, settings.transcriptionPrompt),
-    [nodes, lectureId, settings.transcriptionPrompt],
+    () => buildTranscriptionPrompt(settings.transcriptionPrompt),
+    [settings.transcriptionPrompt],
   );
   const [recording, setRecording] = useState(false);
   const [paused, setPaused] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [playbackTime, setPlaybackTime] = useState(0);
-  const [audioDuration, setAudioDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const cycleSpeed = () => {
+    setSpeed((currentSpeed) => {
+      const currentIndex = playbackSpeeds.indexOf(
+        currentSpeed as (typeof playbackSpeeds)[number],
+      );
+      return playbackSpeeds[(currentIndex + 1) % playbackSpeeds.length];
+    });
+  };
   const [transcribeOpen, setTranscribeOpen] = useState(false);
+  const audioImportInput = useRef<HTMLInputElement>(null);
   const [transcribeMode, setTranscribeMode] = useState<"local" | "api">(
     "local",
   );
   const [localInstalled, setLocalInstalled] = useState<boolean | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [apiKey, setApiKey] = useState("");
+  const [rememberApiKey, setRememberApiKey] = useState(true);
+  const [savedApiKey, setSavedApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
   const recorder = useRef<MediaRecorder | null>(null);
+  const transcriptionCredentialKey = `transcription:${settings.transcriptionProvider === "groq" ? "groq" : "openai"}`;
   const recordingSessionId = useRef<string | null>(null);
   const chunkSequence = useRef(0);
   const chunkWriteQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -93,12 +172,30 @@ export function AudioPanel({
   const resumedAt = useRef(0);
   const timer = useRef<number | null>(null);
   const audio = useRef<HTMLAudioElement>(null);
+  const pendingSeek = useRef<number | null>(null);
+  const continuePlayback = useRef(false);
   useEffect(
     () => () => {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
     },
     [audioUrl],
   );
+  useEffect(() => {
+    let cancelled = false;
+    if (!transcribeOpen || transcribeMode !== "api") return;
+    void readCredential(transcriptionCredentialKey)
+      .then((secret) => {
+        if (cancelled) return;
+        setSavedApiKey(Boolean(secret));
+        if (secret) setApiKey(secret);
+      })
+      .catch(() => {
+        if (!cancelled) setSavedApiKey(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [transcribeOpen, transcribeMode, transcriptionCredentialKey]);
   useEffect(
     () => () => {
       const activeRecorder = recorder.current;
@@ -117,9 +214,12 @@ export function AudioPanel({
     // Start a newly selected asset from its beginning. A completed recording
     // already has an elapsed duration even when its WebM container does not.
     setPlaybackTime(0);
-    setAudioDuration(lecture?.audioDuration ?? 0);
+    setActiveAudioPart(0);
     setPlaying(false);
-  }, [lecture?.audioAssetId]);
+  }, [audioPartKey]);
+  useEffect(() => {
+    setPlaybackTime(0);
+  }, [activeAudioPart, audioPartKey, audioParts]);
   useEffect(() => {
     const seek = (event: Event) => {
       const detail = (event as CustomEvent<{ lectureId: string; time: number }>)
@@ -144,8 +244,29 @@ export function AudioPanel({
         ? Date.now() - resumedAt.current
         : 0)) /
     1000;
+  const appendAudioPart = (
+    assetId: string,
+    name: string,
+    duration?: number,
+  ) => {
+    const nextParts = [...audioParts, { assetId, name, duration }];
+    updateLecture(lectureId, {
+      // Keep the first part in the legacy fields so older exports remain
+      // readable, while the ordered list is the source of truth going forward.
+      audioAssetId: nextParts[0]?.assetId,
+      audioName: nextParts[0]?.name,
+      audioDuration: nextParts.reduce(
+        (total, part) => total + (part.duration ?? 0),
+        0,
+      ),
+      audioParts: nextParts,
+    });
+  };
 
-  const finalizeRecording = async (sessionId: string, measuredDuration?: number) => {
+  const finalizeRecording = async (
+    sessionId: string,
+    measuredDuration?: number,
+  ) => {
     const session = await db.recordingSessions.get(sessionId);
     if (!session) throw new Error("Inspelningssessionen kunde inte hittas");
     const savedChunks = await db.recordingChunks
@@ -178,11 +299,11 @@ export function AudioPanel({
         await db.recordingSessions.delete(sessionId);
       },
     );
-    updateLecture(lectureId, {
-      audioAssetId: assetId,
-      audioName: session.name,
-      audioDuration: Math.max(0, measuredDuration ?? session.duration ?? 0),
-    });
+    appendAudioPart(
+      assetId,
+      session.name,
+      Math.max(0, measuredDuration ?? session.duration ?? 0),
+    );
   };
 
   const start = async () => {
@@ -316,30 +437,47 @@ export function AudioPanel({
     );
     toast.success("Den avbrutna inspelningen togs bort");
   };
-  const importAudio = async (file?: File) => {
-    if (!file) return;
-    if (!(await confirmStorageForImport(file, "ljudfilen"))) return;
-    const id = uid();
-    await db.assets.put({
-      id,
-      lectureId,
-      kind: "audio",
-      name: file.name,
-      mimeType: file.type || "audio/mpeg",
-      blob: file,
-      createdAt: new Date().toISOString(),
-    });
+  const importAudio = async (files?: FileList | File[]) => {
+    const incoming = files ? Array.from(files) : [];
+    if (!incoming.length) return;
+    for (const file of incoming) {
+      if (!(await confirmStorageForImport(file, "ljudfilen"))) return;
+    }
+    const ordered = [...incoming].sort((left, right) =>
+      left.name.localeCompare(right.name, "sv", { numeric: true }),
+    );
+    const newParts: typeof audioParts = [];
+    for (const file of ordered) {
+      const id = uid();
+      await db.assets.put({
+        id,
+        lectureId,
+        kind: "audio",
+        name: file.name,
+        mimeType: file.type || "audio/mpeg",
+        blob: file,
+        createdAt: new Date().toISOString(),
+      });
+      newParts.push({ assetId: id, name: file.name });
+    }
+    const nextParts = [...audioParts, ...newParts];
     updateLecture(lectureId, {
-      audioAssetId: id,
-      audioName: file.name,
-      // The browser will populate this when metadata is available. Do not
-      // retain the duration belonging to the file this import replaces.
-      audioDuration: undefined,
+      audioAssetId: nextParts[0]?.assetId,
+      audioName: nextParts[0]?.name,
+      audioDuration: nextParts.reduce(
+        (total, part) => total + (part.duration ?? 0),
+        0,
+      ),
+      audioParts: nextParts,
     });
-    toast.success("Ljudfil importerad");
+    toast.success(
+      ordered.length === 1
+        ? "Ljudfil importerad"
+        : `${ordered.length} ljuddelar importerades i filnamnsordning`,
+    );
   };
   const transcribe = async () => {
-    if (!asset || (transcribeMode === "api" && !apiKey)) return;
+    if (!audioParts.length || (transcribeMode === "api" && !apiKey)) return;
     const jobId = `transcription:${uid()}`;
     upsertJob({
       id: jobId,
@@ -358,22 +496,142 @@ export function AudioPanel({
     });
     setBusy(true);
     try {
-      const result =
-        transcribeMode === "local"
-          ? await transcribeWithLocalWhisper(
-              asset.blob,
-              settings.localTranscriptionModel ?? "base",
-              settings.localTranscriptionAcceleration ?? "auto",
-              jobId,
-              transcriptionPrompt,
-            )
-          : await cloudApiTranscription.transcribe(
-              asset.blob,
-              settings,
-              apiKey,
-              transcriptionPrompt,
+      if (transcribeMode === "api") {
+        if (rememberApiKey) {
+          await writeCredential(transcriptionCredentialKey, apiKey);
+          setSavedApiKey(true);
+        } else if (savedApiKey) {
+          await deleteCredential(transcriptionCredentialKey);
+          setSavedApiKey(false);
+        }
+      }
+      const partsWithAssets = audioParts
+        .map((part, index) => ({ part, asset: assets?.[index] }))
+        .filter(
+          (
+            entry,
+          ): entry is {
+            part: (typeof audioParts)[number];
+            asset: NonNullable<typeof asset>;
+          } => Boolean(entry.asset),
+        );
+      if (partsWithAssets.length !== audioParts.length)
+        throw new Error("En eller flera ljuddelar kunde inte hittas lokalt");
+      let offset = 0;
+      const mergedSegments: Parameters<typeof setSegments>[1] = [];
+      const updatedParts = [...audioParts];
+      const apiResumeKey =
+        transcribeMode === "api"
+          ? `${lectureId}:${settings.transcriptionProvider}:${settings.transcriptionModel}:${audioPartKey}`
+          : "";
+      const cachedApiChunks = apiResumeKey
+        ? [...(apiChunkCache.get(apiResumeKey) ?? [])]
+        : [];
+      for (const [index, entry] of partsWithAssets.entries()) {
+        upsertJob({
+          id: jobId,
+          kind: "transcription",
+          label:
+            transcribeMode === "local"
+              ? "Lokal transkribering"
+              : "API-transkribering",
+          phase: "transcribing",
+          status: "active",
+          current: index,
+          total: partsWithAssets.length,
+          detail: `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+        });
+        const uploadParts =
+          transcribeMode === "api"
+            ? await prepareAudioForCloudTranscription(entry.asset.blob)
+            : [entry.asset.blob];
+        let uploadOffset = 0;
+        for (const [uploadIndex, uploadPart] of uploadParts.entries()) {
+          const cachedChunk = cachedApiChunks.find(
+            (chunk) =>
+              chunk.assetId === entry.part.assetId &&
+              chunk.index === uploadIndex,
+          );
+          if (cachedChunk) {
+            mergedSegments.push(
+              ...cachedChunk.segments.map((segment) => ({
+                ...segment,
+                start: segment.start + offset + uploadOffset,
+                end: segment.end + offset + uploadOffset,
+              })),
             );
-      setSegments(lectureId, result.segments);
+            uploadOffset += cachedChunk.duration;
+            continue;
+          }
+          upsertJob({
+            id: jobId,
+            kind: "transcription",
+            label:
+              transcribeMode === "local"
+                ? "Lokal transkribering"
+                : "API-transkribering",
+            phase: "transcribing",
+            status: "active",
+            current: index,
+            total: partsWithAssets.length,
+            detail:
+              uploadParts.length > 1
+                ? `Transkriberar uppladdningsdel ${uploadIndex + 1} av ${uploadParts.length}…`
+                : `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+          });
+          const result =
+            transcribeMode === "local"
+              ? await transcribeWithLocalWhisper(
+                  uploadPart,
+                  settings.localTranscriptionModel ?? "base",
+                  settings.localTranscriptionAcceleration ?? "auto",
+                  jobId,
+                  transcriptionPrompt,
+                )
+              : await cloudApiTranscription.transcribe(
+                  uploadPart,
+                  settings,
+                  apiKey,
+                  transcriptionPrompt,
+                );
+          mergedSegments.push(
+            ...result.segments.map((segment) => ({
+              ...segment,
+              start: segment.start + offset + uploadOffset,
+              end: segment.end + offset + uploadOffset,
+            })),
+          );
+          const uploadDuration =
+            (await measureAudioDuration(uploadPart)) ||
+            Math.max(0, ...result.segments.map((segment) => segment.end));
+          if (apiResumeKey) {
+            const nextCache = [
+              ...(apiChunkCache.get(apiResumeKey) ?? []),
+              {
+                assetId: entry.part.assetId,
+                index: uploadIndex,
+                duration: uploadDuration,
+                segments: result.segments,
+              },
+            ];
+            apiChunkCache.set(apiResumeKey, nextCache);
+            cachedApiChunks.push(nextCache.at(-1)!);
+          }
+          uploadOffset += uploadDuration;
+        }
+        const measuredDuration = entry.part.duration ?? uploadOffset;
+        const duration =
+          measuredDuration ||
+          (await measureAudioDuration(entry.asset.blob));
+        updatedParts[index] = { ...entry.part, duration };
+        offset += duration;
+      }
+      updateLecture(lectureId, {
+        audioParts: updatedParts,
+        audioDuration: offset,
+      });
+      setSegments(lectureId, mergedSegments);
+      if (apiResumeKey) apiChunkCache.delete(apiResumeKey);
       upsertJob({
         id: jobId,
         kind: "transcription",
@@ -384,11 +642,11 @@ export function AudioPanel({
         phase: "complete",
         status: "complete",
         current: 0,
-        detail: `${result.segments.length} segment är klara.`,
+        detail: `${mergedSegments.length} segment är klara.`,
       });
       setTranscribeOpen(false);
       setApiKey("");
-      toast.success(`${result.segments.length} segment transkriberades`);
+      toast.success(`${mergedSegments.length} segment transkriberades`);
     } catch (e) {
       upsertJob({
         id: jobId,
@@ -400,7 +658,10 @@ export function AudioPanel({
         phase: "error",
         status: "error",
         current: 0,
-        detail: "Transkriberingen kunde inte slutföras.",
+        detail:
+          transcribeMode === "api"
+            ? "Försök igen för att fortsätta från redan klara API-delar."
+            : "Transkriberingen kunde inte slutföras.",
       });
       toast.error(String(e));
     } finally {
@@ -419,40 +680,126 @@ export function AudioPanel({
       setDownloading(false);
     }
   };
-  const knownDuration =
-    Number.isFinite(audioDuration) && audioDuration > 0
-      ? audioDuration
-      : lecture?.audioDuration ?? 0;
-  const current = audioUrl ? playbackTime : elapsed;
+  const partOffset = audioParts
+    .slice(0, activeAudioPart)
+    .reduce((total, part) => total + (part.duration ?? 0), 0);
+  const knownDuration = audioParts.reduce(
+    (total, part) => total + (part.duration ?? 0),
+    0,
+  );
+  const current = audioUrl ? partOffset + playbackTime : elapsed;
   const registerDuration = useCallback(
     (element: HTMLAudioElement) => {
       const mediaDuration = element.duration;
       const seekableDuration = element.seekable.length
         ? element.seekable.end(element.seekable.length - 1)
         : 0;
-      const duration = Number.isFinite(mediaDuration) && mediaDuration > 0
-        ? mediaDuration
-        : Number.isFinite(seekableDuration) && seekableDuration > 0
-          ? seekableDuration
-          : 0;
+      const duration =
+        Number.isFinite(mediaDuration) && mediaDuration > 0
+          ? mediaDuration
+          : Number.isFinite(seekableDuration) && seekableDuration > 0
+            ? seekableDuration
+            : 0;
       if (!duration) return;
-      setAudioDuration(duration);
-      if (Math.abs((lecture?.audioDuration ?? 0) - duration) > 0.25) {
-        updateLecture(lectureId, { audioDuration: duration });
+      const nextParts = audioParts.map((part, index) =>
+        index === activeAudioPart ? { ...part, duration } : part,
+      );
+      const total = nextParts.reduce(
+        (sum, part) => sum + (part.duration ?? 0),
+        0,
+      );
+      if (Math.abs((lecture?.audioDuration ?? 0) - total) > 0.25)
+        updateLecture(lectureId, {
+          audioParts: nextParts,
+          audioDuration: total,
+        });
+    },
+    [
+      activeAudioPart,
+      audioParts,
+      lecture?.audioDuration,
+      lectureId,
+      updateLecture,
+    ],
+  );
+  const seekTo = useCallback(
+    (requestedTime: number) => {
+      if (!audio.current) return;
+      const target = Math.max(
+        0,
+        Math.min(knownDuration || Infinity, requestedTime),
+      );
+      let offset = 0;
+      const index = audioParts.findIndex((part) => {
+        const end = offset + (part.duration ?? 0);
+        if (target <= end || part === audioParts.at(-1)) return true;
+        offset = end;
+        return false;
+      });
+      const nextIndex = Math.max(0, index);
+      const localTime = Math.max(0, target - offset);
+      if (nextIndex === activeAudioPart) audio.current.currentTime = localTime;
+      else {
+        pendingSeek.current = localTime;
+        continuePlayback.current = playing;
+        setActiveAudioPart(nextIndex);
       }
     },
-    [lecture?.audioDuration, lectureId, updateLecture],
+    [activeAudioPart, audioParts, knownDuration, playing],
   );
-  const skipAudio = useCallback((seconds: number) => {
-    if (!audio.current) return;
-    audio.current.currentTime = Math.max(
-      0,
-      Math.min(
-        knownDuration || Infinity,
-        audio.current.currentTime + seconds,
+  const skipAudio = useCallback(
+    (seconds: number) => seekTo(current + seconds),
+    [current, seekTo],
+  );
+  const moveAudioPart = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction;
+    if (nextIndex < 0 || nextIndex >= audioParts.length) return;
+    const nextParts = [...audioParts];
+    [nextParts[index], nextParts[nextIndex]] = [
+      nextParts[nextIndex],
+      nextParts[index],
+    ];
+    updateLecture(lectureId, { audioParts: nextParts });
+    if (activeAudioPart === index) setActiveAudioPart(nextIndex);
+    else if (activeAudioPart === nextIndex) setActiveAudioPart(index);
+  };
+  const deleteAudioPart = async (index: number) => {
+    if (!audioParts.length) return;
+    const part = audioParts[index];
+    if (!part) return;
+    const description =
+      audioParts.length === 1
+        ? `Ta bort ljudfilen ”${part.name}” från föreläsningen?`
+        : `Ta bort ljuddelen ”${part.name}”?`;
+    if (!window.confirm(description)) return;
+
+    const nextParts = audioParts.filter((_, partIndex) => partIndex !== index);
+    const nextActivePart =
+      activeAudioPart > index
+        ? activeAudioPart - 1
+        : Math.min(activeAudioPart, nextParts.length - 1);
+
+    if (index === activeAudioPart) {
+      audio.current?.pause();
+      setPlaybackTime(0);
+      pendingSeek.current = 0;
+    }
+
+    updateLecture(lectureId, {
+      audioAssetId: nextParts[0]?.assetId,
+      audioName: nextParts[0]?.name,
+      audioDuration: nextParts.reduce(
+        (total, audioPart) => total + (audioPart.duration ?? 0),
+        0,
       ),
+      audioParts: nextParts,
+    });
+    setActiveAudioPart(nextActivePart);
+    await db.assets.delete(part.assetId);
+    toast.success(
+      audioParts.length === 1 ? "Ljudfilen togs bort" : "Ljuddelen togs bort",
     );
-  }, [knownDuration]);
+  };
   const togglePlayback = useCallback(() => {
     if (!audio.current) return;
     if (playing) audio.current.pause();
@@ -462,35 +809,52 @@ export function AudioPanel({
     addMarker({ lectureId, time: current, note: "" });
     toast.success(`Markerat ${formatTime(current)}`);
   }, [addMarker, lectureId, current]);
+  const handleKeyboardShortcut = useEffectEvent((event: KeyboardEvent) => {
+    const target = event.target as HTMLElement | null;
+    const editingControl = target?.closest(
+      "textarea, select, [contenteditable='true'], input:not([type='range'])",
+    );
+    if (
+      document.querySelector("[role='dialog']") ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.altKey ||
+      editingControl
+    )
+      return;
+    if (event.code === "Space" && audioUrl) {
+      event.preventDefault();
+      togglePlayback();
+    } else if (event.key === "ArrowLeft" && audioUrl) {
+      event.preventDefault();
+      skipAudio(event.shiftKey ? -30 : -10);
+    } else if (event.key === "ArrowRight" && audioUrl) {
+      event.preventDefault();
+      skipAudio(event.shiftKey ? 30 : 10);
+    } else if (event.key.toLowerCase() === "m") {
+      event.preventDefault();
+      markMoment();
+    } else if (event.key.toLowerCase() === "r") {
+      event.preventDefault();
+      if (recording) stop();
+      else void start();
+    } else if (event.key.toLowerCase() === "p" && recording) {
+      event.preventDefault();
+      pause();
+    } else if (event.shiftKey && event.key.toLowerCase() === "i") {
+      event.preventDefault();
+      audioImportInput.current?.click();
+    } else if (event.shiftKey && event.key.toLowerCase() === "t" && audioUrl) {
+      event.preventDefault();
+      setTranscribeOpen(true);
+    }
+  });
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (
-        event.ctrlKey ||
-        event.metaKey ||
-        event.altKey ||
-        target?.closest("input, textarea, select, [contenteditable='true']")
-      )
-        return;
-      if (event.code === "Space" && audioUrl) {
-        event.preventDefault();
-        togglePlayback();
-      } else if (event.key === "ArrowLeft" && audioUrl) {
-        event.preventDefault();
-        skipAudio(-10);
-      } else if (event.key === "ArrowRight" && audioUrl) {
-        event.preventDefault();
-        skipAudio(10);
-      } else if (event.key.toLowerCase() === "m") {
-        event.preventDefault();
-        markMoment();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [audioUrl, togglePlayback, skipAudio, markMoment]);
+    window.addEventListener("keydown", handleKeyboardShortcut);
+    return () => window.removeEventListener("keydown", handleKeyboardShortcut);
+  }, []);
   return (
-    <div className="palette-top-shadow border-t border-slate-200/80 bg-white px-5 py-3">
+    <div className="palette-top-shadow border-t border-slate-200/80 bg-white px-6 py-3">
       <div className="flex items-center gap-4">
         {recording ? (
           <>
@@ -537,24 +901,29 @@ export function AudioPanel({
             Sparar ljudsegment…
           </span>
         )}
-        <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 hover:bg-slate-50">
-          <Upload className="size-3.5" /> Importera ljud
-          <input
-            type="file"
-            accept="audio/*"
-            className="hidden"
-            onChange={(e) => importAudio(e.target.files?.[0])}
-          />
-        </label>
+        <Button variant="outline" size="sm" asChild>
+          <label className="cursor-pointer">
+            <FileDown className="size-3.5" /> Importera ljud
+            <input
+              ref={audioImportInput}
+              type="file"
+              accept="audio/*"
+              multiple
+              className="hidden"
+              onChange={(e) => void importAudio(e.target.files ?? undefined)}
+            />
+          </label>
+        </Button>
         {audioUrl ? (
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <Button
               variant="ghost"
-              size="sm"
+              size="icon-sm"
               onClick={() => skipAudio(-10)}
               title="Hoppa tillbaka 10 sekunder (vänsterpil)"
+              aria-label="Hoppa tillbaka 10 sekunder"
             >
-              <RotateCcw className="size-3.5" /> −10 s
+              <RotateCcw className="size-3.5" />
             </Button>
             <Button
               variant="secondary"
@@ -570,11 +939,12 @@ export function AudioPanel({
             </Button>
             <Button
               variant="ghost"
-              size="sm"
+              size="icon-sm"
               onClick={() => skipAudio(10)}
               title="Hoppa fram 10 sekunder (högerpil)"
+              aria-label="Hoppa fram 10 sekunder"
             >
-              <RotateCw className="size-3.5" /> +10 s
+              <RotateCw className="size-3.5" />
             </Button>
             <audio
               ref={audio}
@@ -582,13 +952,35 @@ export function AudioPanel({
               className="hidden"
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
-              onEnded={() => setPlaying(false)}
-              onLoadedMetadata={(event) => registerDuration(event.currentTarget)}
-              onDurationChange={(event) => registerDuration(event.currentTarget)}
-              onCanPlay={(event) => registerDuration(event.currentTarget)}
+              onEnded={() => {
+                if (activeAudioPart < audioParts.length - 1) {
+                  pendingSeek.current = 0;
+                  continuePlayback.current = true;
+                  setActiveAudioPart((index) => index + 1);
+                } else {
+                  setPlaying(false);
+                }
+              }}
+              onLoadedMetadata={(event) =>
+                registerDuration(event.currentTarget)
+              }
+              onDurationChange={(event) =>
+                registerDuration(event.currentTarget)
+              }
+              onCanPlay={(event) => {
+                registerDuration(event.currentTarget);
+                if (pendingSeek.current !== null) {
+                  event.currentTarget.currentTime = pendingSeek.current;
+                  pendingSeek.current = null;
+                }
+                if (continuePlayback.current) {
+                  continuePlayback.current = false;
+                  void event.currentTarget.play();
+                }
+              }}
               onTimeUpdate={(e) => {
                 setPlaybackTime(e.currentTarget.currentTime);
-                onTime(e.currentTarget.currentTime);
+                onTime(partOffset + e.currentTarget.currentTime);
               }}
             />
             <input
@@ -596,33 +988,52 @@ export function AudioPanel({
               min="0"
               max={knownDuration || 0}
               step="0.1"
-              value={Math.min(playbackTime, knownDuration || playbackTime)}
+              value={Math.min(current, knownDuration || current)}
               onChange={(event) => {
                 const value = Number(event.target.value);
-                if (audio.current) audio.current.currentTime = value;
-                setPlaybackTime(value);
+                seekTo(value);
               }}
               className="min-w-20 flex-1 accent-violet-600"
               aria-label="Ljudposition"
             />
-            <span className="w-24 text-right font-mono text-[11px] tabular-nums text-slate-500">
-              {formatTime(playbackTime)} / {knownDuration ? formatTime(knownDuration) : "--:--"}
+            <span className="w-24 text-right font-mono text-xs tabular-nums text-slate-500">
+              {formatTime(current)} /{" "}
+              {knownDuration ? formatTime(knownDuration) : "--:--"}
             </span>
-            <Select
-              value={speed}
-              onChange={(e) => setSpeed(Number(e.target.value))}
-              className="h-8 w-[72px] py-1 pl-2 pr-7 text-xs"
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={cycleSpeed}
+              title={`Uppspelningshastighet: ${speed}×. Klicka för nästa.`}
+              aria-label={`Uppspelningshastighet ${speed} gånger. Klicka för nästa.`}
+              className="gap-1 tabular-nums"
             >
-              {[0.75, 1, 1.25, 1.5, 2].map((x) => (
-                <option key={x}>{x}</option>
-              ))}
-            </Select>
+              <Gauge className="size-3.5" /> {speed}×
+            </Button>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => setTranscribeOpen(true)}
             >
               <Sparkles className="size-3.5" /> Transkribera
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => void deleteAudioPart(activeAudioPart)}
+              title={
+                audioParts.length === 1
+                  ? "Ta bort ljudfil från föreläsningen"
+                  : "Ta bort aktiv ljuddel"
+              }
+              aria-label={
+                audioParts.length === 1
+                  ? "Ta bort ljudfil från föreläsningen"
+                  : "Ta bort aktiv ljuddel"
+              }
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
             </Button>
           </div>
         ) : (
@@ -639,6 +1050,60 @@ export function AudioPanel({
           <Star className="size-4 text-amber-500" /> Markera viktigt
         </Button>
       </div>
+      {audioParts.length > 1 && (
+        <div className="mt-2 flex items-center gap-2 overflow-x-auto border-t border-slate-100 pt-2 text-xs">
+          <span className="shrink-0 font-medium text-slate-500">
+            {audioParts.length} ljuddelar
+          </span>
+          {audioParts.map((part, index) => (
+            <div
+              key={part.assetId}
+              className={`flex shrink-0 items-center gap-1 rounded-md border px-2 py-1 ${index === activeAudioPart ? "border-violet-200 bg-violet-50 text-violet-800" : "border-slate-200 bg-white text-slate-600"}`}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  pendingSeek.current = 0;
+                  setActiveAudioPart(index);
+                }}
+                className="max-w-36 truncate text-left"
+                title={part.name}
+              >
+                {index + 1}. {part.name}
+              </button>
+              <button
+                type="button"
+                onClick={() => moveAudioPart(index, -1)}
+                disabled={index === 0}
+                className="disabled:text-slate-300"
+                title="Flytta tidigare"
+                aria-label={`Flytta ${part.name} tidigare`}
+              >
+                <ArrowUp className="size-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => moveAudioPart(index, 1)}
+                disabled={index === audioParts.length - 1}
+                className="disabled:text-slate-300"
+                title="Flytta senare"
+                aria-label={`Flytta ${part.name} senare`}
+              >
+                <ArrowDown className="size-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteAudioPart(index)}
+                className="text-[var(--destructive)] hover:text-[var(--destructive)]/80"
+                title="Ta bort ljuddel"
+                aria-label={`Ta bort ${part.name}`}
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       <Dialog
         open={transcribeOpen}
         onOpenChange={setTranscribeOpen}
@@ -694,7 +1159,8 @@ export function AudioPanel({
             <>
               <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
                 Ljudet skickas till providern som valts under Inställningar.
-                Nyckeln sparas inte.
+                Nyckeln sparas bara om du väljer det nedan, i Windows Credential
+                Manager.
               </div>
               <div>
                 <Label>API-nyckel</Label>
@@ -704,6 +1170,32 @@ export function AudioPanel({
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="Klistra in för denna session"
                 />
+              </div>
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
+                <label className="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={rememberApiKey}
+                    onChange={(event) =>
+                      setRememberApiKey(event.target.checked)
+                    }
+                  />
+                  Kom ihåg nyckeln säkert på den här datorn
+                </label>
+                {savedApiKey && (
+                  <button
+                    type="button"
+                    className="font-medium text-violet-700 hover:text-violet-900"
+                    onClick={async () => {
+                      await deleteCredential(transcriptionCredentialKey);
+                      setApiKey("");
+                      setSavedApiKey(false);
+                      toast.success("Den sparade API-nyckeln togs bort");
+                    }}
+                  >
+                    Glöm sparad nyckel
+                  </button>
+                )}
               </div>
               <div>
                 <Label>Vald modell</Label>

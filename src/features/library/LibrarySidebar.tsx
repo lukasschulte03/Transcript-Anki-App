@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BookOpen,
   ChevronDown,
@@ -8,7 +8,6 @@ import {
   Layers3,
   MoreHorizontal,
   PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   Search,
   Shapes,
@@ -70,6 +69,7 @@ export function LibrarySidebar() {
     null,
   );
   const [title, setTitle] = useState("");
+  const searchInput = useRef<HTMLInputElement>(null);
   const root = nodes.find((node) => node.type === "workspace") ?? nodes[0];
   const courses = nodes.filter(
     (node) => node.type === "course" && node.parentId === root?.id,
@@ -133,26 +133,43 @@ export function LibrarySidebar() {
     setCreateRequest(null);
   };
 
-  if (settings.librarySidebarCollapsed) {
-    return (
-      <aside className="flex h-full w-12 shrink-0 flex-col items-center border-r border-slate-200/80 bg-white pt-3">
-        <Button
-          variant="ghost"
-          size="icon"
-          onClick={() => updateSettings({ librarySidebarCollapsed: false })}
-          className="size-8 text-[var(--palette-text-subtle)]"
-          title="Visa bibliotek"
-          aria-label="Visa bibliotek"
-        >
-          <PanelLeftOpen className="size-4" />
-        </Button>
-      </aside>
-    );
-  }
+  useEffect(() => {
+    const focusSearch = () => {
+      if (settings.librarySidebarCollapsed)
+        updateSettings({ librarySidebarCollapsed: false });
+      window.setTimeout(() => searchInput.current?.focus(), 0);
+    };
+    const createSelectedChild = (event: Event) => {
+      const mode = (event as CustomEvent<{ type?: "next" | "lecture" }>).detail
+        ?.type;
+      const selected = nodes.find((node) => node.id === selectedId);
+      if (!selected) return;
+      if (selected.type === "workspace")
+        setCreateRequest({ parentId: selected.id, type: "course" });
+      else if (selected.type === "course")
+        setCreateRequest({ parentId: selected.id, type: "module" });
+      else if (selected.type === "module")
+        setCreateRequest({
+          parentId: selected.id,
+          type: mode === "lecture" ? "lecture" : "topic",
+        });
+    };
+    window.addEventListener("lectio:focus-library-search", focusSearch);
+    window.addEventListener("lectio:create-library-node", createSelectedChild);
+    return () => {
+      window.removeEventListener("lectio:focus-library-search", focusSearch);
+      window.removeEventListener(
+        "lectio:create-library-node",
+        createSelectedChild,
+      );
+    };
+  }, [nodes, selectedId, settings.librarySidebarCollapsed, updateSettings]);
+
+  if (settings.librarySidebarCollapsed) return null;
 
   return (
     <aside className="flex h-full w-[286px] shrink-0 flex-col border-r border-slate-200/80 bg-white">
-      <div className="flex h-16 items-center justify-between px-5">
+      <div className="flex h-16 items-center justify-between px-6">
         <div className="text-sm font-semibold text-slate-800">Mina studier</div>
         <div className="flex items-center gap-1">
           <Button
@@ -181,6 +198,7 @@ export function LibrarySidebar() {
       <div className="relative px-3">
         <Search className="absolute left-6 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
         <Input
+          ref={searchInput}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Sök i allt material"
@@ -212,18 +230,18 @@ export function LibrarySidebar() {
                         );
                       }
                     }}
-                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-primary-soft)] focus-visible:bg-[var(--palette-primary-soft)]"
+                    className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-primary-muted)] focus-visible:bg-[var(--palette-primary-muted)]"
                   >
                     <Icon className="size-4 text-violet-500" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium text-slate-700">
                         {result.node.title}
                       </span>
-                      <span className="block truncate text-[10px] text-slate-400">
+                      <span className="block truncate text-xs text-slate-400">
                         {result.preview}
                       </span>
                     </span>
-                    <span className="text-[10px] text-slate-400">
+                    <span className="text-xs text-slate-400">
                       {result.source}
                     </span>
                   </button>
@@ -238,7 +256,7 @@ export function LibrarySidebar() {
         )}
       </div>
 
-      <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-2">
+      <div className="mt-6 min-h-0 flex-1 overflow-y-auto px-2">
         {courses.length ? (
           courses.map((course) => (
             <CourseItem
@@ -256,7 +274,7 @@ export function LibrarySidebar() {
             onClick={() =>
               root && setCreateRequest({ parentId: root.id, type: "course" })
             }
-            className="mx-2 flex w-[calc(100%-16px)] flex-col items-center rounded-2xl border border-dashed border-slate-200 px-5 py-8 text-center hover:border-violet-300 hover:bg-violet-50/40"
+            className="mx-2 flex w-[calc(100%-16px)] flex-col items-center rounded-xl border border-dashed border-slate-200 px-6 py-8 text-center hover:border-violet-300 hover:bg-violet-50/40"
           >
             <div className="grid size-10 place-items-center rounded-xl bg-violet-50 text-violet-600">
               <BookOpen className="size-5" />
@@ -447,7 +465,7 @@ function ModuleItem({
           onClick={() => onSelect(module.id)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
         >
-          <Layers3 className="size-3.5 shrink-0 text-slate-400" />
+          <Layers3 className="size-3.5 shrink-0 text-[var(--palette-text-subtle)]" />
           <span className="truncate">{module.title}</span>
         </button>
         <NodeMenu
@@ -473,7 +491,7 @@ function ModuleItem({
         />
       </div>
       {expanded && (
-        <div className="ml-5 border-l border-slate-100 pl-2">
+        <div className="ml-6 border-l border-slate-100 pl-2">
           {leaves.map((leaf) => {
             const Icon = iconByType[leaf.type];
             return (
@@ -540,22 +558,20 @@ function NodeMenu({
           <MoreHorizontal className="size-4" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent
-          align="start"
-        >
-          {items.map(({ label, icon: Icon, danger, action }) => (
-            <DropdownMenuItem
-              key={label}
-              onSelect={action}
-              className={cn(
-                "cursor-pointer",
-                danger ? "text-red-600" : "text-slate-700",
-              )}
-            >
-              <Icon className="size-3.5" />
-              {label}
-            </DropdownMenuItem>
-          ))}
+      <DropdownMenuContent align="start">
+        {items.map(({ label, icon: Icon, danger, action }) => (
+          <DropdownMenuItem
+            key={label}
+            onSelect={action}
+            className={cn(
+              "cursor-pointer",
+              danger ? "text-red-600" : "text-slate-700",
+            )}
+          >
+            <Icon className="size-3.5" />
+            {label}
+          </DropdownMenuItem>
+        ))}
       </DropdownMenuContent>
     </DropdownMenu>
   );

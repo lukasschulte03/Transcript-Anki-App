@@ -1,4 +1,11 @@
-import { Children, isValidElement, type InputHTMLAttributes, type SelectHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import {
+  Children,
+  forwardRef,
+  isValidElement,
+  type InputHTMLAttributes,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from "react";
 import { cn } from "../../lib/utils";
 import {
   Select as ShadcnSelect,
@@ -12,23 +19,27 @@ import {
 import { Input as ShadcnInput } from "./input";
 import { Textarea as ShadcnTextarea } from "./textarea";
 
-export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
+export const Input = forwardRef<
+  HTMLInputElement,
+  InputHTMLAttributes<HTMLInputElement>
+>(function Input(props, ref) {
   return (
     <ShadcnInput
       {...props}
+      ref={ref}
       className={cn(
         "h-10 w-full rounded-md border border-[var(--palette-border)] bg-[var(--palette-surface)] px-3 text-sm text-[var(--palette-text)] shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-[var(--palette-text-subtle)] hover:border-[var(--palette-border-strong)] focus:border-[var(--palette-primary)] focus:ring-[3px] focus:ring-[var(--palette-focus-ring)]",
         props.className,
       )}
     />
   );
-}
+});
 export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <ShadcnTextarea
       {...props}
       className={cn(
-        "w-full resize-none rounded-md border border-[var(--palette-border)] bg-[var(--palette-surface)] px-3 py-2 text-sm leading-6 text-[var(--palette-text)] shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-[var(--palette-text-subtle)] hover:border-[var(--palette-border-strong)] focus:border-[var(--palette-primary)] focus:ring-[3px] focus:ring-[var(--palette-focus-ring)]",
+        "max-h-80 w-full resize-none overflow-y-auto overscroll-contain rounded-md border border-[var(--palette-border)] bg-[var(--palette-surface)] px-3 py-2 text-sm leading-6 text-[var(--palette-text)] shadow-xs outline-none transition-[border-color,box-shadow] placeholder:text-[var(--palette-text-subtle)] hover:border-[var(--palette-border-strong)] focus:border-[var(--palette-primary)] focus:ring-[3px] focus:ring-[var(--palette-focus-ring)]",
         props.className,
       )}
     />
@@ -44,19 +55,28 @@ export function Label({ children }: { children: React.ReactNode }) {
 type SelectOption = { value: string; label: string; group?: string };
 const emptyValue = "__lectio_empty_value__";
 
-function readOptions(children: React.ReactNode, group?: string): SelectOption[] {
+function readOptions(
+  children: React.ReactNode,
+  group?: string,
+): SelectOption[] {
   const options: SelectOption[] = [];
   Children.forEach(children, (child) => {
     if (!isValidElement(child)) return;
     if (child.type === "option") {
-      const props = child.props as { value?: string | number; children?: React.ReactNode };
+      const props = child.props as {
+        value?: string | number;
+        children?: React.ReactNode;
+      };
       options.push({
         value: String(props.value ?? ""),
         label: String(props.children ?? ""),
         group,
       });
     } else if (child.type === "optgroup") {
-      const props = child.props as { label?: string; children?: React.ReactNode };
+      const props = child.props as {
+        label?: string;
+        children?: React.ReactNode;
+      };
       options.push(...readOptions(props.children, props.label));
     }
   });
@@ -86,7 +106,9 @@ export function Select({
       disabled={disabled}
       onValueChange={(nextValue) => {
         const next = nextValue === emptyValue ? "" : nextValue;
-        onChange?.({ target: { value: next } } as React.ChangeEvent<HTMLSelectElement>);
+        onChange?.({
+          target: { value: next },
+        } as React.ChangeEvent<HTMLSelectElement>);
       }}
     >
       <SelectTrigger className={cn("h-10 w-full", className)}>

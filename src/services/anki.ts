@@ -27,6 +27,9 @@ export async function openAnkiDesktop() {
 export const getDecks = (url: string) =>
   invoke(url, "deckNames") as Promise<string[]>;
 
+export const deleteNote = (url: string, noteId: number) =>
+  invoke(url, "deleteNotes", { notes: [noteId] });
+
 export async function ensureDeck(url: string, deck: string) {
   const name = deck.trim() || "Lectio";
   const decks = await getDecks(url);
@@ -72,6 +75,9 @@ export function lectureDeckName(
     deckPart(lecture.title, "Namnlös föreläsning"),
   ].join("::");
 }
+
+export const needsAnkiSync = (card: Flashcard, deck: string) =>
+  card.status === "approved" || !card.ankiId || card.ankiDeck !== deck;
 
 async function fieldsForCard(
   url: string,

@@ -12,24 +12,24 @@
   --lectio-font-display:
     "Segoe UI Variable Display", "Segoe UI", Inter, ui-sans-serif, system-ui,
     sans-serif;
-  --palette-background: #f7f8fa;
-  --palette-surface: #ffffff;
-  --palette-surface-muted: #f1f5f9;
-  --palette-surface-hover: #e9eef5;
-  --palette-text: #0f172a;
-  --palette-text-muted: #64748b;
-  --palette-text-subtle: #94a3b8;
-  --palette-border: #e2e8f0;
-  --palette-border-strong: #cbd5e1;
-  --palette-primary: #7c3aed;
-  --palette-primary-hover: #6d28d9;
-  --palette-primary-soft: #ede9fe;
-  --palette-primary-soft-hover: #ddd6fe;
-  --palette-primary-text: #ffffff;
-  --palette-accent-text: #5b21b6;
-  --palette-focus-ring: #c4b5fd;
-  --palette-hero: #0f172a;
-  --palette-hero-text: #ffffff;
+  --palette-background: var(--background);
+  --palette-surface: var(--card);
+  --palette-surface-muted: var(--muted);
+  --palette-surface-hover: var(--accent);
+  --palette-text: var(--foreground);
+  --palette-text-muted: var(--muted-foreground);
+  --palette-text-subtle: var(--muted-foreground);
+  --palette-border: var(--border);
+  --palette-border-strong: var(--input);
+  --palette-primary: var(--primary);
+  --palette-primary-hover: var(--primary);
+  --palette-primary-muted: var(--muted);
+  --palette-primary-muted-hover: var(--accent);
+  --palette-primary-foreground: var(--primary-foreground);
+  --palette-accent: var(--foreground);
+  --palette-focus-ring: var(--ring);
+  --palette-hero-background: var(--foreground);
+  --palette-hero-foreground: var(--background);
   font-family: var(--lectio-font-sans);
   color: var(--palette-text);
   background: var(--palette-background);
@@ -128,8 +128,7 @@ h3 {
   background-color: var(--palette-surface-muted) !important;
 }
 
-:root[data-palette-tone] .ui-app-bg,
-:root[data-palette-tone] .bg-\[\#f7f8fa\] {
+:root[data-palette-tone] .ui-app-bg {
   background-color: var(--palette-background) !important;
 }
 
@@ -193,14 +192,14 @@ h3 {
 
 :root[data-palette-tone] .bg-violet-600 {
   background-color: var(--palette-primary) !important;
-  color: var(--palette-primary-text) !important;
+  color: var(--palette-primary-foreground) !important;
 }
 :root[data-palette-tone] .bg-slate-900 {
   background-color: var(--palette-primary) !important;
 }
 :root[data-palette-tone] .bg-slate-900.text-white,
 :root[data-palette-tone] .bg-violet-600.text-white {
-  color: var(--palette-primary-text) !important;
+  color: var(--palette-primary-foreground) !important;
 }
 :root[data-palette-tone] .hover\:bg-violet-700:hover {
   background-color: var(--palette-primary-hover) !important;
@@ -210,12 +209,11 @@ h3 {
 :root[data-palette-tone] .text-violet-900,
 :root[data-palette-tone] .hover\:text-violet-800:hover,
 :root[data-palette-tone] .hover\:text-violet-900:hover {
-  color: var(--palette-accent-text) !important;
+  color: var(--palette-accent) !important;
 }
 :root[data-palette-tone] .text-violet-600,
 :root[data-palette-tone] .text-violet-500,
 :root[data-palette-tone] .text-indigo-600,
-:root[data-palette-tone] .text-sky-500,
 :root[data-palette-tone] .hover\:text-violet-600:hover,
 :root[data-palette-tone] .group:hover .group-hover\:text-violet-500 {
   color: var(--palette-primary) !important;
@@ -223,6 +221,18 @@ h3 {
 :root[data-palette-tone] .bg-indigo-500,
 :root[data-palette-tone] .bg-indigo-400 {
   background-color: var(--palette-primary) !important;
+}
+:root[data-palette-tone] .text-sky-500 {
+  color: var(--palette-info) !important;
+}
+:root[data-palette-tone] .bg-red-500 {
+  background-color: var(--palette-danger) !important;
+}
+:root[data-palette-tone] .bg-amber-500 {
+  background-color: var(--palette-warning) !important;
+}
+:root[data-palette-tone] .bg-emerald-500 {
+  background-color: var(--palette-success) !important;
 }
 :root[data-palette-tone] .bg-violet-600\/20 {
   background-color: color-mix(
@@ -234,16 +244,16 @@ h3 {
 :root[data-palette-tone] .bg-violet-600 .text-violet-100 {
   color: color-mix(
     in srgb,
-    var(--palette-primary-text) 80%,
+    var(--palette-primary-foreground) 80%,
     transparent
   ) !important;
 }
 :root[data-palette-tone] .ui-selected {
-  background-color: var(--palette-primary-soft) !important;
-  color: var(--palette-accent-text) !important;
+  background-color: var(--palette-primary-muted) !important;
+  color: var(--palette-accent) !important;
 }
 :root[data-palette-tone] .ui-selected:hover {
-  background-color: var(--palette-primary-soft-hover) !important;
+  background-color: var(--palette-primary-muted-hover) !important;
 }
 :root[data-palette-tone] .border-violet-200,
 :root[data-palette-tone] .border-violet-300,
@@ -268,29 +278,29 @@ h3 {
 }
 :root[data-palette-tone] .bg-violet-50,
 :root[data-palette-tone] .bg-violet-100 {
-  background-color: var(--palette-primary-soft) !important;
+  background-color: var(--palette-primary-muted) !important;
 }
 :root[data-palette-tone] .hover\:bg-violet-50:hover,
 :root[data-palette-tone] .hover\:bg-violet-50\/40:hover,
 :root[data-palette-tone] .hover\:bg-violet-50:hover,
 :root[data-palette-tone] .hover\:bg-violet-100:hover {
-  background-color: var(--palette-primary-soft-hover) !important;
+  background-color: var(--palette-primary-muted-hover) !important;
 }
 :root[data-palette-tone] .bg-slate-950 {
-  background-color: var(--palette-hero) !important;
-  color: var(--palette-hero-text) !important;
+  background-color: var(--palette-hero-background) !important;
+  color: var(--palette-hero-foreground) !important;
 }
 :root[data-palette-tone] .bg-slate-950 .text-slate-400 {
   color: color-mix(
     in srgb,
-    var(--palette-hero-text) 68%,
+    var(--palette-hero-foreground) 68%,
     transparent
   ) !important;
 }
 :root[data-palette-tone] .bg-slate-950\/35 {
   background-color: color-mix(
     in srgb,
-    var(--palette-hero) 35%,
+    var(--palette-hero-background) 35%,
     transparent
   ) !important;
 }
@@ -306,70 +316,37 @@ h3 {
 
 /* Statusfärger behåller sin betydelse men blandas med palettens ytor. */
 :root[data-palette-tone] .bg-red-50 {
-  background-color: color-mix(
-    in srgb,
-    #ef4444 13%,
-    var(--palette-surface)
-  ) !important;
+  background-color: var(--palette-danger-muted) !important;
 }
 :root[data-palette-tone] .hover\:bg-red-100:hover {
-  background-color: color-mix(
-    in srgb,
-    #ef4444 20%,
-    var(--palette-surface)
-  ) !important;
+  background-color: color-mix(in srgb, var(--palette-danger) 20%, var(--palette-danger-muted)) !important;
 }
 :root[data-palette-tone] .bg-amber-50 {
-  background-color: color-mix(
-    in srgb,
-    #f59e0b 13%,
-    var(--palette-surface)
-  ) !important;
+  background-color: var(--palette-warning-muted) !important;
 }
 :root[data-palette-tone] .hover\:bg-amber-100:hover {
-  background-color: color-mix(
-    in srgb,
-    #f59e0b 20%,
-    var(--palette-surface)
-  ) !important;
+  background-color: color-mix(in srgb, var(--palette-warning) 20%, var(--palette-warning-muted)) !important;
 }
 :root[data-palette-tone] .bg-emerald-50,
 :root[data-palette-tone] .bg-emerald-100 {
-  background-color: color-mix(
-    in srgb,
-    #10b981 15%,
-    var(--palette-surface)
-  ) !important;
+  background-color: var(--palette-success-muted) !important;
 }
 :root[data-palette-tone] .border-amber-200 {
-  border-color: color-mix(
-    in srgb,
-    #f59e0b 45%,
-    var(--palette-border)
-  ) !important;
+  border-color: color-mix(in srgb, var(--palette-warning) 45%, var(--palette-border)) !important;
 }
 :root[data-palette-tone] .border-emerald-200 {
-  border-color: color-mix(
-    in srgb,
-    #10b981 45%,
-    var(--palette-border)
-  ) !important;
+  border-color: color-mix(in srgb, var(--palette-success) 45%, var(--palette-border)) !important;
 }
-:root[data-palette-tone="dark"] :is(.text-red-600, .text-red-700) {
-  color: #fca5a5 !important;
+:root[data-palette-tone] :is(.text-red-600, .text-red-700) {
+  color: var(--palette-danger) !important;
 }
-:root[data-palette-tone="dark"]
+:root[data-palette-tone]
   :is(.text-amber-500, .text-amber-600, .text-amber-700, .text-amber-800) {
-  color: #fcd34d !important;
+  color: var(--palette-warning) !important;
 }
-:root[data-palette-tone="dark"]
-  :is(
-    .text-emerald-600,
-    .text-emerald-700,
-    .text-emerald-800,
-    .text-emerald-950
-  ) {
-  color: #6ee7b7 !important;
+:root[data-palette-tone]
+  :is(.text-emerald-600, .text-emerald-700, .text-emerald-800, .text-emerald-950) {
+  color: var(--palette-success) !important;
 }
 
 * {

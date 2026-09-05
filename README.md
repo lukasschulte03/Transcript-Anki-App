@@ -44,6 +44,10 @@ pnpm install
 pnpm desktop:dev
 ```
 
+`pnpm desktop:dev` återanvänder automatiskt en redan körande Lectio-Vite-server
+på port 1420. Det går därför bra att först köra `pnpm dev` i en separat terminal
+och sedan starta Tauri utan att få ett portfel.
+
 En snabb webbversion kan köras med `pnpm dev`. Den använder samma gränssnitt och lokala browserlagring, men Tauri-versionen behövs för extern nätverksåtkomst utan CORS-problem.
 
 ## Bygga Windows-installation
