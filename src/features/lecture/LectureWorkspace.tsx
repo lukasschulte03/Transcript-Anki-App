@@ -87,6 +87,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const [rawTranscript, setRawTranscript] = useState("");
   const [transcriptQuery, setTranscriptQuery] = useState("");
   const [transcriptReplacement, setTranscriptReplacement] = useState("");
+  const [showOnlySuspicious, setShowOnlySuspicious] = useState(false);
   const [lectureSettingsOpen, setLectureSettingsOpen] = useState(false);
   const [qualityReviewOpen, setQualityReviewOpen] = useState(false);
   const transcriptPane = useRef<HTMLDivElement>(null);
@@ -103,11 +104,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   );
   const visibleTranscript = useMemo(() => {
     const query = transcriptQuery.trim().toLocaleLowerCase();
-    if (!query) return transcript;
     return transcript.filter((segment) =>
-      segment.text.toLocaleLowerCase().includes(query),
+      (!showOnlySuspicious || segment.suspicious) &&
+      (!query || segment.text.toLocaleLowerCase().includes(query)),
     );
-  }, [transcript, transcriptQuery]);
+  }, [showOnlySuspicious, transcript, transcriptQuery]);
   const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
   const qualitySummary = suspiciousSegments.reduce<Record<string, number>>(
     (summary, segment) => {
@@ -381,9 +382,10 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setQualityReviewOpen(true)}
+                    onClick={() => setShowOnlySuspicious((current) => !current)}
+                    aria-pressed={showOnlySuspicious}
                   >
-                    Granska {suspiciousSegments.length}
+                    {showOnlySuspicious ? "Visa alla" : `Granska ${suspiciousSegments.length}`}
                   </Button>
                 )}
                 <Button
@@ -452,9 +454,13 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                         className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
                       />
                       {s.suspicious && (
-                        <span className="mt-1 shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                        <button
+                          className="mt-1 shrink-0 rounded bg-[var(--palette-warning-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--palette-warning)]"
+                          onClick={() => setQualityReviewOpen(true)}
+                          title="Granska transkriptkvalitet"
+                        >
                           Kontrollera
-                        </span>
+                        </button>
                       )}
                       {lecture.slidePages?.length && (
                         <Select
