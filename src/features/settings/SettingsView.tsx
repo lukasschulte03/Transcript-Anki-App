@@ -1674,7 +1674,7 @@ function LocalModelManager() {
               </div>
               <div className="mt-0.5 text-xs text-slate-500">
                 {engine?.nvidiaDetected
-                  ? engine.nvidiaName
+                  ? `${engine.nvidiaName}${engine.nvidiaVramTotalMb ? ` · ${formatBytes(engine.nvidiaVramTotalMb * 1024 * 1024)} VRAM` : ""}`
                   : "Inget NVIDIA-kort hittades · CPU fungerar alltid"}
               </div>
             </div>
@@ -1753,6 +1753,9 @@ function LocalModelManager() {
           {settings.localTranscriptionBenchmarks[benchmarkAcceleration] && (
             <span className="w-full text-slate-500">
               Senaste test: {Math.max(1, Math.round(1 / settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.realtimeFactor))}× snabbare än realtid · används för tidsuppskattningar.
+              {settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.gpuUsed && settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb
+                ? ` NVIDIA bekräftad · ${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramUsedMb ?? "?"}/${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb} MB VRAM vid avläsning.`
+                : ""}
             </span>
           )}
         </div>

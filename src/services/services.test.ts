@@ -131,6 +131,7 @@ describe("transkriptionsrekommendation", () => {
         nvidiaRuntimeInstalled: true,
         nvidiaRuntimeReady: true,
         nvidiaRuntimeSize: 1,
+        nvidiaVramTotalMb: 10_240,
       },
     });
     expect(result.model).toBe("large-v3-turbo");
@@ -147,6 +148,7 @@ describe("transkriptionsrekommendation", () => {
         nvidiaRuntimeInstalled: true,
         nvidiaRuntimeReady: false,
         nvidiaRuntimeSize: 1,
+        nvidiaVramTotalMb: 10_240,
       },
     });
     expect(result.model).toBe("base");
@@ -156,7 +158,7 @@ describe("transkriptionsrekommendation", () => {
   it("använder ett matchande lokalt benchmark för tidsuppskattningen", () => {
     const result = recommendLocalTranscription({
       durationSeconds: 60 * 10,
-      engine: { cpuThreads: 8, nvidiaDetected: false, nvidiaName: null, nvidiaRuntimeInstalled: false, nvidiaRuntimeReady: false, nvidiaRuntimeSize: 0 },
+      engine: { cpuThreads: 8, nvidiaDetected: false, nvidiaName: null, nvidiaRuntimeInstalled: false, nvidiaRuntimeReady: false, nvidiaRuntimeSize: 0, nvidiaVramTotalMb: null },
       benchmarks: {
         cpu: {
           model: "base", acceleration: "cpu", realtimeFactor: 0.1,

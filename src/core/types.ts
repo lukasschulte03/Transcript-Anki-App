@@ -165,6 +165,9 @@ export interface LocalTranscriptionBenchmark {
   durationSeconds: number;
   elapsedSeconds: number;
   gpuUsed: boolean;
+  gpuUtilizationPercent?: number;
+  vramUsedMb?: number;
+  vramTotalMb?: number;
   measuredAt: string;
 }
 

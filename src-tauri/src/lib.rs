@@ -620,6 +620,7 @@ struct LocalEngineStatus {
     nvidia_runtime_installed: bool,
     nvidia_runtime_ready: bool,
     nvidia_runtime_size: u64,
+    nvidia_vram_total_mb: Option<u32>,
 }
 
 #[derive(Serialize)]
@@ -631,6 +632,9 @@ struct LocalTranscriptionBenchmark {
     duration_seconds: f64,
     elapsed_seconds: f64,
     gpu_used: bool,
+    gpu_utilization_percent: Option<u32>,
+    vram_used_mb: Option<u32>,
+    vram_total_mb: Option<u32>,
     measured_at: String,
 }
 
@@ -766,6 +770,32 @@ async fn nvidia_gpu_name() -> Option<String> {
         .map(str::to_string)
 }
 
+#[derive(Default)]
+struct NvidiaMetrics {
+    utilization_percent: Option<u32>,
+    vram_used_mb: Option<u32>,
+    vram_total_mb: Option<u32>,
+}
+
+async fn nvidia_metrics() -> NvidiaMetrics {
+    let output = Command::new("nvidia-smi")
+        .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+        .output()
+        .await;
+    let Ok(output) = output else { return NvidiaMetrics::default() };
+    if !output.status.success() { return NvidiaMetrics::default(); }
+    let values = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .map(|line| line.split(',').map(|value| value.trim().parse::<u32>().ok()).collect::<Vec<_>>())
+        .unwrap_or_default();
+    NvidiaMetrics {
+        utilization_percent: values.first().and_then(|value| *value),
+        vram_used_mb: values.get(1).and_then(|value| *value),
+        vram_total_mb: values.get(2).and_then(|value| *value),
+    }
+}
+
 /// Presence of an executable is not enough: a partial CUDA runtime can leave
 /// whisper.cpp silently running on CPU. The binary reports its loaded backend
 /// during `--version`, which is a quick, model-free verification.
@@ -793,6 +823,7 @@ async fn nvidia_runtime_is_ready(runtime_dir: &Path) -> bool {
 async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
     let runtime_dir = nvidia_runtime_dir(app)?;
     let nvidia_name = nvidia_gpu_name().await;
+    let metrics = nvidia_metrics().await;
     let nvidia_runtime_installed = find_file(&runtime_dir, "whisper-cli.exe").is_some();
     Ok(LocalEngineStatus {
         cpu_threads: std::thread::available_parallelism()
@@ -803,6 +834,7 @@ async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
         nvidia_runtime_installed,
         nvidia_runtime_ready: nvidia_runtime_installed && nvidia_runtime_is_ready(&runtime_dir).await,
         nvidia_runtime_size: directory_size(&runtime_dir),
+        nvidia_vram_total_mb: metrics.vram_total_mb,
     })
 }
 
@@ -882,6 +914,7 @@ async fn benchmark_local_engine(
     if use_nvidia { command.arg("-dev").arg("0").arg("-fa"); }
     let result = command.output().await.map_err(|error| format!("Kunde inte starta Whisper-testet: {error}"))?;
     let elapsed_seconds = started.elapsed().as_secs_f64();
+    let metrics = nvidia_metrics().await;
     let report = format!("{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)).to_ascii_lowercase();
     let gpu_used = report.contains("use gpu    = 1") || report.contains("use gpu = 1");
     let _ = fs::remove_file(&wav).await;
@@ -895,6 +928,9 @@ async fn benchmark_local_engine(
     Ok(LocalTranscriptionBenchmark {
         model: model.into(), acceleration, realtime_factor: elapsed_seconds / f64::from(SAMPLE_SECONDS),
         duration_seconds: f64::from(SAMPLE_SECONDS), elapsed_seconds, gpu_used,
+        gpu_utilization_percent: if use_nvidia { metrics.utilization_percent } else { None },
+        vram_used_mb: if use_nvidia { metrics.vram_used_mb } else { None },
+        vram_total_mb: if use_nvidia { metrics.vram_total_mb } else { None },
         measured_at: SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_secs().to_string(),
     })
 }
@@ -1530,6 +1566,7 @@ async fn transcribe_local(
     let mut stderr_output = String::new();
     let mut stdout_open = true;
     let mut stderr_open = true;
+    let mut nvidia_confirmed = false;
     let status = loop {
         tokio::select! {
             line = stdout_lines.next_line(), if stdout_open => match line {
@@ -1539,9 +1576,10 @@ async fn transcribe_local(
                         stdout_output.push('\n');
                     }
                     let lower = line.to_ascii_lowercase();
-                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0")) {
+                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0") || lower.contains("use gpu = 0")) {
                         execution_detail = "NVIDIA kunde inte initieras — kör på CPU.".into();
-                    } else if use_nvidia && lower.contains("use gpu    = 1") {
+                    } else if use_nvidia && (lower.contains("use gpu    = 1") || lower.contains("use gpu = 1")) {
+                        nvidia_confirmed = true;
                         execution_detail = format!(
                             "Kör Whisper på NVIDIA {}.",
                             nvidia_name.as_deref().unwrap_or("GPU")
@@ -1581,13 +1619,14 @@ async fn transcribe_local(
                         stderr_output.push('\n');
                     }
                     let lower = line.to_ascii_lowercase();
-                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0")) {
+                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0") || lower.contains("use gpu = 0")) {
                         execution_detail = "NVIDIA kunde inte initieras — kör på CPU.".into();
                         emit_progress(
                             &app, &job_id, "transcription", label, "transcribing", "active",
                             last_progress_millis, total_millis, Some(execution_detail.clone()),
                         );
-                    } else if use_nvidia && lower.contains("use gpu    = 1") {
+                    } else if use_nvidia && (lower.contains("use gpu    = 1") || lower.contains("use gpu = 1")) {
+                        nvidia_confirmed = true;
                         execution_detail = format!(
                             "Kör Whisper på NVIDIA {}.",
                             nvidia_name.as_deref().unwrap_or("GPU")
@@ -1650,6 +1689,11 @@ async fn transcribe_local(
             "Whisper misslyckades: {}",
             String::from_utf8_lossy(&stderr)
         ));
+    }
+    if use_nvidia && !nvidia_confirmed {
+        // A CUDA-capable binary can still silently fall back on some driver
+        // combinations. Keep the transcript, but make that uncertainty visible.
+        execution_detail = "NVIDIA kunde inte bekräftas i Whisper-utdata; kontrollera prestandatestet eller kör CPU-läget för jämförelse.".into();
     }
     let expected_json_path = output_prefix.with_extension("json");
     emit_progress(

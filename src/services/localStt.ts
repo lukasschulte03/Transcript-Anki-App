@@ -23,6 +23,7 @@ export interface LocalEngineStatus {
   nvidiaRuntimeInstalled: boolean;
   nvidiaRuntimeReady: boolean;
   nvidiaRuntimeSize: number;
+  nvidiaVramTotalMb: number | null;
 }
 
 export async function getLocalEngineStatus() {
@@ -34,6 +35,7 @@ export async function getLocalEngineStatus() {
       nvidiaRuntimeInstalled: false,
       nvidiaRuntimeReady: false,
       nvidiaRuntimeSize: 0,
+      nvidiaVramTotalMb: null,
     } satisfies LocalEngineStatus;
   return invoke<LocalEngineStatus>("local_engine_status");
 }
