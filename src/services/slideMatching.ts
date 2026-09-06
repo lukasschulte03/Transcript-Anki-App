@@ -1,5 +1,8 @@
 import type { TranscriptSegment } from "../core/types";
 
+/** Suggestions below this are too speculative to change navigation automatically. */
+const minimumConfidence = 35;
+
 const terms = (value: string) =>
   new Set(
     value
@@ -33,7 +36,7 @@ export function suggestSlideMappings(
         bestPage = page;
       }
     }
-    if (bestPage >= 0 && bestScore >= 0.12) {
+    if (bestPage >= 0 && bestScore * 100 >= minimumConfidence) {
       mappings[segment.id] = {
         page: bestPage + 1,
         confidence: Math.round(bestScore * 100),

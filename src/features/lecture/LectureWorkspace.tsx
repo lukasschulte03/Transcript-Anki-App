@@ -463,25 +463,35 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                         </button>
                       )}
                       {lecture.slidePages?.length && (
-                        <Select
-                          value={slideMappings[s.id]?.page ?? 0}
-                          onChange={(event) => {
-                            const page = Number(event.target.value);
-                            const next = { ...slideMappings };
-                            if (page) next[s.id] = { page, confidence: 100 };
-                            else delete next[s.id];
-                            updateLecture(lectureId, { slideMappings: next });
-                          }}
-                          className="mt-0.5 h-7 w-24 shrink-0 py-1 text-xs"
-                          title="Kopplad slide"
-                        >
-                          <option value={0}>Ingen slide</option>
-                          {lecture.slidePages.map((_, index) => (
-                            <option key={index} value={index + 1}>
-                              Slide {index + 1}
-                            </option>
-                          ))}
-                        </Select>
+                        <div className="flex shrink-0 items-center gap-1">
+                          {slideMappings[s.id] && (
+                            <span
+                              className="text-[10px] tabular-nums text-[var(--palette-text-subtle)]"
+                              title="Matchningssäkerhet från slide-text"
+                            >
+                              {slideMappings[s.id].confidence}%
+                            </span>
+                          )}
+                          <Select
+                            value={slideMappings[s.id]?.page ?? 0}
+                            onChange={(event) => {
+                              const page = Number(event.target.value);
+                              const next = { ...slideMappings };
+                              if (page) next[s.id] = { page, confidence: 100 };
+                              else delete next[s.id];
+                              updateLecture(lectureId, { slideMappings: next });
+                            }}
+                            className="mt-0.5 h-7 w-24 py-1 text-xs"
+                            title="Kopplad slide"
+                          >
+                            <option value={0}>Ingen slide</option>
+                            {lecture.slidePages.map((_, index) => (
+                              <option key={index} value={index + 1}>
+                                Slide {index + 1}
+                              </option>
+                            ))}
+                          </Select>
+                        </div>
                       )}
                     </div>
                   ))

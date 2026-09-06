@@ -149,6 +149,14 @@ describe("slidekoppling", () => {
     expect(result.one.page).toBe(1);
     expect(result.two.page).toBe(2);
   });
+
+  it("lämnar osäkra matchningar omappade", () => {
+    const result = suggestSlideMappings(
+      ["Mekanisk ventilation, tidalvolym och PEEP"],
+      [{ id: "one", lectureId: "lecture", start: 0, end: 4, text: "patientens anamnes diskuterades" }],
+    );
+    expect(result.one).toBeUndefined();
+  });
 });
 
 describe("kortformat", () => {
