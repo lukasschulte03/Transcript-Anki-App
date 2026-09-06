@@ -17,6 +17,7 @@ import { builtInPalettes, validateTheme } from "../core/theme";
 import { suggestSlideMappings } from "./slideMatching";
 import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
+import { recommendLocalTranscription } from "./transcriptionRecommendation";
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
@@ -116,6 +117,40 @@ describe("transkriptimport", () => {
       '{"transcription":[{"offsets":{"from":0,"to":4000},"text":"Det här viktiga begreppet kommer på tentamen."},{"offsets":{"from":4000,"to":8000},"text":"Det här viktiga begreppet kommer på tentamen."}]}',
     );
     expect(result.segments[1].suspicious).toBe(true);
+  });
+});
+
+describe("transkriptionsrekommendation", () => {
+  it("väljer Large v3 Turbo när NVIDIA-motorn är redo", () => {
+    const result = recommendLocalTranscription({
+      durationSeconds: 60 * 45,
+      engine: {
+        cpuThreads: 20,
+        nvidiaDetected: true,
+        nvidiaName: "RTX",
+        nvidiaRuntimeInstalled: true,
+        nvidiaRuntimeReady: true,
+        nvidiaRuntimeSize: 1,
+      },
+    });
+    expect(result.model).toBe("large-v3-turbo");
+    expect(result.estimate).toContain("NVIDIA");
+  });
+
+  it("väljer Base för ett långt CPU-jobb och varnar om NVIDIA inte är redo", () => {
+    const result = recommendLocalTranscription({
+      durationSeconds: 60 * 150,
+      engine: {
+        cpuThreads: 8,
+        nvidiaDetected: true,
+        nvidiaName: "RTX",
+        nvidiaRuntimeInstalled: true,
+        nvidiaRuntimeReady: false,
+        nvidiaRuntimeSize: 1,
+      },
+    });
+    expect(result.model).toBe("base");
+    expect(result.warning).toContain("inte redo");
   });
 });
 

@@ -614,6 +614,7 @@ struct LocalModelStatus {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalEngineStatus {
+    cpu_threads: usize,
     nvidia_detected: bool,
     nvidia_name: Option<String>,
     nvidia_runtime_installed: bool,
@@ -782,6 +783,9 @@ async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
     let nvidia_name = nvidia_gpu_name().await;
     let nvidia_runtime_installed = find_file(&runtime_dir, "whisper-cli.exe").is_some();
     Ok(LocalEngineStatus {
+        cpu_threads: std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get())
+            .unwrap_or(0),
         nvidia_detected: nvidia_name.is_some(),
         nvidia_name,
         nvidia_runtime_installed,

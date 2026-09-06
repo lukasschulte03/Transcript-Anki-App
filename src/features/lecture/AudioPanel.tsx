@@ -37,12 +37,17 @@ import {
 import { toast } from "../../services/feedbackToast";
 import {
   downloadLocalModel,
+  getLocalEngineStatus,
   getLocalModelStatus,
   prepareAudioForCloudTranscription,
   transcribeWithLocalWhisper,
 } from "../../services/localStt";
-import { enqueueTranscription } from "../../services/transcriptionQueue";
-import { isActiveTranscriptionCancelled } from "../../services/transcriptionQueue";
+import type { LocalEngineStatus } from "../../services/localStt";
+import {
+  enqueueTranscription,
+  isActiveTranscriptionCancelled,
+} from "../../services/transcriptionQueue";
+import { recommendLocalTranscription } from "../../services/transcriptionRecommendation";
 import {
   deleteCredential,
   readCredential,
@@ -96,6 +101,7 @@ export function AudioPanel({
   const updateLecture = useAppStore((s) => s.updateLecture);
   const addMarker = useAppStore((s) => s.addMarker);
   const settings = useAppStore((s) => s.settings);
+  const updateSettings = useAppStore((s) => s.updateSettings);
   const setSegments = useAppStore((s) => s.setSegments);
   const setActiveView = useAppStore((s) => s.setActiveView);
   const upsertJob = useAppStore((s) => s.upsertJob);
@@ -164,6 +170,7 @@ export function AudioPanel({
     "local",
   );
   const [localInstalled, setLocalInstalled] = useState<boolean | null>(null);
+  const [localEngine, setLocalEngine] = useState<LocalEngineStatus | null>(null);
   const [downloading, setDownloading] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(true);
@@ -279,9 +286,18 @@ export function AudioPanel({
   }, [lectureId]);
   useEffect(() => {
     if (!transcribeOpen || transcribeMode !== "local") return;
-    void getLocalModelStatus(settings.localTranscriptionModel ?? "base")
-      .then((status) => setLocalInstalled(status.installed))
-      .catch(() => setLocalInstalled(false));
+    void Promise.all([
+      getLocalModelStatus(settings.localTranscriptionModel ?? "base"),
+      getLocalEngineStatus(),
+    ])
+      .then(([status, engine]) => {
+        setLocalInstalled(status.installed);
+        setLocalEngine(engine);
+      })
+      .catch(() => {
+        setLocalInstalled(false);
+        setLocalEngine(null);
+      });
   }, [transcribeOpen, transcribeMode, settings.localTranscriptionModel]);
   const durationNow = () =>
     (accumulatedMs.current +
@@ -823,6 +839,14 @@ export function AudioPanel({
     (total, part) => total + (part.duration ?? 0),
     0,
   );
+  const transcriptionRecommendation = useMemo(
+    () =>
+      recommendLocalTranscription({
+        durationSeconds: knownDuration,
+        engine: localEngine,
+      }),
+    [knownDuration, localEngine],
+  );
   const current = audioUrl ? partOffset + playbackTime : elapsed;
   const registerDuration = useCallback(
     (element: HTMLAudioElement) => {
@@ -1301,34 +1325,74 @@ export function AudioPanel({
             </button>
           </div>
           {transcribeMode === "local" ? (
-            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
-              <div className="font-semibold">
-                Whisper {settings.localTranscriptionModel ?? "base"}
-              </div>
-              <div className="mt-1">
-                Ljudet lämnar aldrig datorn. Motorn använder
-                {settings.localTranscriptionAcceleration === "nvidia"
-                  ? " NVIDIA-grafikkortet"
-                  : settings.localTranscriptionAcceleration === "cpu"
-                    ? " upp till åtta CPU-trådar"
-                    : " NVIDIA när stödet är installerat, annars CPU"}
-                .
-              </div>
-              {localInstalled === false && (
-                <Button
-                  className="mt-3"
-                  size="sm"
-                  onClick={downloadModel}
-                  disabled={downloading}
-                >
-                  {downloading ? "Laddar ner…" : "Ladda ner modellen"}
-                </Button>
-              )}
-              {localInstalled && (
-                <div className="mt-2 font-semibold">
-                  ✓ Modellen är installerad
+            <div className="space-y-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-slate-900">
+                      Rekommendation: {transcriptionRecommendation.model}
+                    </div>
+                    <p className="mt-1">{transcriptionRecommendation.reason}</p>
+                  </div>
+                  {(settings.localTranscriptionModel ?? "base") !==
+                    transcriptionRecommendation.model && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() =>
+                        updateSettings({
+                          localTranscriptionModel:
+                            transcriptionRecommendation.model,
+                        })
+                      }
+                    >
+                      Välj förslag
+                    </Button>
+                  )}
                 </div>
-              )}
+                <div className="mt-2 font-medium text-slate-600">
+                  {transcriptionRecommendation.estimate} ·{" "}
+                  {transcriptionRecommendation.resources}
+                </div>
+                <p className="mt-1 text-slate-500">
+                  Tiden är en grov uppskattning och påverkas av ljud, dator och
+                  andra program.
+                </p>
+                {transcriptionRecommendation.warning && (
+                  <p className="mt-2 text-amber-700">
+                    {transcriptionRecommendation.warning}
+                  </p>
+                )}
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
+                <div className="font-semibold">
+                  Whisper {settings.localTranscriptionModel ?? "base"}
+                </div>
+                <div className="mt-1">
+                  Ljudet lämnar aldrig datorn. Motorn använder
+                  {settings.localTranscriptionAcceleration === "nvidia"
+                    ? " NVIDIA-grafikkortet"
+                    : settings.localTranscriptionAcceleration === "cpu"
+                      ? " CPU"
+                      : " NVIDIA när stödet är installerat, annars CPU"}
+                  .
+                </div>
+                {localInstalled === false && (
+                  <Button
+                    className="mt-3"
+                    size="sm"
+                    onClick={downloadModel}
+                    disabled={downloading}
+                  >
+                    {downloading ? "Laddar ner…" : "Ladda ner modellen"}
+                  </Button>
+                )}
+                {localInstalled && (
+                  <div className="mt-2 font-semibold">
+                    ✓ Modellen är installerad
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <>

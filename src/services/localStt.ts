@@ -16,6 +16,7 @@ export interface LocalModelStatus {
 }
 
 export interface LocalEngineStatus {
+  cpuThreads: number;
   nvidiaDetected: boolean;
   nvidiaName: string | null;
   nvidiaRuntimeInstalled: boolean;
@@ -26,6 +27,7 @@ export interface LocalEngineStatus {
 export async function getLocalEngineStatus() {
   if (!isTauri())
     return {
+      cpuThreads: navigator.hardwareConcurrency ?? 0,
       nvidiaDetected: false,
       nvidiaName: null,
       nvidiaRuntimeInstalled: false,
