@@ -4,7 +4,7 @@ import { downloadText } from "../lib/utils";
 import { isTauri } from "./platform";
 
 const MAX_EVENTS = 30;
-const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.4.2";
+const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.4.3";
 
 export type DiagnosticEvent = {
   at: string;

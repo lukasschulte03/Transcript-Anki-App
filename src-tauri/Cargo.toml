@@ -1,6 +1,6 @@
 [package]
 name = "lectio"
-version = "0.4.2"
+version = "0.4.3"
 description = "En local-first föreläsningsassistent med Anki-integration"
 authors = ["Lectio contributors"]
 license = "MIT"

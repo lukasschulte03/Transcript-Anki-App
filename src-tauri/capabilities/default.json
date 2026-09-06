@@ -17,7 +17,16 @@
         { "url": "https://www.googleapis.com/*" }
       ]
     },
-    "opener:default",
+    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-default-urls",
+      "allow": [
+        { "url": "https://*" },
+        { "url": "http://*" },
+        { "url": "mailto:*" },
+        { "url": "tel:*" }
+      ]
+    },
     "fs:allow-appdata-read-recursive",
     "fs:allow-appdata-write-recursive"
   ]

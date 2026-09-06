@@ -128,7 +128,7 @@ export function AppNavigation() {
         </button>
         {!collapsed && (
           <div className="mt-3 px-2 text-xs text-[var(--palette-text-subtle)]">
-            Lectio · v0.4.2
+            Lectio · v0.4.3
           </div>
         )}
       </div>
