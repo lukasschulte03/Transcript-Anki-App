@@ -55,10 +55,10 @@ export function WindowTitleBar({ onReportProblem }: { onReportProblem: () => voi
           type="button"
           className="grid h-full w-11 place-items-center text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:bg-[var(--palette-surface-hover)] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--palette-focus-ring)]"
           onClick={() =>
-            void withCurrentWindow(async (window) => {
-              if (await window.isMaximized()) await window.unmaximize();
-              else await window.maximize();
-            }, "Ändring av fönsterstorlek")
+            void withCurrentWindow(
+              (window) => window.toggleMaximize(),
+              "Ändring av fönsterstorlek",
+            )
           }
           aria-label="Maximera eller återställ"
           title="Maximera eller återställ"
