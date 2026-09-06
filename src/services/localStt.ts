@@ -3,7 +3,7 @@ import { appDataDir, join } from "@tauri-apps/api/path";
 import { mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { uid } from "../lib/utils";
 import { isTauri } from "./platform";
-import type { TranscriptionResult } from "./transcription";
+import { flagTranscriptionQuality, type TranscriptionResult } from "./transcription";
 
 export type LocalModel =
   "tiny" | "base" | "small" | "medium" | "large-v3-turbo" | "large-v3";
@@ -146,27 +146,6 @@ export function parseWhisperJson(raw: string): TranscriptionResult {
       text: String(entry.text ?? "").trim(),
     }))
     .filter((segment) => segment.text.length > 0);
-  for (let index = 1; index < segments.length; index++) {
-    if (isLikelyDecoderLoop(segments[index - 1].text, segments[index].text))
-      segments[index].suspicious = true;
-  }
   if (!segments.length) throw new Error("Whisper returnerade inget tal.");
-  return { segments };
-}
-
-function isLikelyDecoderLoop(previous: string, current: string) {
-  const normalize = (value: string) =>
-    value
-      .toLocaleLowerCase("sv")
-      .replace(/[^\p{L}\p{N}\s]/gu, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  const left = normalize(previous);
-  const right = normalize(current);
-  if (!left || !right) return false;
-  if (left === right) return true;
-  if (left.length < 18 || right.length < 18) return false;
-  const shorter = left.length < right.length ? left : right;
-  const longer = left.length < right.length ? right : left;
-  return shorter.length / longer.length > 0.82 && longer.includes(shorter);
+  return { segments: flagTranscriptionQuality(segments) };
 }

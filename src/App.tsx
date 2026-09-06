@@ -1,20 +1,52 @@
 import { Toaster } from "sonner";
-import { useEffect, useState } from "react";
-import { LibrarySidebar } from "./features/library/LibrarySidebar";
-import {
-  LectureWorkspace,
-  ObjectOverview,
-} from "./features/lecture/LectureWorkspace";
-import { CardStudio } from "./features/cards/CardStudio";
-import { SettingsView } from "./features/settings/SettingsView";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useAppStore } from "./core/store";
 import { AppNavigation } from "./components/AppNavigation";
-import { Dashboard } from "./features/dashboard/Dashboard";
 import { ProgressCenter } from "./components/ProgressCenter";
 import { applyPalette, resolvePalette } from "./core/theme";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
 import { WindowTitleBar } from "./components/WindowTitleBar";
+import { FeedbackDialog } from "./components/FeedbackDialog";
+
+const LibrarySidebar = lazy(() =>
+  import("./features/library/LibrarySidebar").then((module) => ({
+    default: module.LibrarySidebar,
+  })),
+);
+const LectureWorkspace = lazy(() =>
+  import("./features/lecture/LectureWorkspace").then((module) => ({
+    default: module.LectureWorkspace,
+  })),
+);
+const ObjectOverview = lazy(() =>
+  import("./features/lecture/LectureWorkspace").then((module) => ({
+    default: module.ObjectOverview,
+  })),
+);
+const CardStudio = lazy(() =>
+  import("./features/cards/CardStudio").then((module) => ({
+    default: module.CardStudio,
+  })),
+);
+const SettingsView = lazy(() =>
+  import("./features/settings/SettingsView").then((module) => ({
+    default: module.SettingsView,
+  })),
+);
+const Dashboard = lazy(() =>
+  import("./features/dashboard/Dashboard").then((module) => ({
+    default: module.Dashboard,
+  })),
+);
+
+function ViewLoader() {
+  return (
+    <main className="ui-app-bg grid min-w-0 flex-1 place-items-center" aria-busy="true">
+      <p className="text-sm text-[var(--palette-text-muted)]">Öppnar vy…</p>
+    </main>
+  );
+}
 
 export default function App() {
   const { nodes, selectedId, activeView, settings, jobs } = useAppStore();
@@ -23,6 +55,8 @@ export default function App() {
     (job) => job.kind === "library" && job.status === "active",
   );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | undefined>();
   useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
@@ -94,31 +128,40 @@ export default function App() {
       }
     };
     const openHelp = () => setShortcutsOpen(true);
+    const openFeedback = (event: Event) => {
+      const detail = (event as CustomEvent<string>).detail;
+      setFeedbackError(typeof detail === "string" ? detail : undefined);
+      setFeedbackOpen(true);
+    };
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("lectio:show-shortcuts", openHelp);
+    window.addEventListener("lectio:report-problem", openFeedback);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("lectio:show-shortcuts", openHelp);
+      window.removeEventListener("lectio:report-problem", openFeedback);
     };
   }, [selected?.type]);
   return (
     <TooltipProvider>
       <div className="ui-app-bg flex h-screen min-h-[640px] w-screen flex-col overflow-hidden text-slate-900">
-        <WindowTitleBar />
+        <WindowTitleBar onReportProblem={() => { setFeedbackError(undefined); setFeedbackOpen(true); }} />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <AppNavigation />
-          {activeView !== "dashboard" && <LibrarySidebar />}
-          {activeView === "dashboard" ? (
-            <Dashboard />
-          ) : activeView === "cards" ? (
-            <CardStudio />
-          ) : activeView === "settings" ? (
-            <SettingsView />
-          ) : selected?.type === "lecture" ? (
-            <LectureWorkspace lectureId={selected.id} />
-          ) : selected ? (
-            <ObjectOverview nodeId={selected.id} />
-          ) : null}
+          <Suspense fallback={<ViewLoader />}>
+            {activeView !== "dashboard" && <LibrarySidebar />}
+            {activeView === "dashboard" ? (
+              <Dashboard />
+            ) : activeView === "cards" ? (
+              <CardStudio />
+            ) : activeView === "settings" ? (
+              <SettingsView />
+            ) : selected?.type === "lecture" ? (
+              <LectureWorkspace lectureId={selected.id} />
+            ) : selected ? (
+              <ObjectOverview nodeId={selected.id} />
+            ) : null}
+          </Suspense>
         </div>
         <Toaster position="bottom-right" richColors closeButton />
         {libraryOperation && (
@@ -138,6 +181,7 @@ export default function App() {
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}
         />
+        <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} initialError={feedbackError} />
       </div>
     </TooltipProvider>
   );

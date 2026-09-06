@@ -24,8 +24,10 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import {
   createCardPrompt,
+  duplicateExplanation,
   generateCardsWithApi,
   parseCardResponse,
+  likelyDuplicate,
 } from "../../services/ai";
 import {
   ensureDeck,
@@ -43,7 +45,23 @@ import {
   readCredential,
   writeCredential,
 } from "../../services/credentials";
-import { toast } from "sonner";
+import { toast } from "../../services/feedbackToast";
+
+function courseIdForLecture(
+  nodes: ReturnType<typeof useAppStore.getState>["nodes"],
+  lectureId: string,
+) {
+  let current = nodes.find((node) => node.id === lectureId);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    if (current.type === "course") return current.id;
+    visited.add(current.id);
+    current = current.parentId
+      ? nodes.find((node) => node.id === current!.parentId)
+      : undefined;
+  }
+  return undefined;
+}
 
 const cardTypes: { id: CardType; label: string }[] = [
   { id: "basic", label: "Fråga / svar" },
@@ -71,9 +89,11 @@ export function CardStudio() {
     selectedId,
     addCards,
     updateCard,
+    updateLecture,
     removeCard,
     pendingAnkiDeletions,
     resolveAnkiNoteDeletion,
+    markAnkiNoteDeletionError,
     updateSettings,
     inheritedContext,
   } = useAppStore();
@@ -113,7 +133,7 @@ export function CardStudio() {
     selectedNode?.type === "lecture" && scopedLectureIds.has(selectedNode.id)
       ? selectedNode.id
       : (scopedLectures[0]?.id ?? "");
-  const [count, setCount] = useState(20);
+  const [density, setDensity] = useState<"few" | "balanced" | "many">("balanced");
   const [types, setTypes] = useState<CardType[]>(["basic", "concept"]);
   const [sources, setSources] = useState({
     transcript: true,
@@ -157,6 +177,64 @@ export function CardStudio() {
   }, [credentialKey, settings.aiMode]);
   const node = nodes.find((n) => n.id === lectureId);
   const lecture = lectures[lectureId];
+  const courseId = useMemo(
+    () => courseIdForLecture(nodes, lectureId),
+    [nodes, lectureId],
+  );
+  const courseCards = useMemo(
+    () =>
+      cards.filter(
+        (card) =>
+          courseId
+            ? courseIdForLecture(nodes, card.lectureId) === courseId
+            : card.lectureId === lectureId,
+      ),
+    [cards, courseId, lectureId, nodes],
+  );
+  const currentDeck = lectureDeckName(nodes, lectureId, settings.defaultDeck);
+  const pendingSyncCount = cards.filter(
+    (card) =>
+      card.lectureId === lectureId &&
+      (card.ankiSyncError ||
+        ((card.status === "approved" || card.status === "synced") &&
+          needsAnkiSync(card, currentDeck))),
+  ).length +
+    pendingAnkiDeletions.filter((pending) => pending.lectureId === lectureId)
+      .length;
+  const syncStatuses = useMemo(
+    () =>
+      scopedLectures.map((lectureNode) => {
+        const deck = lectureDeckName(nodes, lectureNode.id, settings.defaultDeck);
+        const lectureCards = cards.filter((card) => card.lectureId === lectureNode.id);
+        const pendingCards = lectureCards.filter(
+          (card) =>
+            card.ankiSyncError ||
+            ((card.status === "approved" || card.status === "synced") &&
+              needsAnkiSync(card, deck)),
+        );
+        const pendingDeletions = pendingAnkiDeletions.filter(
+          (deletion) => deletion.lectureId === lectureNode.id,
+        );
+        const errors = [
+          ...lectureCards
+            .filter((card) => card.ankiSyncError)
+            .map((card) => ({
+              message: card.ankiSyncError!,
+              at: card.ankiSyncErrorAt ?? "",
+            })),
+          ...pendingDeletions
+            .filter((deletion) => deletion.error)
+            .map((deletion) => ({ message: deletion.error!, at: deletion.updatedAt ?? "" })),
+        ].sort((left, right) => right.at.localeCompare(left.at));
+        return {
+          lecture: lectureNode,
+          pending: pendingCards.length + pendingDeletions.length,
+          lastSyncedAt: lectures[lectureNode.id]?.ankiLastSyncedAt,
+          lastError: errors[0],
+        };
+      }),
+    [cards, lectures, nodes, pendingAnkiDeletions, scopedLectures, settings.defaultDeck],
+  );
   const contextNodeIds = useMemo(() => {
     const chain: string[] = [];
     let current = nodes.find((item) => item.id === lectureId);
@@ -197,15 +275,52 @@ export function CardStudio() {
   const generatedCards = cards.filter(
     (card) => card.lectureId === lectureId && card.status === "generated",
   );
+  const scopedGeneratedCards = cards.filter(
+    (card) => scopedLectureIds.has(card.lectureId) && card.status === "generated",
+  );
   const approvedCards = cards.filter(
     (card) => card.lectureId === lectureId && card.status === "approved",
   );
+  const isBulkScope = selectedNode?.type === "course" || selectedNode?.type === "module";
   const approveAllGenerated = () => {
     if (!generatedCards.length) return;
     generatedCards.forEach((card) =>
       updateCard(card.id, { status: "approved" }),
     );
     toast.success(`${generatedCards.length} kort godkändes`);
+  };
+  const approveAllScopedGenerated = () => {
+    if (!scopedGeneratedCards.length) return;
+    const scopeLabel = selectedNode?.type === "course" ? "kursen" : "modulen";
+    if (!confirm(`Godkänn ${scopedGeneratedCards.length} nya kort i ${scopeLabel}?`)) return;
+    scopedGeneratedCards.forEach((card) => updateCard(card.id, { status: "approved" }));
+    toast.success(`${scopedGeneratedCards.length} kort godkändes i ${scopeLabel}`);
+  };
+  const syncScopedWithPreview = () => {
+    const scopeLabel = selectedNode?.type === "course" ? "kursen" : "modulen";
+    const scoped = cards.filter(
+      (card) =>
+        scopedLectureIds.has(card.lectureId) &&
+        (card.status === "approved" || card.status === "synced"),
+    );
+    const pending = scoped.filter(
+      (card) =>
+        card.ankiSyncError ||
+        needsAnkiSync(
+          card,
+          lectureDeckName(nodes, card.lectureId, settings.defaultDeck),
+        ),
+    );
+    const pendingDeletions = pendingAnkiDeletions.filter((deletion) =>
+      deletion.lectureId ? scopedLectureIds.has(deletion.lectureId) : false,
+    );
+    if (
+      !confirm(
+        `Synka ${scopeLabel}?\\n\\n${scopedLectureIds.size} föreläsningar · ${scoped.length} godkända/synkade kort · ${pending.length} väntande ändringar · ${pendingDeletions.length} väntande borttagningar.${pendingDeletions.length ? `\\n\\nAnki-noter som tas bort:\\n${pendingDeletions.map((deletion) => `Anki-ID ${deletion.ankiId}`).join("\\n")}` : ""}\\n\\nBara dessa objekt påverkas i Anki.`,
+      )
+    )
+      return;
+    void syncApproved(false, scopedLectureIds, false);
   };
   const undoAllApproved = () => {
     if (!approvedCards.length) return;
@@ -254,6 +369,7 @@ export function CardStudio() {
   const contextTokenEstimate = Math.ceil(
     contextPreview.reduce((total, item) => total + item.context.length, 0) / 4,
   );
+  const cardLimit = density === "few" ? 16 : density === "balanced" ? 36 : 64;
   const prompt = useMemo(
     () =>
       node
@@ -273,10 +389,12 @@ export function CardStudio() {
               ? markers.filter((x) => x.lectureId === lectureId)
               : [],
             slideText: sources.slides ? (lecture?.slideText ?? "") : "",
-            count,
+            density,
+            count: cardLimit,
             types,
             preferences,
             cardStyle: inheritedSettings.cardStyle,
+            existingCards: courseCards.map(({ front, back }) => ({ front, back })),
           })
         : "",
     [
@@ -286,24 +404,22 @@ export function CardStudio() {
       lecture?.slideText,
       segments,
       markers,
-      count,
+      density,
       types,
       contextPreview,
       sources,
       preferences,
       inheritedSettings.cardStyle,
+      courseCards,
+      cardLimit,
     ],
   );
   const importResponse = () => {
     try {
-      const parsed = parseCardResponse(response, lectureId);
+      const parsed = parseCardResponse(response, lectureId).slice(0, cardLimit);
       const identity = (front: string, back: string) =>
         `${front}\u0000${back}`.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-      const known = new Set(
-        cards
-          .filter((card) => card.lectureId === lectureId)
-          .map((card) => identity(card.front, card.back)),
-      );
+      const known = new Set(courseCards.map((card) => identity(card.front, card.back)));
       const unique = parsed.filter((card) => {
         const key = identity(card.front, card.back);
         if (known.has(key)) return false;
@@ -311,15 +427,28 @@ export function CardStudio() {
         return true;
       });
       if (!unique.length) {
-        toast.error("Alla importerade kort är redan skapade för föreläsningen");
+        toast.error("Alla importerade kort finns redan i den här kursen");
         return;
       }
-      addCards(unique);
+      const addedIds = addCards(unique);
+      unique.forEach((card, index) => {
+        const earlierImported = unique.slice(0, index).map((candidate, candidateIndex) => ({
+          ...candidate,
+          id: addedIds[candidateIndex],
+        }));
+        const similar = likelyDuplicate(card.front, [...courseCards, ...earlierImported]);
+        if (!similar) return;
+        const terms = duplicateExplanation(card.front, similar);
+        updateCard(addedIds[index], {
+          duplicateWarning: `Liknar “${similar.front}”${terms ? ` · Gemensamma begrepp: ${terms}` : ""}`,
+          duplicateOfId: similar.id,
+        });
+      });
       setResponse("");
       setPromptOpen(false);
       const skipped = parsed.length - unique.length;
       toast.success(
-        `${unique.length} kort importerade${skipped ? ` · ${skipped} dubbletter hoppades över` : ""}`,
+        `${unique.length} kort importerade${skipped ? ` · ${skipped} exakta dubbletter hoppades över` : ""}`,
       );
     } catch (e) {
       toast.error(`Svaret kunde inte läsas: ${String(e)}`);
@@ -352,43 +481,63 @@ export function CardStudio() {
       setBusy(false);
     }
   };
-  const syncApproved = async () => {
+  const syncApproved = async (
+    onlyPending = false,
+    targetLectureIds = new Set([lectureId]),
+    confirmDeletions = true,
+  ) => {
     const eligibleCards = cards.filter(
       (c) =>
-        c.lectureId === lectureId &&
+        targetLectureIds.has(c.lectureId) &&
         (c.status === "approved" || c.status === "synced"),
     );
-    if (!eligibleCards.length && !pendingAnkiDeletions.length)
+    const pendingDeletions = pendingAnkiDeletions.filter((deletion) =>
+      deletion.lectureId ? targetLectureIds.has(deletion.lectureId) : false,
+    );
+    if (!eligibleCards.length && !pendingDeletions.length)
       return toast.error("Godkänn minst ett kort först");
+    if (
+      confirmDeletions &&
+      pendingDeletions.length &&
+      !confirm(
+        `Synken tar bort ${pendingDeletions.length} väntande Anki-not${pendingDeletions.length === 1 ? "ering" : "eringar"}.\n\n${pendingDeletions.map((deletion) => `Anki-ID ${deletion.ankiId}`).join("\n")}`,
+      )
+    )
+      return;
     setBusy(true);
     try {
       await testAnki(settings.ankiUrl);
       let deleted = 0;
       let deletionFailure = "";
-      for (const noteId of pendingAnkiDeletions) {
+      for (const deletion of pendingDeletions) {
         try {
-          await deleteNote(settings.ankiUrl, noteId);
-          resolveAnkiNoteDeletion(noteId);
+          await deleteNote(settings.ankiUrl, deletion.ankiId);
+          resolveAnkiNoteDeletion(deletion.ankiId);
           deleted++;
         } catch (error) {
-          if (!deletionFailure)
-            deletionFailure = error instanceof Error ? error.message : String(error);
+          const message = error instanceof Error ? error.message : String(error);
+          markAnkiNoteDeletionError(deletion.ankiId, message);
+          if (!deletionFailure) deletionFailure = message;
         }
       }
-      const deck = eligibleCards.length
-        ? await ensureDeck(
-            settings.ankiUrl,
-            lectureDeckName(nodes, lectureId, settings.defaultDeck),
-          )
-        : "";
+      const decks = new Map<string, string>();
+      const deckFor = async (id: string) => {
+        const known = decks.get(id);
+        if (known) return known;
+        const deck = await ensureDeck(settings.ankiUrl, lectureDeckName(nodes, id, settings.defaultDeck));
+        decks.set(id, deck);
+        return deck;
+      };
       const cardsToSync = eligibleCards.filter((card) =>
-        needsAnkiSync(card, deck),
+        card.status === "approved" || card.ankiSyncError || !card.ankiId || card.ankiDeck !== lectureDeckName(nodes, card.lectureId, settings.defaultDeck),
       );
       let done = 0;
       const failed: string[] = [];
       let firstFailure = "";
       for (const card of cardsToSync) {
         try {
+          const deck = await deckFor(card.lectureId);
+          if (onlyPending && !needsAnkiSync(card, deck) && !card.ankiSyncError) continue;
           const tags = [...new Set(withoutStructuralTags(card.tags))];
           const id = await syncCard(settings.ankiUrl, deck, { ...card, tags });
           updateCard(card.id, {
@@ -396,13 +545,20 @@ export function CardStudio() {
             ankiId: id,
             ankiDeck: deck,
             tags,
+            ankiSyncError: undefined,
+            ankiSyncErrorAt: undefined,
+            ankiSyncedAt: new Date().toISOString(),
           });
           done++;
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          updateCard(card.id, {
+            ankiSyncError: message,
+            ankiSyncErrorAt: new Date().toISOString(),
+          });
           failed.push(card.front);
           if (!firstFailure) {
-            firstFailure =
-              error instanceof Error ? error.message : String(error);
+            firstFailure = message;
           }
         }
       }
@@ -420,6 +576,8 @@ export function CardStudio() {
         );
       if (deletionFailure)
         toast.error(`Ett borttaget kort kunde inte tas bort i Anki: ${deletionFailure}`);
+      if (done || deleted)
+        targetLectureIds.forEach((id) => updateLecture(id, { ankiLastSyncedAt: new Date().toISOString() }));
     } catch {
       setAnkiHelpOpen(true);
     } finally {
@@ -473,7 +631,12 @@ export function CardStudio() {
           <p className="text-xs text-slate-400">Generera, granska och synka</p>
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="secondary" onClick={syncApproved} disabled={busy}>
+          {pendingSyncCount > 0 && (
+            <Button variant="outline" size="sm" onClick={() => void syncApproved(true)} disabled={busy}>
+              Försök igen ({pendingSyncCount})
+            </Button>
+          )}
+          <Button variant="secondary" onClick={() => void syncApproved()} disabled={busy}>
             <Send className="size-4" /> Synka godkända
           </Button>
         </div>
@@ -483,22 +646,18 @@ export function CardStudio() {
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
             <Sparkles className="size-4 text-violet-500" /> Generera nya kort
           </div>
-          <div className="mt-6">
-            <Label>Antal kort: {count}</Label>
-            <input
-              type="range"
-              min="5"
-              max="60"
-              step="5"
-              value={count}
-              onChange={(e) => setCount(Number(e.target.value))}
-              className="mt-2 w-full accent-violet-600"
-            />
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>Få</span>
-              <span>Många</span>
+          <div className="mt-5">
+            <Label>Hur omfattande ska repetitionen vara?</Label>
+            <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted p-1">
+              {([['few', 'Få'], ['balanced', 'Lagom'], ['many', 'Många']] as const).map(([value, label]) => (
+                <button key={value} onClick={() => setDensity(value)} className={`rounded-md px-2 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${density === value ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>
+              ))}
             </div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">AI:n avgör hur många kort materialet motiverar och undviker utfyllnad.</p>
           </div>
+          <details className="mt-5 rounded-lg border border-border bg-card px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Avancerat: korttyper, källor och kvalitetsval</summary>
+            <div className="pt-1">
           <div className="mt-6">
             <Label>Korttyper</Label>
             <div className="space-y-2">
@@ -653,6 +812,8 @@ export function CardStudio() {
               ))}
             </div>
           </div>
+            </div>
+          </details>
           <Button
             className="mt-6 w-full"
             disabled={!types.length}
@@ -662,6 +823,37 @@ export function CardStudio() {
           </Button>
         </aside>
         <main className="ui-app-bg min-w-0 overflow-auto p-6">
+          <details
+            className="mb-4 rounded-lg border border-border bg-card"
+            open={syncStatuses.some((status) => status.pending || status.lastError)}
+          >
+            <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">
+              Anki-synkstatus
+              <span className="ml-2 text-xs font-normal text-muted-foreground">
+                {syncStatuses.reduce((total, status) => total + status.pending, 0)} väntande
+              </span>
+            </summary>
+            <div className="border-t border-border">
+              {syncStatuses.map((status) => (
+                <div key={status.lecture.id} className="grid gap-1 border-b border-border px-4 py-3 last:border-b-0 sm:grid-cols-[minmax(10rem,1fr)_auto_auto] sm:items-center sm:gap-4">
+                  <span className="truncate text-sm font-medium text-foreground">{status.lecture.title}</span>
+                  <span className={status.pending ? "text-xs text-[var(--palette-warning)]" : "text-xs text-muted-foreground"}>
+                    {status.pending ? `${status.pending} väntande` : "Inga väntande ändringar"}
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {status.lastSyncedAt
+                      ? `Senast synkad ${new Date(status.lastSyncedAt).toLocaleString("sv-SE")}`
+                      : "Aldrig synkad"}
+                  </span>
+                  {status.lastError && (
+                    <p className="sm:col-span-3 text-xs leading-5 text-destructive" title={status.lastError.message}>
+                      Senaste fel: {status.lastError.message}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </details>
           <div className="mb-4 flex items-center justify-between">
             <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
               {(["all", "generated", "approved", "synced"] as const).map(
@@ -687,6 +879,27 @@ export function CardStudio() {
             </span>
           </div>
           <div className="mb-4 flex flex-wrap items-center gap-2">
+            {isBulkScope && (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={approveAllScopedGenerated}
+                disabled={!scopedGeneratedCards.length}
+              >
+                <CheckCheck className="size-3.5" /> Godkänn alla i {selectedNode?.type === "course" ? "kursen" : "modulen"}
+                {scopedGeneratedCards.length ? ` (${scopedGeneratedCards.length})` : ""}
+              </Button>
+            )}
+            {isBulkScope && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={syncScopedWithPreview}
+                disabled={busy}
+              >
+                <Send className="size-3.5" /> Synka godkända i {selectedNode?.type === "course" ? "kursen" : "modulen"}
+              </Button>
+            )}
             <Button
               variant="secondary"
               size="sm"
@@ -717,11 +930,12 @@ export function CardStudio() {
           </div>
           <div className="grid gap-3">
             {lectureCards.map((card) => (
-              <CardRow
-                key={card.id}
-                card={card}
-                update={updateCard}
-                remove={removeCard}
+            <CardRow
+              key={card.id}
+              card={card}
+              update={updateCard}
+              remove={removeCard}
+              cards={cards}
               />
             ))}
             {!lectureCards.length && (
@@ -927,10 +1141,12 @@ function CardRow({
   card,
   update,
   remove,
+  cards,
 }: {
   card: Flashcard;
   update: (id: string, p: Partial<Flashcard>) => void;
   remove: (id: string) => void;
+  cards: Flashcard[];
 }) {
   const [editing, setEditing] = useState(false);
   const updateContent = (patch: Partial<Flashcard>) =>
@@ -948,6 +1164,21 @@ function CardRow({
             <CheckCheck className="size-4" />
           ) : (
             <Check className="size-4" />
+          )}
+          {card.duplicateWarning && (
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-[var(--palette-warning-muted)] px-2.5 py-2 text-xs text-[var(--palette-warning)]">
+              <span>{card.duplicateWarning}</span>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => update(card.id, { duplicateWarning: undefined, duplicateOfId: undefined })}>Behåll ändå</button>
+              {card.duplicateOfId && cards.some((candidate) => candidate.id === card.duplicateOfId) && (
+                <button type="button" className="font-medium underline underline-offset-2" onClick={() => {
+                  const original = cards.find((candidate) => candidate.id === card.duplicateOfId);
+                  if (!original) return;
+                  update(original.id, { back: original.back.trim() === card.back.trim() ? original.back : `${original.back}\n\n${card.back}` });
+                  remove(card.id);
+                }}>Slå ihop</button>
+              )}
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => remove(card.id)}>Radera nya</button>
+            </div>
           )}
         </div>
         <div className="min-w-0 flex-1">
@@ -1008,6 +1239,11 @@ function CardRow({
               </span>
             ))}
           </div>
+          {card.ankiSyncError && (
+            <p className="mt-2 text-xs leading-5 text-[var(--palette-danger)]">
+              Synkfel: {card.ankiSyncError}
+            </p>
+          )}
         </div>
         <div className="flex gap-1">
           <Button

@@ -1,7 +1,15 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+let pdfRuntime: Promise<typeof import("pdfjs-dist")> | undefined;
 
-GlobalWorkerOptions.workerSrc = pdfWorker;
+async function loadPdfRuntime() {
+  pdfRuntime ??= Promise.all([
+    import("pdfjs-dist"),
+    import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+  ]).then(([pdf, worker]) => {
+    pdf.GlobalWorkerOptions.workerSrc = worker.default;
+    return pdf;
+  });
+  return pdfRuntime;
+}
 
 export function formatSlideText(pages: string[]) {
   return pages
@@ -13,6 +21,7 @@ export function formatSlideText(pages: string[]) {
 }
 
 export async function extractPdfPages(blob: Blob): Promise<string[]> {
+  const { getDocument } = await loadPdfRuntime();
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const task = getDocument({ data: bytes });
   try {

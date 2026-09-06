@@ -16,6 +16,8 @@ import {
   Sparkles,
   Zap,
   HardDrive,
+  LoaderCircle,
+  Unplug,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
@@ -24,11 +26,18 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import { getDecks, testAnki } from "../../services/anki";
-import { toast } from "sonner";
+import { toast } from "../../services/feedbackToast";
 import { strFromU8, strToU8, unzip, zip } from "fflate";
 import { db } from "../../core/database";
 import { confirmStorageForImport, downloadBlob } from "../../lib/utils";
-import type { StoredAsset, ThemePalette } from "../../core/types";
+import type { LibraryBackup, StoredAsset, ThemePalette } from "../../core/types";
+import {
+  connectGoogleDrive,
+  disconnectGoogleDrive,
+  syncErrorMessage,
+  syncProviderOptions,
+} from "../../services/sync";
+import { isTauri } from "../../services/platform";
 import {
   builtInPalettes,
   defaultCustomPalette,
@@ -65,6 +74,9 @@ const transcriptionDefaults = {
   },
 } as const;
 
+const MAX_LIBRARY_IMPORT_BYTES = 1536 * 1024 * 1024;
+const MAX_LIBRARY_ASSETS = 5_000;
+
 function validateLibraryPayload(data: Record<string, unknown>) {
   if (data.version !== 1)
     throw new Error("Exporten har en version som Lectio inte kan läsa");
@@ -74,6 +86,56 @@ function validateLibraryPayload(data: Record<string, unknown>) {
   }
   if (!data.lectures || typeof data.lectures !== "object")
     throw new Error("Exporten saknar föreläsningsdata");
+  const nodes = data.nodes as Array<unknown>;
+  if (nodes.length > 5_000)
+    throw new Error("Exporten innehåller för många biblioteksobjekt");
+  const parentById = new Map<string, string | null>();
+  for (const entry of nodes) {
+    if (!entry || typeof entry !== "object")
+      throw new Error("Exporten innehåller ett ogiltigt biblioteksobjekt");
+    const node = entry as { id?: unknown; parentId?: unknown };
+    if (
+      typeof node.id !== "string" ||
+      !node.id ||
+      (node.parentId !== null && typeof node.parentId !== "string") ||
+      parentById.has(node.id)
+    )
+      throw new Error("Exporten innehåller ogiltiga eller dubbla objekt-ID:n");
+    parentById.set(node.id, node.parentId ?? null);
+  }
+  for (const [id, parentId] of parentById) {
+    if (parentId && !parentById.has(parentId))
+      throw new Error(`Biblioteksobjektet ${id} har en saknad överordnad nivå`);
+  }
+  for (const id of parentById.keys()) {
+    const visited = new Set<string>();
+    let current: string | null = id;
+    while (current) {
+      if (visited.has(current))
+        throw new Error("Exporten innehåller en cirkulär biblioteksstruktur");
+      visited.add(current);
+      current = parentById.get(current) ?? null;
+    }
+  }
+}
+
+function validateAssetManifest(
+  manifest: Array<Omit<StoredAsset, "blob"> & { path: string }>,
+  archive: Record<string, Uint8Array>,
+) {
+  if (manifest.length > MAX_LIBRARY_ASSETS)
+    throw new Error(`Exporten innehåller fler än ${MAX_LIBRARY_ASSETS} mediafiler`);
+  for (const item of manifest) {
+    if (
+      !item.id ||
+      !item.lectureId ||
+      !item.path.startsWith("media/") ||
+      item.path.includes("..") ||
+      !archive[item.path]
+    ) {
+      throw new Error("Exporten innehåller en ogiltig mediasökväg");
+    }
+  }
 }
 
 const zipAsync = (files: Record<string, Uint8Array>) =>
@@ -90,7 +152,7 @@ const unzipAsync = (data: Uint8Array) =>
 
 export function SettingsView() {
   const store = useAppStore();
-  const { settings, nodes, updateSettings, importLibrary, upsertJob } = store;
+  const { settings, nodes, updateSettings, importLibrary, restoreLibraryBackup, upsertJob } = store;
   const [tab, setTab] = useState("profile");
   const [ankiOk, setAnkiOk] = useState(false);
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
@@ -98,6 +160,7 @@ export function SettingsView() {
   const [paletteDraft, setPaletteDraft] =
     useState<ThemePalette>(defaultCustomPalette);
   const [libraryBusy, setLibraryBusy] = useState(false);
+  const [cloudConnectBusy, setCloudConnectBusy] = useState(false);
   const storageSummary = useLiveQuery(async () => {
     const [assets, sessions, chunks] = await Promise.all([
       db.assets.toArray(),
@@ -136,6 +199,51 @@ export function SettingsView() {
       ),
     };
   }, [nodes]);
+  const backups = useLiveQuery(
+    () => db.backups.orderBy("createdAt").reverse().toArray(),
+    [],
+  );
+  const createBackup = async (reason: LibraryBackup["reason"]) => {
+    const snapshot = useAppStore.getState();
+    const assetCount = await db.assets.count();
+    await db.backups.put({
+      id: crypto.randomUUID(),
+      createdAt: new Date().toISOString(),
+      reason,
+      nodes: snapshot.nodes,
+      lectures: snapshot.lectures,
+      segments: snapshot.segments,
+      markers: snapshot.markers,
+      cards: snapshot.cards,
+      settings: snapshot.settings,
+      assetCount,
+    });
+    const all = await db.backups.orderBy("createdAt").toArray();
+    const limit = Math.max(3, Math.min(50, snapshot.settings.backupLimit ?? 10));
+    if (all.length > limit)
+      await db.backups.bulkDelete(all.slice(0, -limit).map((backup) => backup.id));
+  };
+  const setBackupLimit = async (backupLimit: number) => {
+    updateSettings({ backupLimit });
+    const all = await db.backups.orderBy("createdAt").toArray();
+    if (all.length > backupLimit)
+      await db.backups.bulkDelete(all.slice(0, -backupLimit).map((backup) => backup.id));
+  };
+  const restoreBackup = async (backup: LibraryBackup) => {
+    const current = useAppStore.getState();
+    const preview = [
+      `Återställ metadata från ${new Date(backup.createdAt).toLocaleString("sv-SE")}?`,
+      "",
+      `Nuvarande: ${current.nodes.length} objekt, ${current.segments.length} transkriptsegment, ${current.cards.length} kort.`,
+      `Säkerhetskopia: ${backup.nodes.length} objekt, ${backup.segments.length} transkriptsegment, ${backup.cards.length} kort.`,
+      "",
+      "Ljud, PDF:er och andra media ersätts inte. Nuvarande metadata sparas först som en ny säkerhetskopia.",
+    ].join("\\n");
+    if (!confirm(preview)) return;
+    await createBackup("manual");
+    restoreLibraryBackup(backup);
+    toast.success("Bibliotekets metadata återställdes");
+  };
   const clearInterruptedRecordings = async () => {
     const sessions = storageSummary?.interruptedSessions ?? [];
     if (!sessions.length) return;
@@ -160,6 +268,49 @@ export function SettingsView() {
       },
     );
     toast.success("Avbrutna inspelningar rensades");
+  };
+  const connectCloudAccount = async () => {
+    if (settings.cloudSync.provider !== "google-drive") {
+      toast.error("Google Drive är den enda tillgängliga direktanslutningen just nu.");
+      return;
+    }
+    setCloudConnectBusy(true);
+    try {
+      const connection = await connectGoogleDrive();
+      updateSettings({
+        cloudSync: {
+          ...settings.cloudSync,
+          accountLabel: connection.accountLabel,
+          connectedAt: new Date().toISOString(),
+        },
+      });
+      toast.success(`Google Drive anslöts: ${connection.accountLabel}`);
+    } catch (error) {
+      toast.error(syncErrorMessage(error, "Kunde inte ansluta Google Drive."));
+    } finally {
+      setCloudConnectBusy(false);
+    }
+  };
+  const disconnectCloudAccount = async () => {
+    if (settings.cloudSync.provider !== "google-drive") return;
+    if (!confirm("Koppla bort Google Drive från Lectio? Den lokala informationen behålls.")) return;
+    setCloudConnectBusy(true);
+    try {
+      await disconnectGoogleDrive();
+      updateSettings({
+        cloudSync: {
+          ...settings.cloudSync,
+          accountLabel: undefined,
+          connectedAt: undefined,
+          lastSyncedAt: undefined,
+        },
+      });
+      toast.success("Google Drive kopplades bort från Lectio.");
+    } catch (error) {
+      toast.error(syncErrorMessage(error, "Kunde inte koppla bort Google Drive."));
+    } finally {
+      setCloudConnectBusy(false);
+    }
   };
   const selectedPalette = resolvePalette(
     settings.selectedPaletteId,
@@ -311,10 +462,15 @@ export function SettingsView() {
   };
   const importAll = async (file?: File) => {
     if (!file || libraryBusy) return;
+    if (file.size > MAX_LIBRARY_IMPORT_BYTES) {
+      toast.error("Importfilen är större än 1,5 GB. Dela upp biblioteket eller importera i mindre delar.");
+      return;
+    }
     if (!(await confirmStorageForImport(file, "biblioteksimporten"))) return;
     setLibraryBusy(true);
     const jobId = "library:import";
     try {
+      await createBackup("import");
       upsertJob({
         id: jobId,
         kind: "library",
@@ -343,6 +499,7 @@ export function SettingsView() {
           const manifest = JSON.parse(
             strFromU8(archive["assets.json"]),
           ) as Array<Omit<StoredAsset, "blob"> & { path: string }>;
+          validateAssetManifest(manifest, archive);
           const total = manifest.length + 1;
           await db.transaction("rw", db.assets, async () => {
             for (const [index, item] of manifest.entries()) {
@@ -404,6 +561,7 @@ export function SettingsView() {
     { id: "general", label: "Generellt", icon: Languages },
     { id: "transcription", label: "Transkribering", icon: AudioLines },
     { id: "anki", label: "Anki", icon: PlugZap },
+    { id: "sync", label: "Synk", icon: DownloadCloud },
   ];
   return (
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
@@ -615,6 +773,112 @@ export function SettingsView() {
                       </Button>
                     )}
                     <LocalAiStorageSummary />
+                  </div>
+                </div>
+              </Section>
+            )}
+            {tab === "sync" && (
+              <Section
+                title="Direkt molnsynk"
+                description="Koppla ditt eget konto direkt. Lectio kräver ingen separat molnapp och lagrar inga lösenord."
+              >
+                <div className="space-y-6">
+                  <Field label="Molnlagring">
+                    <Select
+                      value={settings.cloudSync.provider}
+                      onChange={(event) =>
+                        updateSettings({
+                          cloudSync: {
+                            ...settings.cloudSync,
+                            provider: event.target.value as typeof settings.cloudSync.provider,
+                          },
+                        })
+                      }
+                    >
+                      {syncProviderOptions.map((provider) => (
+                        <option key={provider.id} value={provider.id}>
+                          {provider.label}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <p className="-mt-4 text-xs leading-5 text-[var(--palette-text-muted)]">
+                    {syncProviderOptions.find((provider) => provider.id === settings.cloudSync.provider)?.description}
+                  </p>
+
+                  <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
+                    <p className="text-sm font-medium text-[var(--palette-text)]">Kontokoppling</p>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
+                      Du loggar in i tjänstens säkra webbfönster och kan när som helst koppla bort kontot. Åtkomsttoken sparas endast i Windows Credential Manager.
+                    </p>
+                    <div className="mt-4 flex flex-wrap items-center gap-2">
+                      {settings.cloudSync.provider === "google-drive" && settings.cloudSync.connectedAt ? (
+                        <>
+                          <span className="inline-flex items-center gap-1.5 rounded-md bg-[var(--palette-success-muted)] px-2 py-1 text-xs font-medium text-[var(--palette-success)]">
+                            <CheckCircle2 className="size-3.5" />
+                            Ansluten{settings.cloudSync.accountLabel ? ` · ${settings.cloudSync.accountLabel}` : ""}
+                          </span>
+                          <Button variant="secondary" size="sm" disabled={cloudConnectBusy} onClick={() => void disconnectCloudAccount()}>
+                            {cloudConnectBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Unplug className="size-3.5" />}
+                            Koppla bort
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={cloudConnectBusy || settings.cloudSync.provider !== "google-drive" || !isTauri()}
+                            onClick={() => void connectCloudAccount()}
+                          >
+                            {cloudConnectBusy && <LoaderCircle className="size-3.5 animate-spin" />}
+                            Koppla Google Drive
+                          </Button>
+                          <span className="text-xs text-[var(--palette-text-subtle)]">
+                            {!isTauri()
+                              ? "Öppna desktopappen för att koppla ett konto"
+                              : settings.cloudSync.provider === "google-drive"
+                                ? "Öppnar en säker Google-inloggning i din webbläsare"
+                                : "OneDrive och Dropbox kommer efter Google Drive"}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div><div className="text-sm font-semibold text-slate-800">Lokala säkerhetskopior</div><p className="mt-1 text-xs leading-5 text-slate-500">Metadata sparas före import och radering. Ljud och PDF-filer dupliceras inte.</p></div>
+                      <Button variant="outline" size="sm" onClick={() => void createBackup("manual").then(() => toast.success("Säkerhetskopia skapades"))}>Skapa nu</Button>
+                    </div>
+                    <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-200 pt-3 text-xs">
+                      <span className="text-slate-500">Behåll de senaste säkerhetskopiorna</span>
+                      <Select className="h-8 w-20 py-1 text-xs" value={settings.backupLimit ?? 10} onChange={(event) => void setBackupLimit(Number(event.target.value))}>
+                        {[3, 5, 10, 20, 50].map((limit) => <option key={limit} value={limit}>{limit}</option>)}
+                      </Select>
+                    </div>
+                    {backups?.length ? <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">{backups.slice(0, settings.backupLimit ?? 10).map((backup) => <div key={backup.id} className="flex items-center justify-between gap-3 text-xs"><span className="min-w-0 text-slate-600">{new Date(backup.createdAt).toLocaleString("sv-SE")} · {backup.reason === "import" ? "före import" : backup.reason === "deletion" ? "före radering" : "manuell"} · ≈{Math.max(1, Math.ceil(JSON.stringify(backup).length / 1024))} kB metadata</span><Button variant="ghost" size="xs" onClick={() => void restoreBackup(backup)}>Förhandsgranska och återställ</Button></div>)}</div> : <p className="mt-3 text-xs text-slate-400">Inga säkerhetskopior ännu.</p>}
+                  </div>
+
+                  <Field label="Mapp i vald tjänst">
+                    <Input
+                      value={settings.cloudSync.remotePath}
+                      onChange={(event) =>
+                        updateSettings({
+                          cloudSync: { ...settings.cloudSync, remotePath: event.target.value },
+                        })
+                      }
+                      placeholder="Rotmappen (standard)"
+                    />
+                  </Field>
+                  <p className="-mt-4 text-xs leading-5 text-[var(--palette-text-muted)]">
+                    Lämna tomt för att använda den valda tjänstens rot. Skriv exempelvis <span className="font-medium text-[var(--palette-text)]">Lectio</span> för en egen undermapp.
+                  </p>
+
+                  <div className="border-t border-[var(--palette-border)] pt-5">
+                    <p className="text-sm font-medium text-[var(--palette-text)]">Nästa steg</p>
+                    <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
+                      Synkmotorn använder ett leverantörsoberoende, inkrementellt format för mediafiler och metadata. Samma konto och mapp kan sedan kopplas i mobilappen utan någon separat molnklient.
+                    </p>
                   </div>
                 </div>
               </Section>

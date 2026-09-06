@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, Download, LoaderCircle, X } from "lucide-react";
+import { Check, CircleX, Download, LoaderCircle, X } from "lucide-react";
 import { useEffect } from "react";
 import { useAppStore } from "../core/store";
 import type {
@@ -53,7 +53,9 @@ function JobRow({ job }: { job: BackgroundJob }) {
       // The native worker emits its own actionable error when applicable.
     }
   };
-  const Icon = active
+  const Icon = job.status === "error"
+    ? CircleX
+    : active
     ? job.kind === "download"
       ? Download
       : LoaderCircle
@@ -68,7 +70,7 @@ function JobRow({ job }: { job: BackgroundJob }) {
     <div className="w-80 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
       <div className="flex items-start gap-2.5">
         <Icon
-          className={`mt-0.5 size-4 shrink-0 ${active && job.kind === "transcription" ? "animate-spin text-indigo-600" : "text-slate-500"}`}
+          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active && job.kind === "transcription" ? "animate-spin text-indigo-600" : "text-slate-500"}`}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">

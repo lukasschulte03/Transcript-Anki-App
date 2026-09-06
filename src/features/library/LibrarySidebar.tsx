@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import {
   BookOpen,
   ChevronDown,
   ChevronRight,
   FileText,
+  GripVertical,
   GraduationCap,
   Layers3,
   MoreHorizontal,
@@ -14,7 +15,11 @@ import {
   Trash2,
 } from "lucide-react";
 import type { LibraryNode, NodeType } from "../../core/types";
-import { useAppStore } from "../../core/store";
+import {
+  canMoveLibraryNode,
+  canReorderLibraryNode,
+  useAppStore,
+} from "../../core/store";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import {
@@ -25,6 +30,7 @@ import {
 } from "../../components/ui/DropdownMenu";
 import { Input, Label } from "../../components/ui/Form";
 import { cn, formatTime } from "../../lib/utils";
+import { toast } from "../../services/feedbackToast";
 
 const iconByType = {
   workspace: GraduationCap,
@@ -42,12 +48,24 @@ const labelByType: Record<NodeType, string> = {
   lecture: "Föreläsning",
 };
 
+const sortNodes = (items: LibraryNode[]) =>
+  [...items].sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
+
 type CreateRequest = { parentId: string; type: NodeType };
 type SearchResult = {
   node: LibraryNode;
   source: string;
   preview: string;
   time?: number;
+};
+
+type TreeDragHandlers = {
+  draggedNodeId: string | null;
+  dropTargetId: string | null;
+  onDragStart: (event: DragEvent<HTMLElement>, nodeId: string) => void;
+  onDragEnd: () => void;
+  onDragOver: (event: DragEvent<HTMLElement>, targetId: string) => void;
+  onDrop: (event: DragEvent<HTMLElement>, targetId: string) => void;
 };
 
 export function LibrarySidebar() {
@@ -61,6 +79,8 @@ export function LibrarySidebar() {
     settings,
     updateSettings,
     addNode,
+    moveNode,
+    reorderNode,
     selectNode,
     removeNode,
   } = useAppStore();
@@ -69,10 +89,12 @@ export function LibrarySidebar() {
     null,
   );
   const [title, setTitle] = useState("");
+  const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
   const root = nodes.find((node) => node.type === "workspace") ?? nodes[0];
-  const courses = nodes.filter(
-    (node) => node.type === "course" && node.parentId === root?.id,
+  const courses = sortNodes(
+    nodes.filter((node) => node.type === "course" && node.parentId === root?.id),
   );
 
   const results = useMemo(() => {
@@ -133,6 +155,53 @@ export function LibrarySidebar() {
     setCreateRequest(null);
   };
 
+  const onDragStart = (event: DragEvent<HTMLElement>, nodeId: string) => {
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", nodeId);
+    setDraggedNodeId(nodeId);
+  };
+  const onDragEnd = () => {
+    setDraggedNodeId(null);
+    setDropTargetId(null);
+  };
+  const onDragOver = (event: DragEvent<HTMLElement>, targetId: string) => {
+    const nodeId = draggedNodeId ?? event.dataTransfer.getData("text/plain");
+    if (
+      !nodeId ||
+      (!canMoveLibraryNode(nodes, nodeId, targetId) &&
+        !canReorderLibraryNode(nodes, nodeId, targetId))
+    )
+      return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    setDropTargetId(targetId);
+  };
+  const onDrop = (event: DragEvent<HTMLElement>, targetId: string) => {
+    event.preventDefault();
+    const nodeId = draggedNodeId ?? event.dataTransfer.getData("text/plain");
+    const moved = nodeId
+      ? canMoveLibraryNode(nodes, nodeId, targetId)
+        ? moveNode(nodeId, targetId)
+        : reorderNode(nodeId, targetId)
+      : false;
+    if (moved) {
+      const movedNode = nodes.find((node) => node.id === nodeId);
+      const target = nodes.find((node) => node.id === targetId);
+      toast.success(
+        `Flyttade ${movedNode?.title ?? "objektet"} till ${target?.title ?? "ny plats"}`,
+      );
+    }
+    onDragEnd();
+  };
+  const dragHandlers: TreeDragHandlers = {
+    draggedNodeId,
+    dropTargetId,
+    onDragStart,
+    onDragEnd,
+    onDragOver,
+    onDrop,
+  };
+
   useEffect(() => {
     const focusSearch = () => {
       if (settings.librarySidebarCollapsed)
@@ -169,8 +238,18 @@ export function LibrarySidebar() {
 
   return (
     <aside className="flex h-full w-[286px] shrink-0 flex-col border-r border-slate-200/80 bg-white">
-      <div className="flex h-16 items-center justify-between px-6">
-        <div className="text-sm font-semibold text-slate-800">Mina studier</div>
+      <div
+        className={cn(
+          "flex h-16 items-center justify-between px-6 transition-colors",
+          dropTargetId === root?.id &&
+            "bg-[var(--palette-primary-muted)] ring-1 ring-inset ring-[var(--palette-primary)]",
+        )}
+        onDragOver={(event) => root && onDragOver(event, root.id)}
+        onDrop={(event) => root && onDrop(event, root.id)}
+      >
+        <div className="text-sm font-semibold text-slate-800">
+          {dropTargetId === root?.id ? "Släpp kursen här" : "Mina studier"}
+        </div>
         <div className="flex items-center gap-1">
           <Button
             variant="ghost"
@@ -267,6 +346,7 @@ export function LibrarySidebar() {
               onSelect={selectNode}
               onCreate={setCreateRequest}
               onRemove={removeNode}
+              {...dragHandlers}
             />
           ))
         ) : (
@@ -339,6 +419,12 @@ function CourseItem({
   onSelect,
   onCreate,
   onRemove,
+  draggedNodeId,
+  dropTargetId,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   course: LibraryNode;
   nodes: LibraryNode[];
@@ -346,18 +432,23 @@ function CourseItem({
   onSelect: (id: string) => void;
   onCreate: (request: CreateRequest) => void;
   onRemove: (id: string) => void;
-}) {
+} & TreeDragHandlers) {
   const [expanded, setExpanded] = useState(true);
-  const modules = nodes.filter(
-    (node) => node.type === "module" && node.parentId === course.id,
+  const modules = sortNodes(
+    nodes.filter((node) => node.type === "module" && node.parentId === course.id),
   );
   return (
     <div className="mb-1">
       <div
         className={cn(
-          "group flex h-10 items-center rounded-xl",
+          "group flex h-10 items-center rounded-xl transition-[background-color,box-shadow,opacity]",
           selectedId === course.id ? "ui-selected" : "text-slate-700 ui-hover",
+          draggedNodeId === course.id && "opacity-45",
+          dropTargetId === course.id &&
+            "bg-[var(--palette-primary-muted)] ring-2 ring-[var(--palette-primary)]",
         )}
+        onDragOver={(event) => onDragOver(event, course.id)}
+        onDrop={(event) => onDrop(event, course.id)}
       >
         <button
           onClick={() => setExpanded(!expanded)}
@@ -370,9 +461,14 @@ function CourseItem({
           )}
         </button>
         <button
+          draggable
+          onDragStart={(event) => onDragStart(event, course.id)}
+          onDragEnd={onDragEnd}
           onClick={() => onSelect(course.id)}
-          className="flex min-w-0 flex-1 items-center gap-2 py-2 text-left text-sm font-semibold"
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 py-2 text-left text-sm font-semibold active:cursor-grabbing"
+          title="Dra kursen till Mina studier"
         >
+          <GripVertical className="size-3.5 shrink-0 text-[var(--palette-text-subtle)] opacity-0 transition-opacity group-hover:opacity-100" />
           <BookOpen className="size-4 shrink-0 text-violet-500" />
           <span className="truncate">{course.title}</span>
         </button>
@@ -406,6 +502,12 @@ function CourseItem({
                 onSelect={onSelect}
                 onCreate={onCreate}
                 onRemove={onRemove}
+                draggedNodeId={draggedNodeId}
+                dropTargetId={dropTargetId}
+                onDragStart={onDragStart}
+                onDragEnd={onDragEnd}
+                onDragOver={onDragOver}
+                onDrop={onDrop}
               />
             ))
           ) : (
@@ -429,6 +531,12 @@ function ModuleItem({
   onSelect,
   onCreate,
   onRemove,
+  draggedNodeId,
+  dropTargetId,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDrop,
 }: {
   module: LibraryNode;
   nodes: LibraryNode[];
@@ -436,20 +544,27 @@ function ModuleItem({
   onSelect: (id: string) => void;
   onCreate: (request: CreateRequest) => void;
   onRemove: (id: string) => void;
-}) {
+} & TreeDragHandlers) {
   const [expanded, setExpanded] = useState(true);
-  const leaves = nodes.filter(
-    (node) =>
-      (node.type === "topic" || node.type === "lecture") &&
-      node.parentId === module.id,
+  const leaves = sortNodes(
+    nodes.filter(
+      (node) =>
+        (node.type === "topic" || node.type === "lecture") &&
+        node.parentId === module.id,
+    ),
   );
   return (
     <div>
       <div
         className={cn(
-          "group flex h-9 items-center rounded-lg",
+          "group flex h-9 items-center rounded-lg transition-[background-color,box-shadow,opacity]",
           selectedId === module.id ? "ui-selected" : "text-slate-600 ui-hover",
+          draggedNodeId === module.id && "opacity-45",
+          dropTargetId === module.id &&
+            "bg-[var(--palette-primary-muted)] ring-2 ring-[var(--palette-primary)]",
         )}
+        onDragOver={(event) => onDragOver(event, module.id)}
+        onDrop={(event) => onDrop(event, module.id)}
       >
         <button
           onClick={() => setExpanded(!expanded)}
@@ -462,9 +577,14 @@ function ModuleItem({
           )}
         </button>
         <button
+          draggable
+          onDragStart={(event) => onDragStart(event, module.id)}
+          onDragEnd={onDragEnd}
           onClick={() => onSelect(module.id)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
+          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left text-xs font-medium active:cursor-grabbing"
+          title="Dra modulen till en kurs"
         >
+          <GripVertical className="size-3 shrink-0 text-[var(--palette-text-subtle)] opacity-0 transition-opacity group-hover:opacity-100" />
           <Layers3 className="size-3.5 shrink-0 text-[var(--palette-text-subtle)]" />
           <span className="truncate">{module.title}</span>
         </button>
@@ -498,16 +618,26 @@ function ModuleItem({
               <div
                 key={leaf.id}
                 className={cn(
-                  "group flex h-8 items-center rounded-lg pr-1",
+                  "group flex h-8 items-center rounded-lg pr-1 transition-opacity",
                   selectedId === leaf.id
                     ? "ui-selected"
                     : "text-slate-500 ui-hover",
+                  draggedNodeId === leaf.id && "opacity-45",
+                  dropTargetId === leaf.id &&
+                    "bg-[var(--palette-primary-muted)] ring-2 ring-[var(--palette-primary)]",
                 )}
+                onDragOver={(event) => onDragOver(event, leaf.id)}
+                onDrop={(event) => onDrop(event, leaf.id)}
               >
                 <button
+                  draggable
+                  onDragStart={(event) => onDragStart(event, leaf.id)}
+                  onDragEnd={onDragEnd}
                   onClick={() => onSelect(leaf.id)}
-                  className="flex min-w-0 flex-1 items-center gap-2 px-2 text-left text-xs"
+                  className="flex min-w-0 flex-1 cursor-grab items-center gap-2 px-2 text-left text-xs active:cursor-grabbing"
+                  title="Dra till en modul"
                 >
+                  <GripVertical className="size-3 shrink-0 text-[var(--palette-text-subtle)] opacity-0 transition-opacity group-hover:opacity-100" />
                   <Icon
                     className={cn(
                       "size-3.5 shrink-0",

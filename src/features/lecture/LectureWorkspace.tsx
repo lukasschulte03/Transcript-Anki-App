@@ -25,7 +25,17 @@ import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { suggestSlideMappings } from "../../services/slideMatching";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
-import { toast } from "sonner";
+import { toast } from "../../services/feedbackToast";
+
+function qualityFlagLabel(flag: string) {
+  return {
+    empty: "tomt segment",
+    "very-short": "extremt kort",
+    duplicate: "upprepad rad",
+    "repeated-phrase": "upprepad fras",
+    "needs-review": "möjlig avkodningsartefakt",
+  }[flag] ?? "att granska";
+}
 
 export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const {
@@ -33,9 +43,12 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     lectures,
     segments,
     markers,
+    cards,
     updateNode,
     updateLecture,
     updateSegment,
+    removeSegment,
+    setSegmentQualityFlag,
     updateMarker,
     removeMarker,
     removeSuspiciousSegments,
@@ -50,6 +63,16 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const marks = markers
     .filter((m) => m.lectureId === lectureId)
     .sort((a, b) => a.time - b.time);
+  const lectureCards = cards.filter((card) => card.lectureId === lectureId);
+  const statusItems = [
+    { label: "Ljud", ready: Boolean(lecture.audioAssetId || lecture.audioParts?.length), action: "Importera eller spela in" },
+    { label: "Slides", ready: Boolean(lecture.slideAssetId), action: "Lägg till slides" },
+    { label: "Transkript", ready: transcript.length > 0, action: "Transkribera" },
+    { label: "Anteckningar", ready: Boolean(lecture.notes?.trim()), action: "Skriv en kort anteckning" },
+    { label: "Markeringar", ready: marks.length > 0, action: "Markera viktiga moment" },
+    { label: "Kort", ready: lectureCards.length > 0, action: "Skapa kort" },
+    { label: "Anki", ready: lectureCards.some((card) => card.status === "synced"), action: "Godkänn och synka kort" },
+  ];
   const slideAsset = useLiveQuery(
     () =>
       lecture.slideAssetId ? db.assets.get(lecture.slideAssetId) : undefined,
@@ -65,7 +88,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const [transcriptQuery, setTranscriptQuery] = useState("");
   const [transcriptReplacement, setTranscriptReplacement] = useState("");
   const [lectureSettingsOpen, setLectureSettingsOpen] = useState(false);
+  const [qualityReviewOpen, setQualityReviewOpen] = useState(false);
   const transcriptPane = useRef<HTMLDivElement>(null);
+  const slideImportInput = useRef<HTMLInputElement>(null);
   useEffect(
     () => () => {
       if (slideUrl) URL.revokeObjectURL(slideUrl);
@@ -84,6 +109,18 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     );
   }, [transcript, transcriptQuery]);
   const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
+  const qualitySummary = suspiciousSegments.reduce<Record<string, number>>(
+    (summary, segment) => {
+      (segment.qualityFlags?.length
+        ? segment.qualityFlags
+        : ["needs-review"]
+      ).forEach((flag) => {
+        summary[flag] = (summary[flag] ?? 0) + 1;
+      });
+      return summary;
+    },
+    {},
+  );
   const slideMappings = lecture.slideMappings ?? {};
   const suggestSlides = () => {
     if (!lecture.slidePages?.length || !transcript.length) return;
@@ -177,6 +214,23 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       new CustomEvent("lectio:seek", { detail: { lectureId, time: seconds } }),
     );
   };
+  const runStatusAction = (label: string) => {
+    if (label === "Ljud") {
+      window.dispatchEvent(new CustomEvent("lectio:import-audio", { detail: { lectureId } }));
+    } else if (label === "Slides") {
+      slideImportInput.current?.click();
+    } else if (label === "Transkript") {
+      window.dispatchEvent(new CustomEvent("lectio:open-transcription", { detail: { lectureId } }));
+    } else if (label === "Anteckningar") {
+      document
+        .querySelector<HTMLTextAreaElement>("[data-lectio-notes]")
+        ?.focus();
+    } else if (label === "Markeringar") {
+      window.dispatchEvent(new CustomEvent("lectio:mark-moment", { detail: { lectureId } }));
+    } else {
+      setActiveView("cards");
+    }
+  };
   const replaceTranscriptMatches = () => {
     const query = transcriptQuery.trim();
     if (!query) return;
@@ -226,6 +280,21 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
           </Button>
         </div>
       </header>
+      <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-card px-6 py-2">
+        <span className="mr-1 text-xs font-medium text-muted-foreground">Nästa steg</span>
+        {statusItems.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => !item.ready && runStatusAction(item.label)}
+            className={`shrink-0 rounded-md px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--palette-focus-ring)] ${item.ready ? "cursor-default bg-[var(--palette-success-muted)] text-[var(--palette-success)]" : "bg-muted text-muted-foreground hover:bg-[var(--palette-primary-muted)] hover:text-[var(--palette-text)]"}`}
+            title={item.ready ? `${item.label} är klar` : item.action}
+          >
+            {item.ready ? "✓" : "○"} {item.label}
+          </button>
+        ))}
+        {!statusItems.every((item) => item.ready) && <span className="ml-auto shrink-0 text-xs text-muted-foreground">{statusItems.find((item) => !item.ready)?.action}</span>}
+      </div>
       <main className="ui-app-bg grid min-h-0 flex-1 grid-cols-[minmax(320px,1fr)_minmax(360px,0.9fr)] gap-3 overflow-hidden p-3">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)]">
           <div className="flex h-11 items-center justify-between border-b border-[var(--palette-border)] bg-[var(--palette-surface)] px-4">
@@ -245,6 +314,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
               <label className="cursor-pointer">
                 <FileUp className="size-3.5" /> Lägg till
                 <input
+                  ref={slideImportInput}
                   type="file"
                   accept="application/pdf,image/*"
                   className="hidden"
@@ -295,6 +365,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 <span className="text-xs text-slate-500">
                   {transcript.length}
                 </span>
+                {suspiciousSegments.length > 0 && (
+                  <span className="rounded-md bg-[var(--palette-warning-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--palette-warning)]">
+                    {suspiciousSegments.length} att granska
+                  </span>
+                )}
               </div>
               <div className="flex items-center gap-1">
                 {lecture.slidePages?.length && transcript.length > 0 && (
@@ -306,16 +381,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      if (
-                        confirm(
-                          `Ta bort ${suspiciousSegments.length} misstänkta upprepningar? Detta kan inte ångras.`,
-                        )
-                      )
-                        removeSuspiciousSegments(lectureId);
-                    }}
+                    onClick={() => setQualityReviewOpen(true)}
                   >
-                    Rensa {suspiciousSegments.length}
+                    Granska {suspiciousSegments.length}
                   </Button>
                 )}
                 <Button
@@ -385,7 +453,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                       />
                       {s.suspicious && (
                         <span className="mt-1 shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
-                          Misstänkt upprepning
+                          Kontrollera
                         </span>
                       )}
                       {lecture.slidePages?.length && (
@@ -438,6 +506,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 <BookText className="size-4 text-slate-400" /> Anteckningar
               </div>
               <Textarea
+                data-lectio-notes
                 value={lecture.notes}
                 onChange={(e) =>
                   updateLecture(lectureId, { notes: e.target.value })
@@ -486,6 +555,49 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
         </section>
       </main>
       <AudioPanel lectureId={lectureId} onTime={setTime} />
+      <Dialog
+        open={qualityReviewOpen}
+        onOpenChange={setQualityReviewOpen}
+        title="Granska transkriptkvalitet"
+        description="Flaggorna beräknas lokalt. Ingen text tas bort förrän du väljer det själv."
+      >
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2 text-xs text-[var(--palette-text-muted)]">
+            {Object.entries(qualitySummary).map(([flag, count]) => (
+              <span key={flag} className="rounded-md bg-[var(--palette-warning-muted)] px-2 py-1 text-[var(--palette-warning)]">
+                {count} {qualityFlagLabel(flag)}
+              </span>
+            ))}
+          </div>
+          <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+            {suspiciousSegments.map((segment) => (
+              <div key={segment.id} className="rounded-lg border border-[var(--palette-border)] p-3">
+                <div className="flex items-start gap-3">
+                  <span className="shrink-0 text-xs font-medium text-[var(--palette-accent)]">{formatTime(segment.start)}</span>
+                  <p className="min-w-0 flex-1 text-sm leading-5 text-[var(--palette-text)]">{segment.text || "(tomt segment)"}</p>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  {(segment.qualityFlags?.length ? segment.qualityFlags : ["needs-review"]).map((flag) => (
+                    <span key={flag} className="text-xs text-[var(--palette-text-subtle)]">{qualityFlagLabel(flag)}</span>
+                  ))}
+                  <span className="flex-1" />
+                  <Button variant="ghost" size="sm" onClick={() => setSegmentQualityFlag(segment.id, false)}>Behåll</Button>
+                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeSegment(segment.id)}>Ta bort</Button>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-3 border-t border-[var(--palette-border)] pt-3">
+            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => {
+              if (confirm(`Ta bort ${suspiciousSegments.length} flaggade segment? Detta kan inte ångras.`)) {
+                removeSuspiciousSegments(lectureId);
+                setQualityReviewOpen(false);
+              }
+            }}>Rensa alla flaggade</Button>
+            <Button size="sm" onClick={() => setQualityReviewOpen(false)}>Klar</Button>
+          </div>
+        </div>
+      </Dialog>
       <Dialog
         open={lectureSettingsOpen}
         onOpenChange={setLectureSettingsOpen}

@@ -18,6 +18,11 @@ const cardSchema = z.object({
 });
 const responseSchema = z.object({ cards: z.array(cardSchema) });
 
+async function providerError(response: Response) {
+  const body = (await response.text()).replace(/\s+/g, " ").slice(0, 500);
+  return new Error(`API-fel ${response.status}${body ? `: ${body}` : ""}`);
+}
+
 export interface CardRequest {
   lectureId: string;
   title: string;
@@ -26,10 +31,14 @@ export interface CardRequest {
   transcript: TranscriptSegment[];
   markers: Marker[];
   slideText: string;
+  density?: "few" | "balanced" | "many";
+  /** Technical ceiling derived from density; never a requested card quota. */
   count: number;
   types: CardType[];
   preferences: string[];
   cardStyle?: string;
+  /** Compact course-level reference to prevent near-duplicate cards. */
+  existingCards?: Array<Pick<Flashcard, "front" | "back">>;
 }
 
 export function createCardPrompt(r: CardRequest) {
@@ -37,7 +46,16 @@ export function createCardPrompt(r: CardRequest) {
     ...r.preferences.map((preference) => `- ${preference}`),
     ...(r.cardStyle ? [`- Följ denna lokala kortstil: ${r.cardStyle}`] : []),
   ].join("\n");
-  return `Du är en noggrann studieassistent. Skapa ${r.count} högkvalitativa Anki-kort på svenska.\n\nREGLER:\n- Ett koncept per kort.\n- Undvik triviala och duplicerade kort.\n- Prioritera förståelse, examinationsrelevans och markerade moment.\n- Svara ENDAST med giltig JSON enligt: {"cards":[{"type":"basic|cloze|concept|definition|problem","front":"...","back":"...","tags":["..."]}]}\n- Tillåtna korttyper: ${r.types.join(", ")}.\n${extraRules}\n\nFÖRELÄSNING: ${r.title}\n\nÄRVD KONTEXT:\n${r.context || "(ingen)"}\n\nANTECKNINGAR:\n${r.notes || "(inga)"}\n\nMARKERADE MOMENT:\n${r.markers.map((m) => `${m.time}s: ${m.note || "Viktigt moment"}`).join("\n") || "(inga)"}\n\nTEXT FRÅN SLIDES:\n${r.slideText || "(ingen slide-text)"}\n\nTRANSKRIPT:\n${r.transcript.map((s) => `[${s.start}-${s.end}s] ${s.text}`).join("\n") || "(inget transcript)"}`;
+  const existingCards = (r.existingCards ?? [])
+    .slice(0, 80)
+    .map((card, index) => `${index + 1}. Fråga: ${card.front}\n   Svar: ${card.back}`)
+    .join("\n");
+  const densityInstruction = {
+    few: "Var mycket selektiv och välj endast de mest centrala, examinationsrelevanta koncepten.",
+    balanced: "Täck de tydliga, separata koncept som behöver repeteras utan att överlappa.",
+    many: "Täck materialet brett när det finns många tydliga koncept, men undvik ändå variationer av samma kort.",
+  }[r.density ?? "balanced"];
+  return `Du är en noggrann studieassistent. Skapa högkvalitativa Anki-kort på svenska.\n\nREGLER:\n- Repetitionsnivå: ${r.density === "few" ? "Få" : r.density === "many" ? "Många" : "Lagom"}. ${densityInstruction}\n- Bedöm själv hur många kort materialet faktiskt motiverar. Fyll aldrig ut till en bestämd kvot.\n- Skapa aldrig fler än ${r.count} kort; detta är endast en teknisk säkerhetsgräns.\n- Ett koncept per kort.\n- Undvik triviala och duplicerade kort.\n- Skapa inte ett kort som testar samma faktum eller begrepp som något i BEFINTLIGA KORT.\n- Prioritera förståelse, examinationsrelevans och markerade moment.\n- Svara ENDAST med giltig JSON enligt: {"cards":[{"type":"basic|cloze|concept|definition|problem","front":"...","back":"...","tags":["..."]}]}\n- Tillåtna korttyper: ${r.types.join(", ")}.\n${extraRules}\n\nFÖRELÄSNING: ${r.title}\n\nBEFINTLIGA KORT I KURSEN (undvik att upprepa dem):\n${existingCards || "(inga)"}\n\nÄRVD KONTEXT:\n${r.context || "(ingen)"}\n\nANTECKNINGAR:\n${r.notes || "(inga)"}\n\nMARKERADE MOMENT:\n${r.markers.map((m) => `${m.time}s: ${m.note || "Viktigt moment"}`).join("\n") || "(inga)"}\n\nTEXT FRÅN SLIDES:\n${r.slideText || "(ingen slide-text)"}\n\nTRANSKRIPT:\n${r.transcript.map((s) => `[${s.start}-${s.end}s] ${s.text}`).join("\n") || "(inget transcript)"}`;
 }
 
 export function parseCardResponse(
@@ -61,6 +79,23 @@ export function parseCardResponse(
     lectureId,
     status: "generated" as const,
   }));
+}
+
+export function likelyDuplicate(front: string, candidates: Array<{ id?: string; front: string }>) {
+  const terms = (value: string) => new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  const query = terms(front);
+  return candidates.find((candidate) => {
+    const other = terms(candidate.front);
+    const overlap = [...query].filter((term) => other.has(term)).length;
+    return overlap >= 3 && overlap / Math.max(query.size, other.size, 1) >= 0.55;
+  });
+}
+
+export function duplicateExplanation(front: string, candidate: { front: string }) {
+  const terms = (value: string) =>
+    new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+  const matching = [...terms(front)].filter((term) => terms(candidate.front).has(term));
+  return matching.slice(0, 4).join(", ");
 }
 
 export async function generateCardsWithApi(
@@ -89,8 +124,7 @@ export async function generateCardsWithApi(
         messages: [{ role: "user", content: prompt }],
       }),
     });
-    if (!response.ok)
-      throw new Error(`API-fel ${response.status}: ${await response.text()}`);
+    if (!response.ok) throw await providerError(response);
     const json = await response.json();
     return String(json.content?.[0]?.text ?? "");
   }
@@ -109,8 +143,7 @@ export async function generateCardsWithApi(
         }),
       },
     );
-    if (!response.ok)
-      throw new Error(`API-fel ${response.status}: ${await response.text()}`);
+    if (!response.ok) throw await providerError(response);
     const json = await response.json();
     return String(json.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
   }
@@ -127,8 +160,7 @@ export async function generateCardsWithApi(
       response_format: { type: "json_object" },
     }),
   });
-  if (!response.ok)
-    throw new Error(`API-fel ${response.status}: ${await response.text()}`);
+  if (!response.ok) throw await providerError(response);
   const json = await response.json();
   return String(json.choices?.[0]?.message?.content ?? "");
 }

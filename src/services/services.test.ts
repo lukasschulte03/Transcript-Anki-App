@@ -1,13 +1,36 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildTranscriptionPrompt,
+  cloudApiTranscription,
+  flagTranscriptionQuality,
   parseTimestampedText,
 } from "./transcription";
-import { createCardPrompt, parseCardResponse } from "./ai";
+import type { AppSettings } from "../core/types";
+import {
+  createCardPrompt,
+  duplicateExplanation,
+  parseCardResponse,
+} from "./ai";
 import { parseWhisperJson } from "./localStt";
-import { lectureDeckName, needsAnkiSync, withoutStructuralTags } from "./anki";
+import { lectureDeckName, needsAnkiSync, syncCard, testAnki, withoutStructuralTags } from "./anki";
 import { builtInPalettes, validateTheme } from "../core/theme";
 import { suggestSlideMappings } from "./slideMatching";
+import { redactDiagnosticText } from "./diagnostics";
+import { canRecoverRecording } from "./recordingRecovery";
+
+describe("diagnostik", () => {
+  it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
+    const result = redactDiagnosticText(
+      "C:\\Users\\Lukas\\Documents\\fil.wav apiKey=hemlig lukas@example.com",
+    );
+    expect(result).not.toContain("Lukas");
+    expect(result).not.toContain("hemlig");
+    expect(result).not.toContain("lukas@example.com");
+    expect(result).toContain("[redacted]");
+  });
+});
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe("teman", () => {
   it("har komplett kontrastvaliderad tokenuppsättning", () => {
@@ -16,6 +39,26 @@ describe("teman", () => {
 });
 
 describe("transkriptimport", () => {
+  it("tolkar en mockad API-transkribering utan nyckel eller extern provider", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      text: "Mockad transkription",
+      segments: [{ start: 0, end: 3, text: "Mockad transkription" }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await cloudApiTranscription.transcribe(
+      new Blob(["ljud"], { type: "audio/wav" }),
+      { transcriptionBaseUrl: "https://mock.example/v1" } as AppSettings,
+      "testnyckel",
+      "ABCDE",
+    );
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(result.segments).toEqual([
+      { start: 0, end: 3, text: "Mockad transkription" },
+    ]);
+  });
+
   it("använder bara STT-ordlistan, inte ärvd kurscontext", () => {
     const prompt = buildTranscriptionPrompt("ABCDE, CRP");
     expect(prompt).toBe("ABCDE, CRP");
@@ -43,11 +86,39 @@ describe("transkriptimport", () => {
       text: "Hej världen",
     });
   });
+  it("flaggar dubbletter och orimligt korta segment utan att ta bort dem", () => {
+    const result = flagTranscriptionQuality([
+      { start: 0, end: 2, text: "Viktigt begrepp" },
+      { start: 2, end: 4, text: "Viktigt begrepp" },
+      { start: 4, end: 5, text: "ja" },
+    ]);
+    expect(result).toHaveLength(3);
+    expect(result[1].suspicious).toBe(true);
+    expect(result[1].qualityFlags).toContain("duplicate");
+    expect(result[2].suspicious).toBe(true);
+    expect(result[2].qualityFlags).toContain("very-short");
+  });
+  it("markerar tomma och upprepade fraser utan att filtrera bort text", () => {
+    const result = flagTranscriptionQuality([
+      { start: 0, end: 2, text: "" },
+      { start: 2, end: 8, text: "detta är en viktig fras detta är en viktig fras" },
+    ]);
+    expect(result[0].qualityFlags).toContain("empty");
+    expect(result[1].qualityFlags).toContain("repeated-phrase");
+  });
   it("flaggar sannolika Whisper-upprepningar för granskning", () => {
     const result = parseWhisperJson(
       '{"transcription":[{"offsets":{"from":0,"to":4000},"text":"Det här viktiga begreppet kommer på tentamen."},{"offsets":{"from":4000,"to":8000},"text":"Det här viktiga begreppet kommer på tentamen."}]}',
     );
     expect(result.segments[1].suspicious).toBe(true);
+  });
+});
+
+describe("inspelningsåterställning", () => {
+  it("erbjuder återställning för en simulerat avbruten inspelning med sparade ljuddelar", () => {
+    expect(canRecoverRecording({ status: "interrupted" }, 3)).toBe(true);
+    expect(canRecoverRecording({ status: "paused" }, 1)).toBe(true);
+    expect(canRecoverRecording({ status: "interrupted" }, 0)).toBe(false);
   });
 });
 
@@ -81,6 +152,27 @@ describe("slidekoppling", () => {
 });
 
 describe("kortformat", () => {
+  it("skickar kortfattade befintliga kurskort som dubblettskydd till AI:n", () => {
+    const prompt = createCardPrompt({
+      lectureId: "lecture",
+      title: "Akut buk",
+      context: "",
+      notes: "",
+      transcript: [],
+      markers: [],
+      slideText: "",
+      count: 12,
+      types: ["basic"],
+      preferences: [],
+      existingCards: [{ front: "Vad är peritonit?", back: "Inflammation i peritoneum." }],
+    });
+    expect(prompt).toContain("BEFINTLIGA KORT I KURSEN");
+    expect(prompt).toContain("Vad är peritonit?");
+    expect(prompt).toContain("Bedöm själv hur många kort materialet faktiskt motiverar");
+    expect(prompt).not.toContain("Skapa 12 högkvalitativa");
+    expect(duplicateExplanation("Vad är akut peritonit?", { front: "Vad är peritonit?" })).toContain("peritonit");
+  });
+
   it("skapar Anki-hierarki från kurs, modul och föreläsning", () => {
     const nodes = [
       {
@@ -137,6 +229,47 @@ describe("kortformat", () => {
     expect(needsAnkiSync(card, "Kirurgi - Lectio::Akut buk")).toBe(false);
     expect(needsAnkiSync(card, "Kirurgi - Lectio::Trauma")).toBe(true);
     expect(needsAnkiSync({ ...card, status: "approved" }, card.ankiDeck)).toBe(true);
+  });
+
+  it("skapar ett Basic-kort via en mockad AnkiConnect utan extern app", async () => {
+    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
+      requests.push(body);
+      const result = body.action === "modelFieldNames" ? ["Front", "Back"] : 123;
+      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+    }));
+    const noteId = await syncCard("http://127.0.0.1:8765", "Kirurgi - Lectio", {
+      id: "card", lectureId: "lecture", type: "basic", front: "Fråga", back: "Svar", tags: ["tentamen"], status: "approved",
+    });
+    expect(noteId).toBe(123);
+    expect(requests.map((request) => request.action)).toEqual(["modelFieldNames", "addNote"]);
+    expect(requests[1].params).toMatchObject({ note: { deckName: "Kirurgi - Lectio", fields: { Front: "Fråga", Back: "Svar" } } });
+  });
+
+  it("kan försöka om en misslyckad Anki-synk mot samma lokala mock", async () => {
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      attempts++;
+      if (attempts === 1) return new Response("Tillfälligt fel", { status: 503 });
+      const body = JSON.parse(String(init.body)) as { action: string };
+      const result = body.action === "modelFieldNames" ? ["Front", "Back"] : 456;
+      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+    }));
+    const card = {
+      id: "retry-card", lectureId: "lecture", type: "basic" as const,
+      front: "Fråga", back: "Svar", tags: [], status: "approved" as const,
+    };
+
+    await expect(syncCard("http://127.0.0.1:8765", "Lectio", card)).rejects.toThrow("503");
+    await expect(syncCard("http://127.0.0.1:8765", "Lectio", card)).resolves.toBe(456);
+    expect(attempts).toBe(3);
+  });
+
+  it("vägrar skicka AnkiConnect-anrop utanför datorn", async () => {
+    await expect(testAnki("https://exempel.se")).rejects.toThrow(
+      "AnkiConnect måste köras lokalt",
+    );
   });
 
   it("rensar kodblock och validerar JSON", () => {

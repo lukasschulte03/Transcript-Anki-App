@@ -1,15 +1,199 @@
-use serde::Serialize;
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use rand::TryRngCore;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
-use tokio::{fs, io::AsyncWriteExt, process::Command};
+use tokio::{
+    fs,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpListener,
+    process::Command,
+    sync::oneshot,
+    time,
+};
 
 static CANCELLED_DOWNLOADS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static GOOGLE_OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, GoogleOAuthSession>>> =
+    OnceLock::new();
+
+const GOOGLE_DRIVE_CLIENT_ID: &str =
+    "607463229684-df99plb7hagdnlfsr1uleko6q6g78lpi.apps.googleusercontent.com";
+const GOOGLE_DRIVE_CREDENTIAL_KEY: &str = "cloud-sync-google-drive";
+const GOOGLE_DRIVE_CLIENT_SECRET_KEY: &str = "google-drive-client-secret";
+
+struct GoogleOAuthSession {
+    receiver: oneshot::Receiver<Result<String, String>>,
+    verifier: String,
+    redirect_uri: String,
+}
+
+#[derive(Deserialize)]
+struct GoogleTokenResponse {
+    access_token: String,
+    refresh_token: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleDriveAbout {
+    user: Option<GoogleDriveUser>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleDriveUser {
+    display_name: Option<String>,
+    email_address: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleDriveCredential {
+    refresh_token: String,
+    account_label: String,
+    connected_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleDriveConnection {
+    account_label: String,
+    connected_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GoogleOAuthStart {
+    session_id: String,
+    authorization_url: String,
+}
+
+fn google_oauth_sessions() -> &'static Mutex<HashMap<String, GoogleOAuthSession>> {
+    GOOGLE_OAUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn secure_random_url_value(bytes: usize) -> Result<String, String> {
+    let mut buffer = vec![0_u8; bytes];
+    rand::rngs::OsRng
+        .try_fill_bytes(&mut buffer)
+        .map_err(|error| format!("Kunde inte skapa en säker OAuth-session: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(buffer))
+}
+
+fn oauth_response(status: &str, body: &str) -> String {
+    let document = format!(
+        "<!doctype html><html lang=\"sv\"><meta charset=\"utf-8\"><title>Lectio</title><body style=\"font-family:system-ui;max-width:38rem;margin:12vh auto;padding:0 1.5rem\"><h1>{}</h1><p>{}</p><p>Du kan stänga det här fönstret och återgå till Lectio.</p></body></html>",
+        if status.starts_with("200") { "Google Drive är anslutet" } else { "Kunde inte ansluta Google Drive" },
+        body
+    );
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{document}",
+        document.len(),
+    )
+}
+
+async fn receive_google_oauth_callback(
+    listener: TcpListener,
+    expected_state: String,
+    sender: oneshot::Sender<Result<String, String>>,
+) {
+    let result = async {
+        let (mut stream, _) = listener.accept().await.map_err(|error| error.to_string())?;
+        let mut request = vec![0_u8; 8_192];
+        let size = stream
+            .read(&mut request)
+            .await
+            .map_err(|error| error.to_string())?;
+        let request = String::from_utf8_lossy(&request[..size]);
+        let target = request
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .ok_or_else(|| "Ogiltigt svar från webbläsaren".to_string())?;
+        let callback = url::Url::parse(&format!("http://127.0.0.1{target}"))
+            .map_err(|_| "Ogiltigt OAuth-svar".to_string())?;
+        let parameters: HashMap<_, _> = callback.query_pairs().into_owned().collect();
+        let outcome = match (
+            parameters.get("code"),
+            parameters.get("state"),
+            parameters.get("error"),
+        ) {
+            (_, _, Some(error)) => Err(format!("Google avbröt inloggningen: {error}")),
+            (Some(code), Some(state), _) if state == &expected_state => Ok(code.clone()),
+            (Some(_), _, _) => Err("OAuth-svaret kunde inte verifieras. Försök igen.".into()),
+            _ => Err("Google skickade ingen auktoriseringskod.".into()),
+        };
+        let response = match &outcome {
+            Ok(_) => oauth_response("200 OK", "Kontot har verifierats säkert."),
+            Err(error) => oauth_response("400 Bad Request", error),
+        };
+        let _ = stream.write_all(response.as_bytes()).await;
+        outcome
+    }
+    .await;
+    let _ = sender.send(result);
+}
+
+/// Finds Whisper's JSON output without relying on a single filename convention.
+/// Each transcription uses its own directory, so any JSON file found there belongs
+/// to that invocation even when a Whisper build formats `--output-file` differently.
+async fn find_whisper_json_output(
+    run_dir: &Path,
+    expected: &Path,
+) -> Result<Option<PathBuf>, String> {
+    if expected.is_file() {
+        return Ok(Some(expected.to_path_buf()));
+    }
+
+    let mut entries = fs::read_dir(run_dir)
+        .await
+        .map_err(|error| format!("Kunde inte läsa Whispers resultatmapp: {error}"))?;
+    let mut candidates = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| format!("Kunde inte läsa Whispers resultatfiler: {error}"))?
+    {
+        let path = entry.path();
+        let is_json = path
+            .extension()
+            .map(|extension| extension.to_string_lossy().eq_ignore_ascii_case("json"))
+            .unwrap_or(false);
+        if is_json
+            && entry
+                .file_type()
+                .await
+                .map(|file_type| file_type.is_file())
+                .unwrap_or(false)
+        {
+            candidates.push(path);
+        }
+    }
+    candidates.sort();
+    Ok(candidates.into_iter().next())
+}
+
+fn process_output_excerpt(bytes: &[u8]) -> String {
+    let output = String::from_utf8_lossy(bytes)
+        .replace('\0', "")
+        .trim()
+        .to_string();
+    if output.is_empty() {
+        return String::new();
+    }
+    let mut excerpt: String = output.chars().take(1_200).collect();
+    if output.chars().count() > excerpt.chars().count() {
+        excerpt.push('…');
+    }
+    excerpt
+}
 
 fn cancelled_downloads() -> &'static Mutex<HashSet<String>> {
     CANCELLED_DOWNLOADS.get_or_init(|| Mutex::new(HashSet::new()))
@@ -38,10 +222,27 @@ async fn cancel_download(job_id: String) -> Result<(), String> {
 }
 
 fn credential_entry(key: &str) -> Result<keyring::Entry, String> {
-    if key.is_empty() || !key.chars().all(|character| character.is_ascii_alphanumeric() || matches!(character, ':' | '-' | '_')) {
+    if key.is_empty()
+        || !key.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, ':' | '-' | '_')
+        })
+    {
         return Err("Ogiltigt credential-namn".into());
     }
     keyring::Entry::new("Lectio", key).map_err(|error| error.to_string())
+}
+
+async fn google_drive_client_secret() -> Result<String, String> {
+    tokio::task::spawn_blocking(|| {
+        credential_entry(GOOGLE_DRIVE_CLIENT_SECRET_KEY)?
+            .get_password()
+            .map_err(|_| {
+                "Google Drive-klienthemligheten saknas i Windows Credential Manager. Kontakta utvecklaren."
+                    .to_string()
+            })
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -85,6 +286,155 @@ async fn delete_credential(key: String) -> Result<(), String> {
     .map_err(|error| error.to_string())?
 }
 
+#[tauri::command]
+async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|error| format!("Kunde inte starta den lokala inloggningen: {error}"))?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| error.to_string())?
+        .port();
+    let session_id = secure_random_url_value(24)?;
+    let state = secure_random_url_value(32)?;
+    let verifier = secure_random_url_value(64)?;
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    let redirect_uri = format!("http://127.0.0.1:{port}/oauth/google-drive");
+    let (sender, receiver) = oneshot::channel();
+    let callback_state = state.clone();
+    tauri::async_runtime::spawn(async move {
+        let receive = receive_google_oauth_callback(listener, callback_state, sender);
+        let _ = time::timeout(Duration::from_secs(300), receive).await;
+    });
+    google_oauth_sessions()
+        .lock()
+        .map_err(|_| "Kunde inte spara OAuth-sessionen".to_string())?
+        .insert(
+            session_id.clone(),
+            GoogleOAuthSession {
+                receiver,
+                verifier,
+                redirect_uri: redirect_uri.clone(),
+            },
+        );
+
+    let authorization_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
+        .map_err(|error| error.to_string())?
+        .query_pairs_mut()
+        .append_pair("client_id", GOOGLE_DRIVE_CLIENT_ID)
+        .append_pair("redirect_uri", &redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("scope", "https://www.googleapis.com/auth/drive.file")
+        .append_pair("state", &state)
+        .append_pair("code_challenge", &challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("access_type", "offline")
+        .append_pair("prompt", "consent")
+        .finish()
+        .to_string();
+
+    Ok(GoogleOAuthStart {
+        session_id,
+        authorization_url,
+    })
+}
+
+#[tauri::command]
+async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveConnection, String> {
+    let session = google_oauth_sessions()
+        .lock()
+        .map_err(|_| "Kunde inte läsa OAuth-sessionen".to_string())?
+        .remove(&session_id)
+        .ok_or_else(|| "Inloggningssessionen saknas eller har gått ut. Försök igen.".to_string())?;
+    let code = session
+        .receiver
+        .await
+        .map_err(|_| "Inloggningen hann gå ut. Försök igen.".to_string())??;
+    let client_secret = google_drive_client_secret().await?;
+    let response = reqwest::Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", GOOGLE_DRIVE_CLIENT_ID),
+            ("client_secret", &client_secret),
+            ("code", &code),
+            ("code_verifier", &session.verifier),
+            ("redirect_uri", &session.redirect_uri),
+            ("grant_type", "authorization_code"),
+        ])
+        .send()
+        .await
+        .map_err(|error| format!("Kunde inte kontakta Google: {error}"))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "Google kunde inte slutföra inloggningen ({status}): {detail}"
+        ));
+    }
+    let token: GoogleTokenResponse = response
+        .json()
+        .await
+        .map_err(|error| format!("Kunde inte läsa Googles tokensvar: {error}"))?;
+    let refresh_token = token.refresh_token.ok_or_else(|| {
+        "Google skickade ingen förnyelsetoken. Koppla bort kontot i Googles kontoinställningar och försök igen."
+            .to_string()
+    })?;
+    let about_response = reqwest::Client::new()
+        .get("https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)")
+        .bearer_auth(&token.access_token)
+        .send()
+        .await
+        .map_err(|error| format!("Kunde inte verifiera Google Drive-kontot: {error}"))?;
+    if !about_response.status().is_success() {
+        return Err("Google Drive avvisade den nya anslutningen. Försök igen.".into());
+    }
+    let about: GoogleDriveAbout = about_response
+        .json()
+        .await
+        .map_err(|error| format!("Kunde inte läsa Google Drive-kontot: {error}"))?;
+    let account_label = about
+        .user
+        .and_then(|user| user.display_name.or(user.email_address))
+        .unwrap_or_else(|| "Google Drive".into());
+    let connected_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_secs()
+        .to_string();
+    let credential = GoogleDriveCredential {
+        refresh_token,
+        account_label: account_label.clone(),
+        connected_at: connected_at.clone(),
+    };
+    tokio::task::spawn_blocking(move || {
+        credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?
+            .set_password(
+                &serde_json::to_string(&credential)
+                    .map_err(|error| format!("Kunde inte skydda Google-token: {error}"))?,
+            )
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    Ok(GoogleDriveConnection {
+        account_label,
+        connected_at,
+    })
+}
+
+#[tauri::command]
+async fn disconnect_google_drive() -> Result<(), String> {
+    tokio::task::spawn_blocking(|| {
+        let entry = credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalModelStatus {
@@ -101,6 +451,20 @@ struct LocalEngineStatus {
     nvidia_name: Option<String>,
     nvidia_runtime_installed: bool,
     nvidia_runtime_size: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiagnosticSnapshot {
+    os: String,
+    architecture: String,
+    app_version: String,
+    cpu_threads: usize,
+    nvidia_detected: bool,
+    nvidia_runtime_installed: bool,
+    whisper_models: Vec<String>,
+    ffmpeg_available: bool,
+    bundled_whisper_available: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -234,6 +598,47 @@ async fn local_engine_status(app: AppHandle) -> Result<LocalEngineStatus, String
 }
 
 #[tauri::command]
+async fn diagnostic_snapshot(app: AppHandle) -> Result<DiagnosticSnapshot, String> {
+    let engine = engine_status(&app).await?;
+    let models = [
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3-turbo",
+        "large-v3",
+    ]
+    .into_iter()
+    .filter(|model| {
+        models_dir(&app)
+            .map(|dir| dir.join(format!("ggml-{model}.bin")).is_file())
+            .unwrap_or(false)
+    })
+    .map(str::to_string)
+    .collect();
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(DiagnosticSnapshot {
+        os: std::env::consts::OS.into(),
+        architecture: std::env::consts::ARCH.into(),
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        cpu_threads: std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(0),
+        nvidia_detected: engine.nvidia_detected,
+        nvidia_runtime_installed: engine.nvidia_runtime_installed,
+        whisper_models: models,
+        ffmpeg_available: resource_dir.join("ffmpeg").join("ffmpeg.exe").is_file(),
+        bundled_whisper_available: resource_dir
+            .join("whisper")
+            .join("whisper-cli.exe")
+            .is_file(),
+    })
+}
+
+#[tauri::command]
 async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, String> {
     let job_id = "download:nvidia-runtime";
     let label = "NVIDIA-stöd för Whisper";
@@ -263,14 +668,34 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
     let total = response.content_length();
     let mut downloaded = 0_u64;
     let mut last_reported = 0_u64;
-    emit_progress(&app, job_id, "download", label, "downloading", "active", 0, total, None);
+    emit_progress(
+        &app,
+        job_id,
+        "download",
+        label,
+        "downloading",
+        "active",
+        0,
+        total,
+        None,
+    );
     let mut archive_file = fs::File::create(&archive_path)
         .await
         .map_err(|error| error.to_string())?;
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         if download_is_cancelled(job_id) {
             drop(archive_file);
-            emit_progress(&app, job_id, "download", label, "error", "error", downloaded, total, Some("Nedladdningen avbröts. Delvis fil kan återanvändas vid nästa försök.".into()));
+            emit_progress(
+                &app,
+                job_id,
+                "download",
+                label,
+                "error",
+                "error",
+                downloaded,
+                total,
+                Some("Nedladdningen avbröts. Delvis fil kan återanvändas vid nästa försök.".into()),
+            );
             return Err("Nedladdningen avbröts".into());
         }
         archive_file
@@ -279,7 +704,17 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
             .map_err(|error| error.to_string())?;
         downloaded += chunk.len() as u64;
         if downloaded.saturating_sub(last_reported) >= 1_000_000 || total == Some(downloaded) {
-            emit_progress(&app, job_id, "download", label, "downloading", "active", downloaded, total, None);
+            emit_progress(
+                &app,
+                job_id,
+                "download",
+                label,
+                "downloading",
+                "active",
+                downloaded,
+                total,
+                None,
+            );
             last_reported = downloaded;
         }
     }
@@ -289,10 +724,30 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
         .map_err(|error| error.to_string())?;
     drop(archive_file);
     if total.is_some_and(|expected| expected != downloaded) {
-        emit_progress(&app, job_id, "download", label, "error", "error", downloaded, total, Some("Filstorleken stämmer inte; försök igen.".into()));
+        emit_progress(
+            &app,
+            job_id,
+            "download",
+            label,
+            "error",
+            "error",
+            downloaded,
+            total,
+            Some("Filstorleken stämmer inte; försök igen.".into()),
+        );
         return Err("NVIDIA-paketets storlek stämmer inte med nedladdningen".into());
     }
-    emit_progress(&app, job_id, "download", label, "extracting", "active", downloaded, total, Some("Packar upp CUDA-runtime…".into()));
+    emit_progress(
+        &app,
+        job_id,
+        "download",
+        label,
+        "extracting",
+        "active",
+        downloaded,
+        total,
+        Some("Packar upp CUDA-runtime…".into()),
+    );
 
     let archive_for_extract = archive_path.clone();
     let destination_for_extract = runtime_dir.clone();
@@ -323,10 +778,30 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
     .map_err(|error| error.to_string())??;
     let _ = fs::remove_file(&archive_path).await;
     if find_file(&runtime_dir, "whisper-cli.exe").is_none() {
-        emit_progress(&app, job_id, "download", label, "error", "error", downloaded, total, Some("CUDA-paketet saknade Whisper.".into()));
+        emit_progress(
+            &app,
+            job_id,
+            "download",
+            label,
+            "error",
+            "error",
+            downloaded,
+            total,
+            Some("CUDA-paketet saknade Whisper.".into()),
+        );
         return Err("CUDA-paketet saknade whisper-cli.exe".into());
     }
-    emit_progress(&app, job_id, "download", label, "complete", "complete", downloaded, total, Some("NVIDIA-stöd är klart.".into()));
+    emit_progress(
+        &app,
+        job_id,
+        "download",
+        label,
+        "complete",
+        "complete",
+        downloaded,
+        total,
+        Some("NVIDIA-stöd är klart.".into()),
+    );
     engine_status(&app).await
 }
 
@@ -413,7 +888,17 @@ async fn download_local_model(app: AppHandle, model: String) -> Result<LocalMode
     while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
         if download_is_cancelled(&job_id) {
             drop(file);
-            emit_progress(&app, &job_id, "download", &label, "error", "error", downloaded, total, Some("Nedladdningen avbröts. Delvis fil kan återupptas senare.".into()));
+            emit_progress(
+                &app,
+                &job_id,
+                "download",
+                &label,
+                "error",
+                "error",
+                downloaded,
+                total,
+                Some("Nedladdningen avbröts. Delvis fil kan återupptas senare.".into()),
+            );
             return Err("Nedladdningen avbröts".into());
         }
         file.write_all(&chunk)
@@ -421,14 +906,34 @@ async fn download_local_model(app: AppHandle, model: String) -> Result<LocalMode
             .map_err(|error| error.to_string())?;
         downloaded += chunk.len() as u64;
         if downloaded.saturating_sub(last_reported) >= 1_000_000 || total == Some(downloaded) {
-            emit_progress(&app, &job_id, "download", &label, "downloading", "active", downloaded, total, None);
+            emit_progress(
+                &app,
+                &job_id,
+                "download",
+                &label,
+                "downloading",
+                "active",
+                downloaded,
+                total,
+                None,
+            );
             last_reported = downloaded;
         }
     }
     file.flush().await.map_err(|error| error.to_string())?;
     drop(file);
     if total.is_some_and(|expected| expected != downloaded) {
-        emit_progress(&app, &job_id, "download", &label, "error", "error", downloaded, total, Some("Filstorleken stämmer inte; försök igen.".into()));
+        emit_progress(
+            &app,
+            &job_id,
+            "download",
+            &label,
+            "error",
+            "error",
+            downloaded,
+            total,
+            Some("Filstorleken stämmer inte; försök igen.".into()),
+        );
         return Err("Modellfilens storlek stämmer inte med nedladdningen".into());
     }
     fs::rename(&partial, &destination)
@@ -438,7 +943,17 @@ async fn download_local_model(app: AppHandle, model: String) -> Result<LocalMode
         .await
         .map_err(|error| error.to_string())?
         .len();
-    emit_progress(&app, &job_id, "download", &label, "complete", "complete", size, total, Some("Modellen är klar att använda.".into()));
+    emit_progress(
+        &app,
+        &job_id,
+        "download",
+        &label,
+        "complete",
+        "complete",
+        size,
+        total,
+        Some("Modellen är klar att använda.".into()),
+    );
     Ok(LocalModelStatus {
         model,
         installed: true,
@@ -466,12 +981,19 @@ async fn open_anki_desktop() -> Result<(), String> {
         PathBuf::from(r"C:\Program Files (x86)\Anki\anki.exe"),
     ];
     if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-        candidates.push(PathBuf::from(local_app_data).join("Programs").join("Anki").join("anki.exe"));
+        candidates.push(
+            PathBuf::from(local_app_data)
+                .join("Programs")
+                .join("Anki")
+                .join("anki.exe"),
+        );
     }
     let anki = candidates
         .into_iter()
         .find(|path| path.is_file())
-        .ok_or_else(|| "Kunde inte hitta Anki Desktop. Öppna Anki manuellt och försök igen.".to_string())?;
+        .ok_or_else(|| {
+            "Kunde inte hitta Anki Desktop. Öppna Anki manuellt och försök igen.".to_string()
+        })?;
     std::process::Command::new(anki)
         .spawn()
         .map_err(|error| format!("Kunde inte öppna Anki: {error}"))?;
@@ -489,7 +1011,17 @@ async fn transcribe_local(
     initial_prompt: Option<String>,
 ) -> Result<String, String> {
     let label = "Lokal transkribering";
-    emit_progress(&app, &job_id, "transcription", label, "preparing", "active", 0, None, Some("Förbereder ljudfilen…".into()));
+    emit_progress(
+        &app,
+        &job_id,
+        "transcription",
+        label,
+        "preparing",
+        "active",
+        0,
+        None,
+        Some("Förbereder ljudfilen…".into()),
+    );
     let model = valid_model(&model)?;
     let app_data = app
         .path()
@@ -500,7 +1032,10 @@ async fn transcribe_local(
         return Err("Ljudfilen ligger utanför appens tillåtna lagring".into());
     }
     if !input.is_file() {
-        return Err("Ljudfilen kunde inte hittas lokalt. Importera ljudfilen igen och försök på nytt.".into());
+        return Err(
+            "Ljudfilen kunde inte hittas lokalt. Importera ljudfilen igen och försök på nytt."
+                .into(),
+        );
     }
     let model_path = models_dir(&app)?.join(format!("ggml-{model}.bin"));
     if !model_path.exists() {
@@ -515,7 +1050,8 @@ async fn transcribe_local(
     let requested_acceleration = acceleration.unwrap_or_else(|| "auto".into());
     let runtime_dir = nvidia_runtime_dir(&app)?;
     let nvidia_whisper = find_file(&runtime_dir, "whisper-cli.exe");
-    let nvidia_detected = nvidia_gpu_name().await.is_some();
+    let nvidia_name = nvidia_gpu_name().await;
+    let nvidia_detected = nvidia_name.is_some();
     let use_nvidia = match requested_acceleration.as_str() {
         "cpu" => false,
         "nvidia" => {
@@ -550,8 +1086,15 @@ async fn transcribe_local(
         .duration_since(UNIX_EPOCH)
         .map_err(|error| error.to_string())?
         .as_millis();
-    let wav = work_dir.join(format!("{stamp}.wav"));
-    let output_prefix = work_dir.join(format!("{stamp}-result"));
+    // Keep all temporary output for one invocation together. Besides avoiding
+    // collisions between concurrent transcriptions, this lets us safely discover
+    // JSON output from Whisper builds with slightly different naming behaviour.
+    let run_dir = work_dir.join(stamp.to_string());
+    fs::create_dir_all(&run_dir)
+        .await
+        .map_err(|error| format!("Kunde inte skapa tillfällig transkriptionsmapp: {error}"))?;
+    let wav = run_dir.join("input.wav");
+    let output_prefix = run_dir.join("result");
     let converted = Command::new(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&input)
@@ -559,9 +1102,26 @@ async fn transcribe_local(
         .arg(&wav)
         .output()
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            format!(
+                "Kunde inte starta FFmpeg ({}) för {}: {error}",
+                ffmpeg.display(),
+                input.display()
+            )
+        })?;
     if !converted.status.success() {
-        emit_progress(&app, &job_id, "transcription", label, "error", "error", 0, None, Some("Ljudkonvertering misslyckades.".into()));
+        let _ = fs::remove_dir_all(&run_dir).await;
+        emit_progress(
+            &app,
+            &job_id,
+            "transcription",
+            label,
+            "error",
+            "error",
+            0,
+            None,
+            Some("Ljudkonvertering misslyckades.".into()),
+        );
         return Err(format!(
             "Ljudkonvertering misslyckades: {}",
             String::from_utf8_lossy(&converted.stderr)
@@ -590,39 +1150,128 @@ async fn transcribe_local(
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
         command.arg("-p").arg(prompt);
     }
-    emit_progress(&app, &job_id, "transcription", label, "starting", "active", 0, None, Some(if use_nvidia { "Startar Whisper med NVIDIA…".into() } else { "Startar Whisper på processorn…".into() }));
-    let child = command
-        .spawn()
-        .map_err(|error| format!("Kunde inte starta Whisper: {error}"))?;
+    let execution_detail = if use_nvidia {
+        format!(
+            "Kör Whisper på NVIDIA {}.",
+            nvidia_name.as_deref().unwrap_or("GPU")
+        )
+    } else if requested_acceleration == "auto" && nvidia_detected {
+        "NVIDIA hittades men CUDA-runtime saknas — kör på processorn.".into()
+    } else {
+        "Kör Whisper på processorn.".into()
+    };
+    emit_progress(
+        &app,
+        &job_id,
+        "transcription",
+        label,
+        "starting",
+        "active",
+        0,
+        None,
+        Some(execution_detail.clone()),
+    );
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&run_dir).await;
+            return Err(format!(
+                "Kunde inte starta Whisper ({}) i {}: {error}",
+                whisper.display(),
+                whisper_dir.display()
+            ));
+        }
+    };
     let mut result = Box::pin(child.wait_with_output());
     let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let started = std::time::Instant::now();
     let result = loop {
         tokio::select! {
-            output = &mut result => break output.map_err(|error| error.to_string())?,
+            output = &mut result => match output {
+                Ok(output) => break output,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&run_dir).await;
+                    return Err(format!("Whisper-processen avbröts: {error}"));
+                }
+            },
             _ = heartbeat.tick() => emit_progress(
                 &app, &job_id, "transcription", label, "transcribing", "active", 0, None,
-                Some(format!("Whisper arbetar · {} min", started.elapsed().as_secs() / 60)),
+                Some(format!("{} · {} min", execution_detail, started.elapsed().as_secs() / 60)),
             ),
         }
     };
-    let _ = fs::remove_file(&wav).await;
     let _ = fs::remove_file(&input).await;
     if !result.status.success() {
-        emit_progress(&app, &job_id, "transcription", label, "error", "error", 0, None, Some("Whisper kunde inte slutföra transkriberingen.".into()));
+        let _ = fs::remove_dir_all(&run_dir).await;
+        emit_progress(
+            &app,
+            &job_id,
+            "transcription",
+            label,
+            "error",
+            "error",
+            0,
+            None,
+            Some("Whisper kunde inte slutföra transkriberingen.".into()),
+        );
         return Err(format!(
             "Whisper misslyckades: {}",
             String::from_utf8_lossy(&result.stderr)
         ));
     }
-    let json_path = output_prefix.with_extension("json");
-    emit_progress(&app, &job_id, "transcription", label, "saving", "active", 0, None, Some("Läser in transkriptet…".into()));
-    let json = fs::read_to_string(&json_path)
-        .await
-        .map_err(|error| error.to_string())?;
-    let _ = fs::remove_file(json_path).await;
-    emit_progress(&app, &job_id, "transcription", label, "complete", "complete", 0, None, Some("Transkriptet är klart.".into()));
+    let expected_json_path = output_prefix.with_extension("json");
+    emit_progress(
+        &app,
+        &job_id,
+        "transcription",
+        label,
+        "saving",
+        "active",
+        0,
+        None,
+        Some("Läser in transkriptet…".into()),
+    );
+    let json_path = match find_whisper_json_output(&run_dir, &expected_json_path).await {
+        Ok(Some(path)) => path,
+        Ok(None) => {
+            let stderr = process_output_excerpt(&result.stderr);
+            let stdout = process_output_excerpt(&result.stdout);
+            let _ = fs::remove_dir_all(&run_dir).await;
+            let details = match (stdout.is_empty(), stderr.is_empty()) {
+                (false, false) => format!(" Utdata: {stdout}\nFelutdata: {stderr}"),
+                (false, true) => format!(" Utdata: {stdout}"),
+                (true, false) => format!(" Felutdata: {stderr}"),
+                (true, true) => String::new(),
+            };
+            return Err(format!(
+                "Whisper avslutades utan att skapa ett JSON-transkript.{details}"
+            ));
+        }
+        Err(error) => {
+            let _ = fs::remove_dir_all(&run_dir).await;
+            return Err(error);
+        }
+    };
+    let json = match fs::read_to_string(&json_path).await {
+        Ok(json) => json,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&run_dir).await;
+            return Err(format!("Whisper skapade inget läsbart transkript: {error}"));
+        }
+    };
+    let _ = fs::remove_dir_all(&run_dir).await;
+    emit_progress(
+        &app,
+        &job_id,
+        "transcription",
+        label,
+        "complete",
+        "complete",
+        0,
+        None,
+        Some(format!("Transkriptet är klart · {}", execution_detail)),
+    );
     Ok(json)
 }
 
@@ -659,9 +1308,25 @@ async fn prepare_api_audio(app: AppHandle, input_path: String) -> Result<Vec<Str
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&input)
         .args([
-            "-map", "0:a:0", "-vn", "-ac", "1", "-ar", "16000", "-c:a", "aac",
-            "-b:a", "64k", "-f", "segment", "-segment_time", "480", "-reset_timestamps", "1",
-            "-segment_format", "mp4",
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-f",
+            "segment",
+            "-segment_time",
+            "480",
+            "-reset_timestamps",
+            "1",
+            "-segment_format",
+            "mp4",
         ])
         .arg(&output_pattern)
         .output()
@@ -678,9 +1343,16 @@ async fn prepare_api_audio(app: AppHandle, input_path: String) -> Result<Vec<Str
         .await
         .map_err(|error| error.to_string())?;
     let mut paths = Vec::new();
-    while let Some(entry) = entries.next_entry().await.map_err(|error| error.to_string())? {
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|error| error.to_string())?
+    {
         let path = entry.path();
-        if path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("m4a")) {
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+        {
             paths.push(path);
         }
     }
@@ -705,7 +1377,11 @@ pub fn run() {
             read_credential,
             write_credential,
             delete_credential,
+            start_google_drive_oauth,
+            complete_google_drive_oauth,
+            disconnect_google_drive,
             local_engine_status,
+            diagnostic_snapshot,
             install_nvidia_runtime,
             remove_nvidia_runtime,
             local_model_status,

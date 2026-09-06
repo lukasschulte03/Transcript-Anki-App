@@ -3,12 +3,28 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { netFetch } from "./platform";
 import { isTauri } from "./platform";
 
+function validateAnkiEndpoint(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("AnkiConnect-adressen är ogiltig");
+  }
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)
+  ) {
+    throw new Error("AnkiConnect måste köras lokalt på den här datorn");
+  }
+  return url.toString();
+}
+
 async function invoke(
   url: string,
   action: string,
   params: Record<string, unknown> = {},
 ) {
-  const response = await netFetch(url, {
+  const response = await netFetch(validateAnkiEndpoint(url), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ action, version: 6, params }),

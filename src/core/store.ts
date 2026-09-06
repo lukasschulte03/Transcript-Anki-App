@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import type {
   AppSettings,
   BackgroundJob,
+  LibraryBackup,
   Flashcard,
   LectureData,
   LibraryNode,
@@ -16,6 +17,59 @@ import { normalizePalette } from "./theme";
 
 const now = () => new Date().toISOString();
 const workspaceId = "workspace-main";
+
+/** Returns whether a node can be placed below the requested parent. */
+export function canMoveLibraryNode(
+  nodes: LibraryNode[],
+  nodeId: string,
+  parentId: string,
+) {
+  const node = nodes.find((item) => item.id === nodeId);
+  const parent = nodes.find((item) => item.id === parentId);
+  const allowedParents: Partial<Record<NodeType, NodeType[]>> = {
+    course: ["workspace"],
+    module: ["course"],
+    topic: ["module"],
+    lecture: ["module"],
+  };
+  if (
+    !node ||
+    !parent ||
+    node.id === parent.id ||
+    !allowedParents[node.type]?.includes(parent.type)
+  ) {
+    return false;
+  }
+
+  // Keep the tree acyclic even if future node types gain more flexible nesting.
+  const seen = new Set<string>();
+  let current: LibraryNode | undefined = parent;
+  while (current && !seen.has(current.id)) {
+    if (current.id === node.id) return false;
+    seen.add(current.id);
+    current = current.parentId
+      ? nodes.find((item) => item.id === current!.parentId)
+      : undefined;
+  }
+  return true;
+}
+
+export function canReorderLibraryNode(
+  nodes: LibraryNode[],
+  nodeId: string,
+  targetId: string,
+) {
+  const node = nodes.find((item) => item.id === nodeId);
+  const target = nodes.find((item) => item.id === targetId);
+  const isLeaf = (type: NodeType) => type === "topic" || type === "lecture";
+  return Boolean(
+    node &&
+      target &&
+      node.id !== target.id &&
+      node.parentId === target.parentId &&
+      (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
+  );
+}
 const initialPaletteId =
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -40,13 +94,20 @@ interface AppState {
   markers: Marker[];
   cards: Flashcard[];
   /** Notes removed locally but not yet confirmed deleted by AnkiConnect. */
-  pendingAnkiDeletions: number[];
+  pendingAnkiDeletions: {
+    ankiId: number;
+    lectureId?: string;
+    error?: string;
+    updatedAt?: string;
+  }[];
   selectedId: string;
   activeView: "dashboard" | "workspace" | "cards" | "settings";
   settings: AppSettings;
   jobs: BackgroundJob[];
   addNode: (parentId: string | null, type: NodeType, title: string) => string;
   updateNode: (id: string, patch: Partial<LibraryNode>) => void;
+  moveNode: (id: string, parentId: string) => boolean;
+  reorderNode: (id: string, targetId: string) => boolean;
   removeNode: (id: string) => void;
   selectNode: (id: string) => void;
   setActiveView: (view: AppState["activeView"]) => void;
@@ -57,14 +118,17 @@ interface AppState {
     segments: Omit<TranscriptSegment, "id" | "lectureId">[],
   ) => void;
   updateSegment: (id: string, text: string) => void;
+  removeSegment: (id: string) => void;
+  setSegmentQualityFlag: (id: string, suspicious: boolean) => void;
   addMarker: (marker: Omit<Marker, "id" | "createdAt">) => void;
   updateMarker: (id: string, note: string) => void;
   removeMarker: (id: string) => void;
   removeSuspiciousSegments: (lectureId: string) => void;
-  addCards: (cards: Omit<Flashcard, "id">[]) => void;
+  addCards: (cards: Omit<Flashcard, "id">[]) => string[];
   updateCard: (id: string, patch: Partial<Flashcard>) => void;
   removeCard: (id: string) => void;
   resolveAnkiNoteDeletion: (ankiId: number) => void;
+  markAnkiNoteDeletionError: (ankiId: number, error: string) => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
   upsertJob: (
     job: Omit<BackgroundJob, "startedAt" | "updatedAt"> & {
@@ -76,6 +140,7 @@ interface AppState {
     nodeId: string,
   ) => { title: string; context: string; type: NodeType }[];
   importLibrary: (data: Partial<AppState>) => void;
+  restoreLibraryBackup: (backup: LibraryBackup) => void;
 }
 
 export const useAppStore = create<AppState>()(
@@ -109,6 +174,11 @@ export const useAppStore = create<AppState>()(
         transcriptionPrompt: "",
         ankiUrl: "http://127.0.0.1:8765",
         defaultDeck: "Lectio",
+        cloudSync: {
+          provider: "onedrive",
+          remotePath: "",
+        },
+        backupLimit: 10,
       },
       jobs: [],
       addNode: (parentId, type, title) => {
@@ -128,6 +198,8 @@ export const useAppStore = create<AppState>()(
           parentId: resolvedParentId,
           type,
           title,
+          sortIndex: get().nodes.filter((item) => item.parentId === resolvedParentId)
+            .length,
           context: "",
           createdAt: now(),
           settings: {},
@@ -146,6 +218,34 @@ export const useAppStore = create<AppState>()(
         set((s) => ({
           nodes: s.nodes.map((n) => (n.id === id ? { ...n, ...patch } : n)),
         })),
+      moveNode: (id, parentId) => {
+        const nodes = get().nodes;
+        if (!canMoveLibraryNode(nodes, id, parentId)) return false;
+        set({
+          nodes: nodes.map((node) =>
+            node.id === id ? { ...node, parentId } : node,
+          ),
+        });
+        return true;
+      },
+      reorderNode: (id, targetId) => {
+        const nodes = get().nodes;
+        if (!canReorderLibraryNode(nodes, id, targetId)) return false;
+        const node = nodes.find((item) => item.id === id)!;
+        const siblings = nodes.filter((item) => item.parentId === node.parentId);
+        const remaining = siblings.filter((item) => item.id !== id);
+        const targetIndex = remaining.findIndex((item) => item.id === targetId);
+        remaining.splice(targetIndex, 0, node);
+        const positions = new Map(remaining.map((item, index) => [item.id, index]));
+        set({
+          nodes: nodes.map((item) =>
+            positions.has(item.id)
+              ? { ...item, sortIndex: positions.get(item.id) }
+              : item,
+          ),
+        });
+        return true;
+      },
       removeNode: (id) =>
         set((s) => {
           const descendants = new Set<string>([id]);
@@ -164,6 +264,18 @@ export const useAppStore = create<AppState>()(
             });
           }
           const removedIds = [...descendants];
+          void db.backups.put({
+            id: uid(),
+            createdAt: now(),
+            reason: "deletion",
+            nodes: s.nodes,
+            lectures: s.lectures,
+            segments: s.segments,
+            markers: s.markers,
+            cards: s.cards,
+            settings: s.settings,
+            assetCount: 0,
+          });
           void db.transaction(
             "rw",
             db.assets,
@@ -196,17 +308,22 @@ export const useAppStore = create<AppState>()(
             segments: s.segments.filter((x) => !descendants.has(x.lectureId)),
             markers: s.markers.filter((x) => !descendants.has(x.lectureId)),
             cards: s.cards.filter((x) => !descendants.has(x.lectureId)),
-            pendingAnkiDeletions: [
-              ...new Set([
-                ...s.pendingAnkiDeletions,
-                ...s.cards
-                  .filter(
-                    (card) =>
-                      descendants.has(card.lectureId) && card.ankiId !== undefined,
-                  )
-                  .map((card) => card.ankiId as number),
-              ]),
-            ],
+            pendingAnkiDeletions: Array.from(
+              new Map(
+                [
+                  ...s.pendingAnkiDeletions,
+                  ...s.cards
+                    .filter(
+                      (card) =>
+                        descendants.has(card.lectureId) && card.ankiId !== undefined,
+                    )
+                    .map((card) => ({
+                      ankiId: card.ankiId as number,
+                      lectureId: card.lectureId,
+                    })),
+                ].map((item) => [item.ankiId, item]),
+              ).values(),
+            ),
           };
         }),
       selectNode: (id) => set({ selectedId: id }),
@@ -234,6 +351,20 @@ export const useAppStore = create<AppState>()(
         set((s) => ({
           segments: s.segments.map((x) => (x.id === id ? { ...x, text } : x)),
         })),
+      removeSegment: (id) =>
+        set((s) => ({ segments: s.segments.filter((segment) => segment.id !== id) })),
+      setSegmentQualityFlag: (id, suspicious) =>
+        set((s) => ({
+          segments: s.segments.map((segment) =>
+            segment.id === id
+              ? {
+                  ...segment,
+                  suspicious,
+                  qualityFlags: suspicious ? segment.qualityFlags : undefined,
+                }
+              : segment,
+          ),
+        })),
       addMarker: (marker) =>
         set((s) => ({
           markers: [...s.markers, { ...marker, id: uid(), createdAt: now() }],
@@ -250,10 +381,13 @@ export const useAppStore = create<AppState>()(
             (segment) => segment.lectureId !== lectureId || !segment.suspicious,
           ),
         })),
-      addCards: (cards) =>
+      addCards: (cards) => {
+        const ids = cards.map(() => uid());
         set((s) => ({
-          cards: [...s.cards, ...cards.map((x) => ({ ...x, id: uid() }))],
-        })),
+          cards: [...s.cards, ...cards.map((card, index) => ({ ...card, id: ids[index] }))],
+        }));
+        return ids;
+      },
       updateCard: (id, patch) =>
         set((s) => ({
           cards: s.cards.map((x) => (x.id === id ? { ...x, ...patch } : x)),
@@ -266,13 +400,28 @@ export const useAppStore = create<AppState>()(
             pendingAnkiDeletions:
               card?.ankiId === undefined
                 ? s.pendingAnkiDeletions
-                : [...new Set([...s.pendingAnkiDeletions, card.ankiId])],
+                : Array.from(
+                    new Map(
+                      [
+                        ...s.pendingAnkiDeletions,
+                        { ankiId: card.ankiId, lectureId: card.lectureId },
+                      ].map((item) => [item.ankiId, item]),
+                    ).values(),
+                  ),
           };
         }),
       resolveAnkiNoteDeletion: (ankiId) =>
         set((s) => ({
           pendingAnkiDeletions: s.pendingAnkiDeletions.filter(
-            (noteId) => noteId !== ankiId,
+            (pending) => pending.ankiId !== ankiId,
+          ),
+        })),
+      markAnkiNoteDeletionError: (ankiId, error) =>
+        set((s) => ({
+          pendingAnkiDeletions: s.pendingAnkiDeletions.map((pending) =>
+            pending.ankiId === ankiId
+              ? { ...pending, error, updatedAt: now() }
+              : pending,
           ),
         })),
       updateSettings: (patch) =>
@@ -325,10 +474,23 @@ export const useAppStore = create<AppState>()(
               : s.settings.customPalettes,
           },
         })),
+      restoreLibraryBackup: (backup) =>
+        set({
+          nodes: backup.nodes,
+          lectures: backup.lectures,
+          segments: backup.segments,
+          markers: backup.markers,
+          cards: backup.cards,
+          settings: backup.settings,
+          selectedId: backup.nodes.some((node) => node.id === workspaceId)
+            ? workspaceId
+            : (backup.nodes[0]?.id ?? workspaceId),
+          activeView: "dashboard",
+        }),
     }),
     {
       name: "lectio-state-v1",
-      version: 9,
+      version: 10,
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
         const legacySettings = previous.settings as AppSettings & {
@@ -360,6 +522,19 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
+            cloudSync: (() => {
+              const legacyCloud = legacySettings.cloudSync as Partial<AppSettings["cloudSync"]>;
+              return {
+                provider: ["onedrive", "google-drive", "dropbox"].includes(legacyCloud?.provider ?? "")
+                  ? legacyCloud.provider as AppSettings["cloudSync"]["provider"]
+                  : "onedrive",
+                remotePath: legacyCloud?.remotePath ?? "",
+                connectedAt: legacyCloud?.connectedAt,
+                accountLabel: legacyCloud?.accountLabel,
+                lastSyncedAt: legacyCloud?.lastSyncedAt,
+              };
+            })(),
+            backupLimit: legacySettings.backupLimit ?? 10,
             onboardingDismissed: legacySettings.onboardingDismissed ?? false,
             librarySidebarCollapsed:
               legacySettings.librarySidebarCollapsed ?? false,
@@ -384,7 +559,10 @@ export const useAppStore = create<AppState>()(
           // Ett pågående native-jobb överlever inte en omstart. Rensa därför
           // gamla indikatorer i stället för att visa ett falskt förlopp.
           jobs: [],
-          pendingAnkiDeletions: previous.pendingAnkiDeletions ?? [],
+          pendingAnkiDeletions: (previous.pendingAnkiDeletions ?? []).map(
+            (pending) =>
+              typeof pending === "number" ? { ankiId: pending } : pending,
+          ),
         };
       },
     },

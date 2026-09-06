@@ -26,7 +26,11 @@ tauri-plugin-log = "2"
 tauri-plugin-http = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
-tokio = { version = "1", features = ["fs", "io-util", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "process", "sync", "time"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
-keyring = "3"
+keyring = { version = "3", features = ["windows-native"] }
+base64 = "0.22"
+rand = "0.9"
+sha2 = "0.10"
+url = "2"

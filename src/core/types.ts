@@ -5,6 +5,8 @@ export interface LibraryNode {
   parentId: string | null;
   type: NodeType;
   title: string;
+  /** Local sibling order. Missing values retain the order from older libraries. */
+  sortIndex?: number;
   context: string;
   createdAt: string;
   settings: {
@@ -23,6 +25,8 @@ export interface TranscriptSegment {
   speaker?: string;
   confidence?: number;
   suspicious?: boolean;
+  /** Local-only quality hints. Text is never removed automatically. */
+  qualityFlags?: Array<"empty" | "very-short" | "duplicate" | "repeated-phrase">;
 }
 
 export interface Marker {
@@ -47,6 +51,11 @@ export interface Flashcard {
   ankiId?: number;
   /** Last Anki deck this note was placed in, for incremental deck moves. */
   ankiDeck?: string;
+  ankiSyncError?: string;
+  ankiSyncErrorAt?: string;
+  ankiSyncedAt?: string;
+  duplicateWarning?: string;
+  duplicateOfId?: string;
 }
 
 export interface LectureData {
@@ -71,6 +80,7 @@ export interface LectureData {
   }[];
   slideAssetId?: string;
   slideName?: string;
+  ankiLastSyncedAt?: string;
 }
 
 export interface ThemePalette {
@@ -140,6 +150,35 @@ export interface AppSettings {
   transcriptionPrompt: string;
   ankiUrl: string;
   defaultDeck: string;
+  cloudSync: CloudSyncConfiguration;
+  /** Number of local metadata snapshots kept before old ones are pruned. */
+  backupLimit: number;
+}
+
+/** A provider-neutral direct cloud target. */
+export type CloudSyncProvider = "onedrive" | "google-drive" | "dropbox";
+
+export interface CloudSyncConfiguration {
+  provider: CloudSyncProvider;
+  /** Empty means the root of the chosen service. */
+  remotePath: string;
+  /** Stored only after the provider's OAuth flow has completed. */
+  connectedAt?: string;
+  accountLabel?: string;
+  lastSyncedAt?: string;
+}
+
+export interface LibraryBackup {
+  id: string;
+  createdAt: string;
+  reason: "import" | "deletion" | "manual";
+  nodes: LibraryNode[];
+  lectures: Record<string, LectureData>;
+  segments: TranscriptSegment[];
+  markers: Marker[];
+  cards: Flashcard[];
+  settings: AppSettings;
+  assetCount: number;
 }
 
 export interface StoredAsset {

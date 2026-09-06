@@ -9,6 +9,7 @@ export interface TranscriptionResult {
     speaker?: string;
     confidence?: number;
     suspicious?: boolean;
+    qualityFlags?: Array<"empty" | "very-short" | "duplicate" | "repeated-phrase">;
   }[];
 }
 export interface TranscriptionProvider {
@@ -51,14 +52,18 @@ export const cloudApiTranscription: TranscriptionProvider = {
     const data = await response.json();
     if (Array.isArray(data.segments))
       return {
-        segments: data.segments.map((s: any) => ({
+        segments: flagTranscriptionQuality(data.segments.map((s: any) => ({
           start: Number(s.start),
           end: Number(s.end),
           text: String(s.text),
           confidence: s.confidence,
-        })),
+        }))),
       };
-    return { segments: [{ start: 0, end: 0, text: String(data.text ?? "") }] };
+    return {
+      segments: flagTranscriptionQuality([
+        { start: 0, end: 0, text: String(data.text ?? "") },
+      ]),
+    };
   },
 };
 
@@ -77,5 +82,44 @@ export function parseTimestampedText(text: string): TranscriptionResult {
       : start + 10;
     return { start, end, text: match[7].trim() };
   });
-  return { segments };
+  return { segments: flagTranscriptionQuality(segments) };
+}
+
+/** Flags likely decoding artefacts for review; it never removes text itself. */
+export function flagTranscriptionQuality(
+  segments: TranscriptionResult["segments"],
+) {
+  const normalize = (value: string) =>
+    value
+      .toLocaleLowerCase("sv")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const recent = new Set<string>();
+  return segments.map((segment) => {
+    const text = segment.text.trim();
+    const normalized = normalize(text);
+    const duplicate = Boolean(normalized && recent.has(normalized));
+    if (normalized) {
+      recent.add(normalized);
+      if (recent.size > 40) recent.delete(recent.values().next().value ?? "");
+    }
+    const words = normalized.split(" ").filter(Boolean);
+    const repeatedPhrase = words.length >= 8 && words.some((_, index) => {
+      const phrase = words.slice(index, index + 4).join(" ");
+      return phrase.split(" ").length === 4 && normalized.indexOf(phrase) !== normalized.lastIndexOf(phrase);
+    });
+    const flags = [
+      ...(segment.qualityFlags ?? []),
+      ...(text.length === 0 ? ["empty" as const] : []),
+      ...(text.length > 0 && text.length < 3 ? ["very-short" as const] : []),
+      ...(duplicate ? ["duplicate" as const] : []),
+      ...(repeatedPhrase ? ["repeated-phrase" as const] : []),
+    ];
+    const qualityFlags = [...new Set(flags)];
+    const suspicious = segment.suspicious || qualityFlags.length > 0;
+    return suspicious
+      ? { ...segment, text, suspicious: true, qualityFlags }
+      : { ...segment, text };
+  });
 }

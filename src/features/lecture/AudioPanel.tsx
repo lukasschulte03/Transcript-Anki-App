@@ -28,13 +28,13 @@ import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
-import { Input, Label } from "../../components/ui/Form";
+import { Input, Label, Select } from "../../components/ui/Form";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import {
   buildTranscriptionPrompt,
   cloudApiTranscription,
 } from "../../services/transcription";
-import { toast } from "sonner";
+import { toast } from "../../services/feedbackToast";
 import {
   downloadLocalModel,
   getLocalModelStatus,
@@ -46,6 +46,7 @@ import {
   readCredential,
   writeCredential,
 } from "../../services/credentials";
+import { canRecoverRecording } from "../../services/recordingRecovery";
 
 async function measureAudioDuration(blob: Blob) {
   const url = URL.createObjectURL(blob);
@@ -121,12 +122,16 @@ export function AudioPanel({
   );
   const asset = assets?.[activeAudioPart];
   const recoverableSession = useLiveQuery(
-    () =>
-      db.recordingSessions
+    async () => {
+      const sessions = await db.recordingSessions
         .where("lectureId")
         .equals(lectureId)
-        .sortBy("createdAt")
-        .then((sessions) => sessions.at(-1)),
+        .sortBy("createdAt");
+      const session = sessions.at(-1);
+      if (!session) return undefined;
+      const chunkCount = await db.recordingChunks.where("sessionId").equals(session.id).count();
+      return canRecoverRecording(session, chunkCount) ? session : undefined;
+    },
     [lectureId],
   );
   const audioUrl = useMemo(
@@ -163,6 +168,11 @@ export function AudioPanel({
   const [savedApiKey, setSavedApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
+  const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
+  const [microphoneHealth, setMicrophoneHealth] = useState<
+    "idle" | "checking" | "live" | "silent" | "error"
+  >("idle");
   const recorder = useRef<MediaRecorder | null>(null);
   const transcriptionCredentialKey = `transcription:${settings.transcriptionProvider === "groq" ? "groq" : "openai"}`;
   const recordingSessionId = useRef<string | null>(null);
@@ -174,12 +184,28 @@ export function AudioPanel({
   const audio = useRef<HTMLAudioElement>(null);
   const pendingSeek = useRef<number | null>(null);
   const continuePlayback = useRef(false);
+  const microphoneMonitor = useRef<number | null>(null);
+  const microphoneContext = useRef<AudioContext | null>(null);
   useEffect(
     () => () => {
       if (audioUrl) URL.revokeObjectURL(audioUrl);
     },
     [audioUrl],
   );
+  const refreshMicrophones = useCallback(async () => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setMicrophones(devices.filter((device) => device.kind === "audioinput"));
+    } catch {
+      setMicrophones([]);
+    }
+  }, []);
+  useEffect(() => {
+    void refreshMicrophones();
+    navigator.mediaDevices.addEventListener?.("devicechange", refreshMicrophones);
+    return () =>
+      navigator.mediaDevices.removeEventListener?.("devicechange", refreshMicrophones);
+  }, [refreshMicrophones]);
   useEffect(() => {
     let cancelled = false;
     if (!transcribeOpen || transcribeMode !== "api") return;
@@ -204,6 +230,8 @@ export function AudioPanel({
         activeRecorder.stop();
       }
       if (timer.current) clearInterval(timer.current);
+      if (microphoneMonitor.current) clearInterval(microphoneMonitor.current);
+      void microphoneContext.current?.close();
     },
     [],
   );
@@ -231,6 +259,22 @@ export function AudioPanel({
     };
     window.addEventListener("lectio:seek", seek);
     return () => window.removeEventListener("lectio:seek", seek);
+  }, [lectureId]);
+  useEffect(() => {
+    const importAudioFromChecklist = (event: Event) => {
+      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+        audioImportInput.current?.click();
+    };
+    const openTranscriptionFromChecklist = (event: Event) => {
+      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+        setTranscribeOpen(true);
+    };
+    window.addEventListener("lectio:import-audio", importAudioFromChecklist);
+    window.addEventListener("lectio:open-transcription", openTranscriptionFromChecklist);
+    return () => {
+      window.removeEventListener("lectio:import-audio", importAudioFromChecklist);
+      window.removeEventListener("lectio:open-transcription", openTranscriptionFromChecklist);
+    };
   }, [lectureId]);
   useEffect(() => {
     if (!transcribeOpen || transcribeMode !== "local") return;
@@ -261,6 +305,32 @@ export function AudioPanel({
       ),
       audioParts: nextParts,
     });
+  };
+
+  const stopMicrophoneMonitor = () => {
+    if (microphoneMonitor.current) window.clearInterval(microphoneMonitor.current);
+    microphoneMonitor.current = null;
+    void microphoneContext.current?.close();
+    microphoneContext.current = null;
+  };
+  const monitorMicrophone = (stream: MediaStream) => {
+    stopMicrophoneMonitor();
+    const AudioContextConstructor = window.AudioContext;
+    if (!AudioContextConstructor) return;
+    const context = new AudioContextConstructor();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 512;
+    context.createMediaStreamSource(stream).connect(analyser);
+    const samples = new Uint8Array(analyser.fftSize);
+    let lastSignalAt = Date.now();
+    setMicrophoneHealth("checking");
+    microphoneContext.current = context;
+    microphoneMonitor.current = window.setInterval(() => {
+      analyser.getByteTimeDomainData(samples);
+      const peak = samples.reduce((max, sample) => Math.max(max, Math.abs(sample - 128)), 0);
+      if (peak > 2) lastSignalAt = Date.now();
+      setMicrophoneHealth(Date.now() - lastSignalAt > 12_000 ? "silent" : "live");
+    }, 2_000);
   };
 
   const finalizeRecording = async (
@@ -309,8 +379,15 @@ export function AudioPanel({
   const start = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          ...(selectedMicrophoneId
+            ? { deviceId: { exact: selectedMicrophoneId } }
+            : {}),
+        },
       });
+      void refreshMicrophones();
       const mr = new MediaRecorder(stream);
       const sessionId = uid();
       const createdAt = new Date().toISOString();
@@ -350,11 +427,40 @@ export function AudioPanel({
           toast.error(`Inspelningen kunde inte slutföras: ${String(error)}`);
         } finally {
           recordingSessionId.current = null;
+          stopMicrophoneMonitor();
           stream.getTracks().forEach((track) => track.stop());
           setSavingRecording(false);
         }
       };
+      mr.onerror = () => {
+        setMicrophoneHealth("error");
+        if (recordingSessionId.current)
+          void db.recordingSessions.update(recordingSessionId.current, {
+            status: "interrupted",
+            duration: durationNow(),
+          });
+        toast.error("Inspelningen avbröts. Sparade ljuddelar kan återställas.");
+      };
+      stream.getAudioTracks().forEach((track) => {
+        track.onended = () => {
+          if (mr.state === "inactive") return;
+          setMicrophoneHealth("error");
+          if (recordingSessionId.current)
+            void db.recordingSessions.update(recordingSessionId.current, {
+              status: "interrupted",
+              duration: durationNow(),
+            });
+          mr.requestData();
+          mr.stop();
+          recorder.current = null;
+          setRecording(false);
+          setPaused(false);
+          if (timer.current) clearInterval(timer.current);
+          toast.error("Mikrofonen kopplades från. Välj en mikrofon och starta igen; sparat ljud bevaras.");
+        };
+      });
       mr.start(1000);
+      monitorMicrophone(stream);
       recorder.current = mr;
       accumulatedMs.current = 0;
       resumedAt.current = Date.now();
@@ -369,6 +475,7 @@ export function AudioPanel({
           });
       }, 1000);
     } catch (e) {
+      setMicrophoneHealth("error");
       toast.error(`Kunde inte starta mikrofonen: ${String(e)}`);
     }
   };
@@ -387,6 +494,7 @@ export function AudioPanel({
     recorder.current = null;
     setRecording(false);
     setPaused(false);
+    setMicrophoneHealth("idle");
     if (timer.current) clearInterval(timer.current);
   };
   const pause = () => {
@@ -394,6 +502,7 @@ export function AudioPanel({
     if (paused) {
       recorder.current.resume();
       resumedAt.current = Date.now();
+      setMicrophoneHealth("checking");
       if (recordingSessionId.current)
         void db.recordingSessions.update(recordingSessionId.current, {
           status: "recording",
@@ -809,6 +918,14 @@ export function AudioPanel({
     addMarker({ lectureId, time: current, note: "" });
     toast.success(`Markerat ${formatTime(current)}`);
   }, [addMarker, lectureId, current]);
+  useEffect(() => {
+    const markFromChecklist = (event: Event) => {
+      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+        markMoment();
+    };
+    window.addEventListener("lectio:mark-moment", markFromChecklist);
+    return () => window.removeEventListener("lectio:mark-moment", markFromChecklist);
+  }, [lectureId, markMoment]);
   const handleKeyboardShortcut = useEffectEvent((event: KeyboardEvent) => {
     const target = event.target as HTMLElement | null;
     const editingControl = target?.closest(
@@ -877,6 +994,37 @@ export function AudioPanel({
           <Button size="sm" onClick={start} disabled={savingRecording}>
             <Mic className="size-4" /> Spela in
           </Button>
+        )}
+        {!recording && microphones.length > 1 && (
+          <Select
+            value={selectedMicrophoneId}
+            onChange={(event) => setSelectedMicrophoneId(event.target.value)}
+            className="h-8 max-w-48 py-1 text-xs"
+            aria-label="Mikrofon för nästa inspelning"
+          >
+            <option value="">Systemets standardmikrofon</option>
+            {microphones.map((microphone, index) => (
+              <option key={microphone.deviceId} value={microphone.deviceId}>
+                {microphone.label || `Mikrofon ${index + 1}`}
+              </option>
+            ))}
+          </Select>
+        )}
+        {recording && microphoneHealth !== "live" && (
+          <span
+            className={
+              microphoneHealth === "error" || microphoneHealth === "silent"
+                ? "text-xs font-medium text-[var(--palette-warning)]"
+                : "text-xs text-[var(--palette-text-muted)]"
+            }
+            title={
+              microphoneHealth === "silent"
+                ? "Ingen ljudnivå upptäcktes nyligen. Kontrollera mikrofonen om föreläsaren talar."
+                : "Kontrollerar att mikrofonen tar emot ljud."
+            }
+          >
+            {microphoneHealth === "silent" ? "Kontrollera mikrofonen" : "Kontrollerar mikrofon…"}
+          </span>
         )}
         {!recording && recoverableSession && !savingRecording && (
           <div className="flex items-center rounded-lg border border-amber-200 bg-amber-50 p-0.5">

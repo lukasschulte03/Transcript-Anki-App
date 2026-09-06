@@ -5,11 +5,21 @@ import {
   FileWarning,
   LoaderCircle,
 } from "lucide-react";
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
-import pdfWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { Button } from "../../components/ui/Button";
+import type { PDFDocumentLoadingTask } from "pdfjs-dist";
 
-GlobalWorkerOptions.workerSrc = pdfWorker;
+let pdfRuntime: Promise<typeof import("pdfjs-dist")> | undefined;
+
+async function loadPdfRuntime() {
+  pdfRuntime ??= Promise.all([
+    import("pdfjs-dist"),
+    import("pdfjs-dist/build/pdf.worker.min.mjs?url"),
+  ]).then(([pdf, worker]) => {
+    pdf.GlobalWorkerOptions.workerSrc = worker.default;
+    return pdf;
+  });
+  return pdfRuntime;
+}
 
 export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -28,11 +38,12 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
 
   useEffect(() => {
     let cancelled = false;
-    let documentTask: ReturnType<typeof getDocument> | undefined;
+    let documentTask: PDFDocumentLoadingTask | undefined;
     const render = async () => {
       setLoading(true);
       setError("");
       try {
+        const { getDocument } = await loadPdfRuntime();
         documentTask = getDocument({
           data: new Uint8Array(await blob.arrayBuffer()),
         });
