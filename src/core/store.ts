@@ -175,8 +175,8 @@ export const useAppStore = create<AppState>()(
         ankiUrl: "http://127.0.0.1:8765",
         defaultDeck: "Lectio",
         cloudSync: {
-          provider: "onedrive",
-          remotePath: "",
+          provider: "google-drive",
+          remotePath: "Lectio",
         },
         backupLimit: 10,
       },
@@ -490,7 +490,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "lectio-state-v1",
-      version: 10,
+      version: 13,
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
         const legacySettings = previous.settings as AppSettings & {
@@ -522,13 +522,14 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
-            cloudSync: (() => {
-              const legacyCloud = legacySettings.cloudSync as Partial<AppSettings["cloudSync"]>;
-              return {
-                provider: ["onedrive", "google-drive", "dropbox"].includes(legacyCloud?.provider ?? "")
-                  ? legacyCloud.provider as AppSettings["cloudSync"]["provider"]
-                  : "onedrive",
-                remotePath: legacyCloud?.remotePath ?? "",
+              cloudSync: (() => {
+                const legacyCloud = legacySettings.cloudSync as Partial<AppSettings["cloudSync"]>;
+                return {
+                // Google Drive is the only active direct-sync provider for
+                // now. Older placeholder selections must not leave the
+                // connection UI disabled after upgrading.
+                provider: "google-drive" as const,
+                remotePath: legacyCloud?.remotePath?.trim() || "Lectio",
                 connectedAt: legacyCloud?.connectedAt,
                 accountLabel: legacyCloud?.accountLabel,
                 lastSyncedAt: legacyCloud?.lastSyncedAt,

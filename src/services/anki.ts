@@ -95,6 +95,20 @@ export function lectureDeckName(
 export const needsAnkiSync = (card: Flashcard, deck: string) =>
   card.status === "approved" || !card.ankiId || card.ankiDeck !== deck;
 
+/** Anki's Cloze note type only creates cards when Text contains this syntax. */
+export const hasClozeMarkup = (value: string) =>
+  /\{\{c\d+::[^{}]+(?:::[^{}]*)?\}\}/u.test(value);
+
+function validateCardForAnki(card: Flashcard) {
+  if (card.type === "cloze" && !hasClozeMarkup(card.front)) {
+    throw new Error(
+      "Cloze-kortet saknar Anki-markering. Skriv till exempel {{c1::svaret}} i frågefältet.",
+    );
+  }
+}
+
+type AnkiNoteInfo = { modelName?: string; tags?: string[] };
+
 async function fieldsForCard(
   url: string,
   modelName: "Basic" | "Cloze",
@@ -110,9 +124,12 @@ async function fieldsForCard(
       : names.includes("Back Extra")
         ? "Back Extra"
         : names[1];
-    if (!text || !extra)
-      throw new Error("Korttypen Cloze saknar förväntade fält");
-    return { [text]: card.front, [extra]: card.back };
+    if (!text) throw new Error("Korttypen Cloze saknar fältet Text");
+    // Extra is optional in custom Cloze note types. Text is the only required
+    // field for Anki to create a cloze card.
+    return extra
+      ? { [text]: card.front, [extra]: card.back }
+      : { [text]: card.front };
   }
   const front = names.includes("Front") ? "Front" : names[0];
   const back = names.includes("Back") ? "Back" : names[1];
@@ -121,18 +138,55 @@ async function fieldsForCard(
   return { [front]: card.front, [back]: card.back };
 }
 
+async function addCardNote(
+  url: string,
+  deck: string,
+  modelName: "Basic" | "Cloze",
+  fields: Record<string, string>,
+  tags: string[],
+  allowDuplicate = false,
+) {
+  return invoke(url, "addNote", {
+    note: {
+      deckName: deck,
+      modelName,
+      fields,
+      options: { allowDuplicate },
+      tags: ["lectio", ...tags],
+    },
+  }) as Promise<number>;
+}
+
 export async function syncCard(url: string, deck: string, card: Flashcard) {
   const modelName = card.type === "cloze" ? "Cloze" : "Basic";
+  validateCardForAnki(card);
   const fields = await fieldsForCard(url, modelName, card);
   const tags = withoutStructuralTags(card.tags);
   if (card.ankiId) {
+    const notes = (await invoke(url, "notesInfo", {
+      notes: [card.ankiId],
+    })) as AnkiNoteInfo[];
+    const existingNote = notes[0];
+
+    // A note cannot change between Basic and Cloze in-place. Create its
+    // replacement first, then remove the old note only after that succeeded.
+    if (existingNote?.modelName && existingNote.modelName !== modelName) {
+      const replacementId = await addCardNote(
+        url,
+        deck,
+        modelName,
+        fields,
+        tags,
+        true,
+      );
+      await deleteNote(url, card.ankiId);
+      return replacementId;
+    }
+
     await invoke(url, "updateNoteFields", {
       note: { id: card.ankiId, fields },
     });
-    const notes = (await invoke(url, "notesInfo", {
-      notes: [card.ankiId],
-    })) as Array<{ tags?: string[] }>;
-    const obsoleteTags = (notes[0]?.tags ?? []).filter(isStructuralTag);
+    const obsoleteTags = (existingNote?.tags ?? []).filter(isStructuralTag);
     if (obsoleteTags.length) {
       await invoke(url, "removeTags", {
         notes: [card.ankiId],
@@ -151,13 +205,5 @@ export async function syncCard(url: string, deck: string, card: Flashcard) {
     }
     return card.ankiId;
   }
-  return invoke(url, "addNote", {
-    note: {
-      deckName: deck,
-      modelName,
-      fields,
-      options: { allowDuplicate: false },
-      tags: ["lectio", ...tags],
-    },
-  }) as Promise<number>;
+  return addCardNote(url, deck, modelName, fields, tags);
 }

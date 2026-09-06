@@ -6,13 +6,14 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::{Mutex, OnceLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::{
     fs,
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
     process::Command,
     sync::oneshot,
@@ -195,6 +196,48 @@ fn process_output_excerpt(bytes: &[u8]) -> String {
     excerpt
 }
 
+/// Extracts the end timestamp from whisper.cpp's streaming output, for example
+/// `[00:01:12.500 --> 00:01:18.300]  Text`.
+fn whisper_progress_seconds(line: &str) -> Option<f64> {
+    let end = line.split("-->").nth(1)?.split(']').next()?.trim();
+    let values = end
+        .split(':')
+        .map(str::trim)
+        .map(|value| value.parse::<f64>().ok())
+        .collect::<Option<Vec<_>>>()?;
+    match values.as_slice() {
+        [minutes, seconds] => Some(minutes * 60.0 + seconds),
+        [hours, minutes, seconds] => Some(hours * 3600.0 + minutes * 60.0 + seconds),
+        _ => None,
+    }
+}
+
+/// The WAV created immediately before inference is always 16 kHz, mono and
+/// signed 16-bit PCM. Its byte size therefore gives a stable duration without
+/// a second probe process.
+async fn wav_duration_millis(path: &Path) -> Option<u64> {
+    let bytes = fs::metadata(path).await.ok()?.len().saturating_sub(44);
+    Some(bytes.saturating_mul(1_000) / 32_000)
+}
+
+#[cfg(test)]
+mod whisper_progress_tests {
+    use super::whisper_progress_seconds;
+
+    #[test]
+    fn reads_whisper_segment_end_timestamps() {
+        assert_eq!(
+            whisper_progress_seconds("[00:01:12.500 --> 00:01:18.300]  Ett segment"),
+            Some(78.3),
+        );
+        assert_eq!(
+            whisper_progress_seconds("[01:02:03.000 --> 01:02:10.000]  Senare"),
+            Some(3_730.0),
+        );
+        assert_eq!(whisper_progress_seconds("ingen tidsstämpel"), None);
+    }
+}
+
 fn cancelled_downloads() -> &'static Mutex<HashSet<String>> {
     CANCELLED_DOWNLOADS.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -243,6 +286,38 @@ async fn google_drive_client_secret() -> Result<String, String> {
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+async fn refresh_google_drive_access_token() -> Result<String, String> {
+    let credential = tokio::task::spawn_blocking(|| {
+        credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?
+            .get_password()
+            .map_err(|_| "Google Drive är inte anslutet. Koppla kontot igen under Inställningar.".to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())??;
+    let credential: GoogleDriveCredential = serde_json::from_str(&credential)
+        .map_err(|_| "Google Drive-anslutningen kunde inte läsas. Koppla kontot igen.".to_string())?;
+    let client_secret = google_drive_client_secret().await?;
+    let response = reqwest::Client::new()
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", GOOGLE_DRIVE_CLIENT_ID),
+            ("client_secret", &client_secret),
+            ("refresh_token", &credential.refresh_token),
+            ("grant_type", "refresh_token"),
+        ])
+        .send()
+        .await
+        .map_err(|error| format!("Kunde inte förnya Google Drive-anslutningen: {error}"))?;
+    if !response.status().is_success() {
+        return Err("Google Drive-sessionen har gått ut. Koppla kontot igen under Inställningar.".into());
+    }
+    response
+        .json::<GoogleTokenResponse>()
+        .await
+        .map(|token| token.access_token)
+        .map_err(|error| format!("Kunde inte läsa Googles sessionssvar: {error}"))
 }
 
 #[tauri::command]
@@ -435,6 +510,13 @@ async fn disconnect_google_drive() -> Result<(), String> {
     .map_err(|error| error.to_string())?
 }
 
+/// Returns a short-lived token for the current sync operation. The refresh
+/// token remains in Windows Credential Manager and is never exposed to JS.
+#[tauri::command]
+async fn google_drive_access_token() -> Result<String, String> {
+    refresh_google_drive_access_token().await
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalModelStatus {
@@ -450,6 +532,7 @@ struct LocalEngineStatus {
     nvidia_detected: bool,
     nvidia_name: Option<String>,
     nvidia_runtime_installed: bool,
+    nvidia_runtime_ready: bool,
     nvidia_runtime_size: u64,
 }
 
@@ -462,6 +545,7 @@ struct DiagnosticSnapshot {
     cpu_threads: usize,
     nvidia_detected: bool,
     nvidia_runtime_installed: bool,
+    nvidia_runtime_ready: bool,
     whisper_models: Vec<String>,
     ffmpeg_available: bool,
     bundled_whisper_available: bool,
@@ -506,7 +590,10 @@ fn emit_progress(
     );
 }
 
-const NVIDIA_RUNTIME_URL: &str = "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-cublas-11.8.0-bin-x64.zip";
+// CUDA 12.4's official whisper.cpp package includes the complete backend
+// dependency set required by recent NVIDIA drivers. The older 11.8 package
+// could leave ggml-cuda.dll unloadable on otherwise compatible Windows PCs.
+const NVIDIA_RUNTIME_URL: &str = "https://github.com/ggml-org/whisper.cpp/releases/download/b4938/whisper-cublas-12.4.0-bin-x64.zip";
 
 fn valid_model(model: &str) -> Result<&str, String> {
     match model {
@@ -525,7 +612,7 @@ fn models_dir(app: &AppHandle) -> Result<PathBuf, String> {
 fn nvidia_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
     app.path()
         .app_data_dir()
-        .map(|path| path.join("runtimes").join("nvidia-cuda-11.8"))
+        .map(|path| path.join("runtimes").join("nvidia-cuda-12.4"))
         .map_err(|error| error.to_string())
 }
 
@@ -581,13 +668,39 @@ async fn nvidia_gpu_name() -> Option<String> {
         .map(str::to_string)
 }
 
+/// Presence of an executable is not enough: a partial CUDA runtime can leave
+/// whisper.cpp silently running on CPU. The binary reports its loaded backend
+/// during `--version`, which is a quick, model-free verification.
+async fn nvidia_runtime_is_ready(runtime_dir: &Path) -> bool {
+    let Some(whisper) = find_file(runtime_dir, "whisper-cli.exe") else {
+        return false;
+    };
+    let output = Command::new(&whisper)
+        .current_dir(whisper.parent().unwrap_or(runtime_dir))
+        .arg("--version")
+        .output()
+        .await;
+    let Ok(output) = output else {
+        return false;
+    };
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    report.contains("loaded cuda backend")
+}
+
 async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
     let runtime_dir = nvidia_runtime_dir(app)?;
     let nvidia_name = nvidia_gpu_name().await;
+    let nvidia_runtime_installed = find_file(&runtime_dir, "whisper-cli.exe").is_some();
     Ok(LocalEngineStatus {
         nvidia_detected: nvidia_name.is_some(),
         nvidia_name,
-        nvidia_runtime_installed: find_file(&runtime_dir, "whisper-cli.exe").is_some(),
+        nvidia_runtime_installed,
+        nvidia_runtime_ready: nvidia_runtime_installed && nvidia_runtime_is_ready(&runtime_dir).await,
         nvidia_runtime_size: directory_size(&runtime_dir),
     })
 }
@@ -629,6 +742,7 @@ async fn diagnostic_snapshot(app: AppHandle) -> Result<DiagnosticSnapshot, Strin
             .unwrap_or(0),
         nvidia_detected: engine.nvidia_detected,
         nvidia_runtime_installed: engine.nvidia_runtime_installed,
+        nvidia_runtime_ready: engine.nvidia_runtime_ready,
         whisper_models: models,
         ffmpeg_available: resource_dir.join("ffmpeg").join("ffmpeg.exe").is_file(),
         bundled_whisper_available: resource_dir
@@ -643,8 +757,13 @@ async fn install_nvidia_runtime(app: AppHandle) -> Result<LocalEngineStatus, Str
     let job_id = "download:nvidia-runtime";
     let label = "NVIDIA-stöd för Whisper";
     let runtime_dir = nvidia_runtime_dir(&app)?;
-    if find_file(&runtime_dir, "whisper-cli.exe").is_some() {
+    if nvidia_runtime_is_ready(&runtime_dir).await {
         return engine_status(&app).await;
+    }
+    if runtime_dir.exists() {
+        fs::remove_dir_all(&runtime_dir)
+            .await
+            .map_err(|error| format!("Kunde inte ersätta ofullständigt NVIDIA-stöd: {error}"))?;
     }
     begin_download(job_id);
     let parent = runtime_dir
@@ -1052,6 +1171,7 @@ async fn transcribe_local(
     let nvidia_whisper = find_file(&runtime_dir, "whisper-cli.exe");
     let nvidia_name = nvidia_gpu_name().await;
     let nvidia_detected = nvidia_name.is_some();
+    let nvidia_runtime_ready = nvidia_runtime_is_ready(&runtime_dir).await;
     let use_nvidia = match requested_acceleration.as_str() {
         "cpu" => false,
         "nvidia" => {
@@ -1061,9 +1181,12 @@ async fn transcribe_local(
             if nvidia_whisper.is_none() {
                 return Err("NVIDIA-runtime behöver installeras under Inställningar".into());
             }
+            if !nvidia_runtime_ready {
+                return Err("NVIDIA-runtime kunde inte initieras. Installera om stödet under Inställningar eller välj Automatiskt för CPU-fallback.".into());
+            }
             true
         }
-        "auto" => nvidia_detected && nvidia_whisper.is_some(),
+        "auto" => nvidia_detected && nvidia_whisper.is_some() && nvidia_runtime_ready,
         _ => return Err("Okänt accelerationsläge".into()),
     };
     let whisper = if use_nvidia {
@@ -1130,7 +1253,12 @@ async fn transcribe_local(
     let cores = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4);
-    let threads = cores.saturating_sub(1).clamp(2, 8).to_string();
+    // GPU inference still benefits from CPU decoding and token work. Leave one
+    // core for the UI but allow a stronger machine to feed CUDA more readily.
+    let threads = cores
+        .saturating_sub(1)
+        .clamp(2, if use_nvidia { 12 } else { 8 })
+        .to_string();
     let mut command = Command::new(&whisper);
     command
         .current_dir(&whisper_dir)
@@ -1145,18 +1273,21 @@ async fn transcribe_local(
         .arg("-t")
         .arg(threads)
         .arg("-l")
-        .arg(language.unwrap_or_else(|| "auto".into()))
-        .arg("--no-context");
+        .arg(language.unwrap_or_else(|| "auto".into()));
+    if use_nvidia {
+        command.arg("-dev").arg("0").arg("-fa");
+    }
     if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
         command.arg("-p").arg(prompt);
     }
-    let execution_detail = if use_nvidia {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut execution_detail = if use_nvidia {
         format!(
-            "Kör Whisper på NVIDIA {}.",
+            "Startar Whisper med NVIDIA {}…",
             nvidia_name.as_deref().unwrap_or("GPU")
         )
     } else if requested_acceleration == "auto" && nvidia_detected {
-        "NVIDIA hittades men CUDA-runtime saknas — kör på processorn.".into()
+        "NVIDIA hittades men CUDA-runtime kunde inte initieras — kör på CPU.".into()
     } else {
         "Kör Whisper på processorn.".into()
     };
@@ -1182,27 +1313,118 @@ async fn transcribe_local(
             ));
         }
     };
-    let mut result = Box::pin(child.wait_with_output());
+    let mut child = child;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Kunde inte läsa Whispers förloppsutdata".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "Kunde inte läsa Whispers felutdata".to_string())?;
+    let mut stdout_lines = BufReader::new(stdout).lines();
+    let mut stderr_lines = BufReader::new(stderr).lines();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let started = std::time::Instant::now();
-    let result = loop {
+    let total_millis = wav_duration_millis(&wav).await;
+    let mut last_progress_millis = 0_u64;
+    let mut latest_preview = String::new();
+    let mut stdout_output = String::new();
+    let mut stderr_output = String::new();
+    let mut stdout_open = true;
+    let mut stderr_open = true;
+    let status = loop {
         tokio::select! {
-            output = &mut result => match output {
-                Ok(output) => break output,
+            line = stdout_lines.next_line(), if stdout_open => match line {
+                Ok(Some(line)) => {
+                    if stdout_output.len() < 4_000 {
+                        stdout_output.push_str(&line);
+                        stdout_output.push('\n');
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0")) {
+                        execution_detail = "NVIDIA kunde inte initieras — kör på CPU.".into();
+                    } else if use_nvidia && lower.contains("use gpu    = 1") {
+                        execution_detail = format!(
+                            "Kör Whisper på NVIDIA {}.",
+                            nvidia_name.as_deref().unwrap_or("GPU")
+                        );
+                    }
+                    if let Some(seconds) = whisper_progress_seconds(&line) {
+                        last_progress_millis = (seconds.max(0.0) * 1_000.0) as u64;
+                        latest_preview = line
+                            .split(']')
+                            .nth(1)
+                            .unwrap_or("")
+                            .trim()
+                            .chars()
+                            .take(160)
+                            .collect();
+                        let detail = if latest_preview.is_empty() {
+                            execution_detail.clone()
+                        } else {
+                            format!("{} · {}", execution_detail, latest_preview)
+                        };
+                        emit_progress(
+                            &app, &job_id, "transcription", label, "transcribing", "active",
+                            last_progress_millis, total_millis, Some(detail),
+                        );
+                    }
+                }
+                Ok(None) => stdout_open = false,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&run_dir).await;
+                    return Err(format!("Kunde inte läsa Whispers förloppsutdata: {error}"));
+                }
+            },
+            line = stderr_lines.next_line(), if stderr_open => match line {
+                Ok(Some(line)) => {
+                    if stderr_output.len() < 4_000 {
+                        stderr_output.push_str(&line);
+                        stderr_output.push('\n');
+                    }
+                    let lower = line.to_ascii_lowercase();
+                    if use_nvidia && (lower.contains("no gpu found") || lower.contains("use gpu    = 0")) {
+                        execution_detail = "NVIDIA kunde inte initieras — kör på CPU.".into();
+                        emit_progress(
+                            &app, &job_id, "transcription", label, "transcribing", "active",
+                            last_progress_millis, total_millis, Some(execution_detail.clone()),
+                        );
+                    } else if use_nvidia && lower.contains("use gpu    = 1") {
+                        execution_detail = format!(
+                            "Kör Whisper på NVIDIA {}.",
+                            nvidia_name.as_deref().unwrap_or("GPU")
+                        );
+                    }
+                }
+                Ok(None) => stderr_open = false,
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&run_dir).await;
+                    return Err(format!("Kunde inte läsa Whispers felutdata: {error}"));
+                }
+            },
+            output = child.wait() => match output {
+                Ok(status) => break status,
                 Err(error) => {
                     let _ = fs::remove_dir_all(&run_dir).await;
                     return Err(format!("Whisper-processen avbröts: {error}"));
                 }
             },
             _ = heartbeat.tick() => emit_progress(
-                &app, &job_id, "transcription", label, "transcribing", "active", 0, None,
-                Some(format!("{} · {} min", execution_detail, started.elapsed().as_secs() / 60)),
+                &app, &job_id, "transcription", label, "transcribing", "active",
+                last_progress_millis, total_millis,
+                Some(if latest_preview.is_empty() {
+                    format!("{} · {} min", execution_detail, started.elapsed().as_secs() / 60)
+                } else {
+                    format!("{} · {}", execution_detail, latest_preview)
+                }),
             ),
         }
     };
+    let stderr = stderr_output.into_bytes();
     let _ = fs::remove_file(&input).await;
-    if !result.status.success() {
+    if !status.success() {
         let _ = fs::remove_dir_all(&run_dir).await;
         emit_progress(
             &app,
@@ -1217,7 +1439,7 @@ async fn transcribe_local(
         );
         return Err(format!(
             "Whisper misslyckades: {}",
-            String::from_utf8_lossy(&result.stderr)
+            String::from_utf8_lossy(&stderr)
         ));
     }
     let expected_json_path = output_prefix.with_extension("json");
@@ -1235,8 +1457,8 @@ async fn transcribe_local(
     let json_path = match find_whisper_json_output(&run_dir, &expected_json_path).await {
         Ok(Some(path)) => path,
         Ok(None) => {
-            let stderr = process_output_excerpt(&result.stderr);
-            let stdout = process_output_excerpt(&result.stdout);
+            let stderr = process_output_excerpt(&stderr);
+            let stdout = process_output_excerpt(stdout_output.as_bytes());
             let _ = fs::remove_dir_all(&run_dir).await;
             let details = match (stdout.is_empty(), stderr.is_empty()) {
                 (false, false) => format!(" Utdata: {stdout}\nFelutdata: {stderr}"),
@@ -1380,6 +1602,7 @@ pub fn run() {
             start_google_drive_oauth,
             complete_google_drive_oauth,
             disconnect_google_drive,
+            google_drive_access_token,
             local_engine_status,
             diagnostic_snapshot,
             install_nvidia_runtime,

@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, CircleX, Download, LoaderCircle, X } from "lucide-react";
+import { Check, CircleX, Clock3, Download, LoaderCircle, X } from "lucide-react";
 import { useEffect } from "react";
 import { useAppStore } from "../core/store";
 import type {
@@ -9,6 +9,7 @@ import type {
 } from "../core/types";
 import { cancelDownload } from "../services/localStt";
 import { isTauri } from "../services/platform";
+import { cancelQueuedTranscription } from "../services/transcriptionQueue";
 
 interface NativeProgressEvent {
   id: string;
@@ -26,13 +27,16 @@ const phaseLabel: Record<string, string> = {
   downloading: "Laddar ned…",
   extracting: "Installerar…",
   starting: "Startar Whisper…",
+  queued: "Väntar i kö…",
   transcribing: "Transkriberar…",
   saving: "Sparar resultat…",
+  syncing: "Synkar…",
   exporting: "Exporterar…",
   importing: "Importerar…",
   packing: "Packar arkiv…",
   complete: "Klar",
   error: "Misslyckades",
+  cancelled: "Avbruten",
 };
 
 const bytes = (value: number) => {
@@ -40,21 +44,36 @@ const bytes = (value: number) => {
   return `${(value / 1024 / 1024).toFixed(value >= 1024 * 1024 * 1024 ? 0 : 1)} MB`;
 };
 
+const time = (milliseconds: number) => {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+};
+
 function JobRow({ job }: { job: BackgroundJob }) {
   const dismissJob = useAppStore((state) => state.dismissJob);
+  const upsertJob = useAppStore((state) => state.upsertJob);
   const percentage = job.total
     ? Math.min(100, Math.round((job.current / job.total) * 100))
     : null;
   const active = job.status === "active";
+  const queued = job.status === "queued";
   const cancel = async () => {
     try {
-      await cancelDownload(job.id);
+      if (job.kind === "transcription" && queued) {
+        if (cancelQueuedTranscription(job.id)) {
+          upsertJob({ ...job, phase: "cancelled", status: "cancelled", detail: "Togs bort från kön." });
+        }
+      } else if (job.kind === "download") {
+        await cancelDownload(job.id);
+      }
     } catch {
       // The native worker emits its own actionable error when applicable.
     }
   };
   const Icon = job.status === "error"
     ? CircleX
+    : queued
+    ? Clock3
     : active
     ? job.kind === "download"
       ? Download
@@ -62,42 +81,46 @@ function JobRow({ job }: { job: BackgroundJob }) {
     : Check;
   const detail =
     job.detail ??
-    (job.total
+    (job.kind === "transcription" && job.total
+      ? `${time(job.current)} / ${time(job.total)}`
+      : job.kind === "library" && job.total
+      ? `${job.current} av ${job.total} objekt`
+      : job.total
       ? `${bytes(job.current)} av ${bytes(job.total)}`
       : (phaseLabel[job.phase] ?? "Arbetar…"));
 
   return (
-    <div className="w-80 rounded-xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur">
+    <div className="w-80 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]/95 p-3 shadow-lg backdrop-blur">
       <div className="flex items-start gap-2.5">
         <Icon
-          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active && job.kind === "transcription" ? "animate-spin text-indigo-600" : "text-slate-500"}`}
+          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active && job.kind === "transcription" ? "animate-spin text-[var(--palette-accent)]" : "text-[var(--palette-text-muted)]"}`}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-slate-800">
+            <p className="truncate text-sm font-medium text-[var(--palette-text)]">
               {job.label}
             </p>
             {percentage !== null && (
-              <span className="ml-auto text-xs tabular-nums text-slate-500">
+              <span className="ml-auto text-xs tabular-nums text-[var(--palette-text-muted)]">
                 {percentage}%
               </span>
             )}
           </div>
-          <p className="mt-0.5 truncate text-xs text-slate-500">{detail}</p>
+          <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">{detail}</p>
         </div>
-        {active && job.kind === "download" && (
+        {(queued && job.kind === "transcription") || (active && job.kind === "download") ? (
           <button
-            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
             onClick={() => void cancel()}
-            aria-label="Avbryt nedladdning"
-            title="Avbryt nedladdning"
+            aria-label={queued ? "Ta bort från transkriptionskön" : "Avbryt nedladdning"}
+            title={queued ? "Ta bort från kön" : "Avbryt nedladdning"}
           >
             <X className="size-3.5" />
           </button>
-        )}
-        {!active && (
+        ) : null}
+        {!active && !queued && (
           <button
-            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+            className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
             onClick={() => dismissJob(job.id)}
             aria-label="Stäng förlopp"
           >
@@ -105,15 +128,15 @@ function JobRow({ job }: { job: BackgroundJob }) {
           </button>
         )}
       </div>
-      {active && (
-        <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-slate-100">
+      {(active || queued) && (
+        <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-[var(--palette-surface-muted)]">
           {percentage !== null ? (
             <div
-              className="h-full rounded-full bg-indigo-500 transition-[width] duration-300"
+              className="h-full rounded-full bg-[var(--palette-primary)] transition-[width] duration-300"
               style={{ width: `${percentage}%` }}
             />
           ) : (
-            <div className="h-full w-2/5 animate-pulse rounded-full bg-indigo-400" />
+            <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--palette-primary-muted)]" />
           )}
         </div>
       )}

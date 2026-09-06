@@ -15,9 +15,7 @@ export const syncProviderOptions: Array<{
   label: string;
   description: string;
 }> = [
-  { id: "onedrive", label: "OneDrive", description: "Logga in direkt i Lectio. Ingen OneDrive-app eller lokal synkmapp behövs." },
   { id: "google-drive", label: "Google Drive", description: "Logga in direkt i Lectio. Ditt Google Drive används utan separat desktop-app." },
-  { id: "dropbox", label: "Dropbox", description: "Logga in direkt i Lectio. Ditt Dropbox-konto används utan separat desktop-app." },
 ];
 
 interface GoogleOAuthStart {
@@ -54,4 +52,10 @@ export async function connectGoogleDrive(): Promise<GoogleDriveConnection> {
 export async function disconnectGoogleDrive() {
   if (!isTauri()) return;
   await invoke<void>("disconnect_google_drive");
+}
+
+/** Short-lived per-operation token; long-lived credentials stay native. */
+export async function getGoogleDriveAccessToken() {
+  if (!isTauri()) throw new Error("Google Drive-synk kräver desktopappen.");
+  return invoke<string>("google_drive_access_token");
 }

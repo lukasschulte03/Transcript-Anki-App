@@ -41,6 +41,7 @@ import {
   prepareAudioForCloudTranscription,
   transcribeWithLocalWhisper,
 } from "../../services/localStt";
+import { enqueueTranscription } from "../../services/transcriptionQueue";
 import {
   deleteCredential,
   readCredential,
@@ -166,7 +167,6 @@ export function AudioPanel({
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(true);
   const [savedApiKey, setSavedApiKey] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
@@ -587,33 +587,54 @@ export function AudioPanel({
   };
   const transcribe = async () => {
     if (!audioParts.length || (transcribeMode === "api" && !apiKey)) return;
+    const selectedMode = transcribeMode;
+    const selectedApiKey = apiKey;
+    if (selectedMode === "api") {
+      if (rememberApiKey) {
+        await writeCredential(transcriptionCredentialKey, selectedApiKey);
+        setSavedApiKey(true);
+      } else if (savedApiKey) {
+        await deleteCredential(transcriptionCredentialKey);
+        setSavedApiKey(false);
+      }
+    }
     const jobId = `transcription:${uid()}`;
     upsertJob({
       id: jobId,
       kind: "transcription",
       label:
-        transcribeMode === "local"
+        selectedMode === "local"
           ? "Lokal transkribering"
           : "API-transkribering",
-      phase: "preparing",
-      status: "active",
+      phase: "queued",
+      status: "queued",
       current: 0,
       detail:
-        transcribeMode === "local"
-          ? "Förbereder ljudfilen…"
-          : "Skickar ljudfilen till vald tjänst…",
+        "Väntar på ledig transkriberingsmotor…",
     });
-    setBusy(true);
+    setTranscribeOpen(false);
+    setApiKey("");
+    enqueueTranscription({
+      id: jobId,
+      run: async () => {
+        const transcribeMode = selectedMode;
+        const apiKey = selectedApiKey;
+        upsertJob({
+          id: jobId,
+          kind: "transcription",
+          label:
+            transcribeMode === "local"
+              ? "Lokal transkribering"
+              : "API-transkribering",
+          phase: "preparing",
+          status: "active",
+          current: 0,
+          detail:
+            transcribeMode === "local"
+              ? "Förbereder ljudfilen…"
+              : "Skickar ljudfilen till vald tjänst…",
+        });
     try {
-      if (transcribeMode === "api") {
-        if (rememberApiKey) {
-          await writeCredential(transcriptionCredentialKey, apiKey);
-          setSavedApiKey(true);
-        } else if (savedApiKey) {
-          await deleteCredential(transcriptionCredentialKey);
-          setSavedApiKey(false);
-        }
-      }
       const partsWithAssets = audioParts
         .map((part, index) => ({ part, asset: assets?.[index] }))
         .filter(
@@ -753,8 +774,6 @@ export function AudioPanel({
         current: 0,
         detail: `${mergedSegments.length} segment är klara.`,
       });
-      setTranscribeOpen(false);
-      setApiKey("");
       toast.success(`${mergedSegments.length} segment transkriberades`);
     } catch (e) {
       upsertJob({
@@ -773,9 +792,10 @@ export function AudioPanel({
             : "Transkriberingen kunde inte slutföras.",
       });
       toast.error(String(e));
-    } finally {
-      setBusy(false);
     }
+      },
+    });
+    toast.success("Transkriberingen lades till i kön");
   };
   const downloadModel = async () => {
     setDownloading(true);
@@ -1364,11 +1384,11 @@ export function AudioPanel({
           <Button
             className="w-full"
             disabled={
-              busy || (transcribeMode === "local" ? !localInstalled : !apiKey)
+              transcribeMode === "local" ? !localInstalled : !apiKey
             }
             onClick={transcribe}
           >
-            {busy ? "Transkriberar…" : "Starta transkribering"}
+            Lägg till i transkriptionskön
           </Button>
           <button
             onClick={() => {

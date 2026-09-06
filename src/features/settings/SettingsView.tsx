@@ -37,6 +37,7 @@ import {
   syncErrorMessage,
   syncProviderOptions,
 } from "../../services/sync";
+import { syncGoogleDrive } from "../../services/googleDriveSync";
 import { isTauri } from "../../services/platform";
 import {
   builtInPalettes,
@@ -287,6 +288,22 @@ export function SettingsView() {
       toast.success(`Google Drive anslöts: ${connection.accountLabel}`);
     } catch (error) {
       toast.error(syncErrorMessage(error, "Kunde inte ansluta Google Drive."));
+    } finally {
+      setCloudConnectBusy(false);
+    }
+  };
+  const syncCloudLibrary = async () => {
+    if (!settings.cloudSync.connectedAt) {
+      toast.error("Koppla Google Drive innan du synkar.");
+      return;
+    }
+    setCloudConnectBusy(true);
+    try {
+      await createBackup("manual");
+      await syncGoogleDrive();
+      toast.success("Google Drive-synken är klar.");
+    } catch (error) {
+      toast.error(syncErrorMessage(error, "Google Drive-synken kunde inte slutföras."));
     } finally {
       setCloudConnectBusy(false);
     }
@@ -783,28 +800,12 @@ export function SettingsView() {
                 description="Koppla ditt eget konto direkt. Lectio kräver ingen separat molnapp och lagrar inga lösenord."
               >
                 <div className="space-y-6">
-                  <Field label="Molnlagring">
-                    <Select
-                      value={settings.cloudSync.provider}
-                      onChange={(event) =>
-                        updateSettings({
-                          cloudSync: {
-                            ...settings.cloudSync,
-                            provider: event.target.value as typeof settings.cloudSync.provider,
-                          },
-                        })
-                      }
-                    >
-                      {syncProviderOptions.map((provider) => (
-                        <option key={provider.id} value={provider.id}>
-                          {provider.label}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                  <p className="-mt-4 text-xs leading-5 text-[var(--palette-text-muted)]">
-                    {syncProviderOptions.find((provider) => provider.id === settings.cloudSync.provider)?.description}
-                  </p>
+                  <div>
+                    <p className="text-sm font-medium text-[var(--palette-text)]">Google Drive</p>
+                    <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
+                      {syncProviderOptions[0]?.description}
+                    </p>
+                  </div>
 
                   <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
                     <p className="text-sm font-medium text-[var(--palette-text)]">Kontokoppling</p>
@@ -822,13 +823,17 @@ export function SettingsView() {
                             {cloudConnectBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Unplug className="size-3.5" />}
                             Koppla bort
                           </Button>
+                          <Button size="sm" disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary()}>
+                            {cloudConnectBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <HardDrive className="size-3.5" />}
+                            Synka nu
+                          </Button>
                         </>
                       ) : (
                         <>
                           <Button
                             variant="secondary"
                             size="sm"
-                            disabled={cloudConnectBusy || settings.cloudSync.provider !== "google-drive" || !isTauri()}
+                            disabled={cloudConnectBusy || !isTauri()}
                             onClick={() => void connectCloudAccount()}
                           >
                             {cloudConnectBusy && <LoaderCircle className="size-3.5 animate-spin" />}
@@ -837,29 +842,27 @@ export function SettingsView() {
                           <span className="text-xs text-[var(--palette-text-subtle)]">
                             {!isTauri()
                               ? "Öppna desktopappen för att koppla ett konto"
-                              : settings.cloudSync.provider === "google-drive"
-                                ? "Öppnar en säker Google-inloggning i din webbläsare"
-                                : "OneDrive och Dropbox kommer efter Google Drive"}
+                              : "Öppnar en säker Google-inloggning i din webbläsare"}
                           </span>
                         </>
                       )}
                     </div>
                   </div>
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="mt-4 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
                     <div className="flex items-start justify-between gap-4">
-                      <div><div className="text-sm font-semibold text-slate-800">Lokala säkerhetskopior</div><p className="mt-1 text-xs leading-5 text-slate-500">Metadata sparas före import och radering. Ljud och PDF-filer dupliceras inte.</p></div>
+                      <div><div className="text-sm font-semibold text-[var(--palette-text)]">Lokala säkerhetskopior</div><p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">Metadata sparas före import och radering. Ljud och PDF-filer dupliceras inte.</p></div>
                       <Button variant="outline" size="sm" onClick={() => void createBackup("manual").then(() => toast.success("Säkerhetskopia skapades"))}>Skapa nu</Button>
                     </div>
-                    <div className="mt-3 flex items-center justify-between gap-3 border-t border-slate-200 pt-3 text-xs">
-                      <span className="text-slate-500">Behåll de senaste säkerhetskopiorna</span>
+                    <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--palette-border)] pt-3 text-xs">
+                      <span className="text-[var(--palette-text-muted)]">Behåll de senaste säkerhetskopiorna</span>
                       <Select className="h-8 w-20 py-1 text-xs" value={settings.backupLimit ?? 10} onChange={(event) => void setBackupLimit(Number(event.target.value))}>
                         {[3, 5, 10, 20, 50].map((limit) => <option key={limit} value={limit}>{limit}</option>)}
                       </Select>
                     </div>
-                    {backups?.length ? <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">{backups.slice(0, settings.backupLimit ?? 10).map((backup) => <div key={backup.id} className="flex items-center justify-between gap-3 text-xs"><span className="min-w-0 text-slate-600">{new Date(backup.createdAt).toLocaleString("sv-SE")} · {backup.reason === "import" ? "före import" : backup.reason === "deletion" ? "före radering" : "manuell"} · ≈{Math.max(1, Math.ceil(JSON.stringify(backup).length / 1024))} kB metadata</span><Button variant="ghost" size="xs" onClick={() => void restoreBackup(backup)}>Förhandsgranska och återställ</Button></div>)}</div> : <p className="mt-3 text-xs text-slate-400">Inga säkerhetskopior ännu.</p>}
+                    {backups?.length ? <div className="mt-3 space-y-2 border-t border-[var(--palette-border)] pt-3">{backups.slice(0, settings.backupLimit ?? 10).map((backup) => <div key={backup.id} className="flex items-center justify-between gap-3 text-xs"><span className="min-w-0 text-[var(--palette-text-muted)]">{new Date(backup.createdAt).toLocaleString("sv-SE")} · {backup.reason === "import" ? "före import" : backup.reason === "deletion" ? "före radering" : "manuell"} · ≈{Math.max(1, Math.ceil(JSON.stringify(backup).length / 1024))} kB metadata</span><Button variant="ghost" size="xs" onClick={() => void restoreBackup(backup)}>Förhandsgranska och återställ</Button></div>)}</div> : <p className="mt-3 text-xs text-[var(--palette-text-subtle)]">Inga säkerhetskopior ännu.</p>}
                   </div>
 
-                  <Field label="Mapp i vald tjänst">
+                  <Field label="Mapp i Google Drive">
                     <Input
                       value={settings.cloudSync.remotePath}
                       onChange={(event) =>
@@ -867,17 +870,17 @@ export function SettingsView() {
                           cloudSync: { ...settings.cloudSync, remotePath: event.target.value },
                         })
                       }
-                      placeholder="Rotmappen (standard)"
+                      placeholder="Lectio"
                     />
                   </Field>
                   <p className="-mt-4 text-xs leading-5 text-[var(--palette-text-muted)]">
-                    Lämna tomt för att använda den valda tjänstens rot. Skriv exempelvis <span className="font-medium text-[var(--palette-text)]">Lectio</span> för en egen undermapp.
+                    Standard är <span className="font-medium text-[var(--palette-text)]">Lectio</span> i Google Drive-roten. Du kan ange en egen sökväg, exempelvis <span className="font-medium text-[var(--palette-text)]">Studier/Lectio</span>. Lämna tomt för standardmappen.
                   </p>
 
                   <div className="border-t border-[var(--palette-border)] pt-5">
-                    <p className="text-sm font-medium text-[var(--palette-text)]">Nästa steg</p>
+                    <p className="text-sm font-medium text-[var(--palette-text)]">Så fungerar synken</p>
                     <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
-                      Synkmotorn använder ett leverantörsoberoende, inkrementellt format för mediafiler och metadata. Samma konto och mapp kan sedan kopplas i mobilappen utan någon separat molnklient.
+                      Lectio skapar mapparna <span className="font-medium text-[var(--palette-text)]">metadata</span> och <span className="font-medium text-[var(--palette-text)]">media</span> under din valda Lectio-mapp. Oförändrade ljud och PDF:er laddas inte upp igen. På en ny dator hämtas biblioteket när den lokala installationen är tom.
                     </p>
                   </div>
                 </div>
@@ -1580,8 +1583,16 @@ function LocalModelManager() {
     try {
       const status = await installNvidiaRuntime();
       setEngine(status);
-      updateSettings({ localTranscriptionAcceleration: "nvidia" });
-      toast.success("NVIDIA-acceleration installerades");
+      updateSettings({
+        localTranscriptionAcceleration: status.nvidiaRuntimeReady
+          ? "nvidia"
+          : "auto",
+      });
+      if (status.nvidiaRuntimeReady) {
+        toast.success("NVIDIA-acceleration installerades");
+      } else {
+        toast.error("NVIDIA-stödet kunde inte startas. Lectio använder CPU tills det är åtgärdat.");
+      }
     } catch (error) {
       toast.error(String(error));
     } finally {
@@ -1627,7 +1638,7 @@ function LocalModelManager() {
               </div>
             </div>
           </div>
-          {engine?.nvidiaRuntimeInstalled ? (
+          {engine?.nvidiaRuntimeInstalled && engine.nvidiaRuntimeReady ? (
             <Button
               variant="ghost"
               size="sm"
@@ -1648,8 +1659,10 @@ function LocalModelManager() {
                 <Zap className="size-3.5" />
               )}
               {workingEngine
-                ? "Installerar ~270 MB…"
-                : "Installera NVIDIA-stöd"}
+                ? "Installerar ~670 MB…"
+                : engine?.nvidiaRuntimeInstalled
+                  ? "Installera om NVIDIA-stöd"
+                  : "Installera NVIDIA-stöd"}
             </Button>
           )}
         </div>
@@ -1668,11 +1681,13 @@ function LocalModelManager() {
             icon={Zap}
             title="NVIDIA"
             description={
-              engine?.nvidiaRuntimeInstalled
+              engine?.nvidiaRuntimeReady
                 ? `Installerat · ${formatBytes(engine.nvidiaRuntimeSize)}`
-                : "Installera CUDA-motorn först"
+                : engine?.nvidiaRuntimeInstalled
+                  ? "Kunde inte initieras · installera om stödet"
+                  : "Installera CUDA-motorn först"
             }
-            disabled={!engine?.nvidiaRuntimeInstalled}
+            disabled={!engine?.nvidiaRuntimeReady}
             onClick={() =>
               updateSettings({ localTranscriptionAcceleration: "nvidia" })
             }

@@ -12,7 +12,7 @@ import {
   parseCardResponse,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
-import { lectureDeckName, needsAnkiSync, syncCard, testAnki, withoutStructuralTags } from "./anki";
+import { hasClozeMarkup, lectureDeckName, needsAnkiSync, syncCard, testAnki, withoutStructuralTags } from "./anki";
 import { builtInPalettes, validateTheme } from "../core/theme";
 import { suggestSlideMappings } from "./slideMatching";
 import { redactDiagnosticText } from "./diagnostics";
@@ -248,6 +248,59 @@ describe("kortformat", () => {
     expect(noteId).toBe(123);
     expect(requests.map((request) => request.action)).toEqual(["modelFieldNames", "addNote"]);
     expect(requests[1].params).toMatchObject({ note: { deckName: "Kirurgi - Lectio", fields: { Front: "Fråga", Back: "Svar" } } });
+  });
+
+  it("skapar ett Cloze-kort med Ankis Text- och Extra-fält", async () => {
+    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
+      requests.push(body);
+      const result = body.action === "modelFieldNames" ? ["Text", "Extra"] : 321;
+      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+    }));
+
+    await expect(syncCard("http://127.0.0.1:8765", "Kirurgi - Lectio", {
+      id: "cloze", lectureId: "lecture", type: "cloze",
+      front: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.", back: "Viktig princip.",
+      tags: [], status: "approved",
+    })).resolves.toBe(321);
+    expect(requests.map((request) => request.action)).toEqual(["modelFieldNames", "addNote"]);
+    expect(requests[1].params).toMatchObject({ note: {
+      modelName: "Cloze",
+      fields: { Text: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.", Extra: "Viktig princip." },
+    } });
+  });
+
+  it("stoppar ett Cloze-kort utan Anki-markering innan det skickas", async () => {
+    await expect(syncCard("http://127.0.0.1:8765", "Lectio", {
+      id: "invalid-cloze", lectureId: "lecture", type: "cloze",
+      front: "Vilket system stabiliserar blodets pH?", back: "Buffertsystem.",
+      tags: [], status: "approved",
+    })).rejects.toThrow("saknar Anki-markering");
+    expect(hasClozeMarkup("{{c1::buffertsystem}}")).toBe(true);
+    expect(hasClozeMarkup("Buffertsystem")).toBe(false);
+  });
+
+  it("ersätter säkert en synkad Basic-not när kortet ändras till Cloze", async () => {
+    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
+      requests.push(body);
+      const result = body.action === "modelFieldNames" ? ["Text", "Extra"]
+        : body.action === "notesInfo" ? [{ modelName: "Basic", tags: ["lectio"] }]
+        : body.action === "addNote" ? 987
+        : null;
+      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+    }));
+
+    await expect(syncCard("http://127.0.0.1:8765", "Lectio", {
+      id: "changed", lectureId: "lecture", type: "cloze", ankiId: 42,
+      front: "Detta är {{c1::ett cloze-kort}}.", back: "Förklaring.",
+      tags: [], status: "approved",
+    })).resolves.toBe(987);
+    expect(requests.map((request) => request.action)).toEqual([
+      "modelFieldNames", "notesInfo", "addNote", "deleteNotes",
+    ]);
   });
 
   it("kan försöka om en misslyckad Anki-synk mot samma lokala mock", async () => {

@@ -213,7 +213,7 @@ export interface RecordingChunk {
 }
 
 export type BackgroundJobKind = "download" | "transcription" | "library";
-export type BackgroundJobStatus = "active" | "complete" | "error";
+export type BackgroundJobStatus = "queued" | "active" | "complete" | "error" | "cancelled";
 
 export interface BackgroundJob {
   id: string;
