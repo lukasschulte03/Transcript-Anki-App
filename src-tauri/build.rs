@@ -6,13 +6,19 @@
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(mobile)");
     println!("cargo:rerun-if-changed=build.rs");
-    let Ok(entry) = keyring::Entry::new("Lectio", "google-drive-client-secret") else {
-        return;
-    };
-    let Ok(secret) = entry.get_password() else {
-        return;
-    };
-    if !secret.trim().is_empty() {
-        println!("cargo:rustc-env=LECTIO_GOOGLE_DRIVE_CLIENT_SECRET={secret}");
+    println!("cargo:rerun-if-changed=capabilities");
+    println!("cargo:rerun-if-changed=tauri.conf.json");
+
+    // Do not return early here. Tauri's build hook embeds capabilities and
+    // permissions in the executable; skipping it leaves the frontend APIs
+    // present but denied at runtime ("Plugin not found").
+    if let Ok(entry) = keyring::Entry::new("Lectio", "google-drive-client-secret") {
+        if let Ok(secret) = entry.get_password() {
+            if !secret.trim().is_empty() {
+                println!("cargo:rustc-env=LECTIO_GOOGLE_DRIVE_CLIENT_SECRET={secret}");
+            }
+        }
     }
+
+    tauri_build::build();
 }
