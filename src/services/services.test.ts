@@ -26,7 +26,7 @@ describe("diagnostik", () => {
     expect(result).not.toContain("Lukas");
     expect(result).not.toContain("hemlig");
     expect(result).not.toContain("lukas@example.com");
-    expect(result).toContain("[redacted]");
+    expect(result).toContain("[redacted-path]");
   });
 
   it("ger ett säkert, relevant felsökningsförslag", () => {
