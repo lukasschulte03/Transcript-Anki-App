@@ -1,0 +1,37 @@
+name: Säkerställ issue-etiketter
+
+on:
+  issues:
+    types: [opened, reopened]
+
+permissions:
+  issues: write
+
+jobs:
+  add-missing-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const labels = context.payload.issue.labels.map(({ name }) => name)
+            const hasPriority = labels.some((label) => label.startsWith("prioritet:"))
+            const hasArea = labels.some((label) => label.startsWith("område:"))
+            const title = context.payload.issue.title.toLocaleLowerCase("sv-SE")
+            let area = "område: data"
+            if (/(anki|kort|flashcard)/.test(title)) area = "område: anki-ai"
+            else if (/(transkrib|whisper|stt|subtitle)/.test(title)) area = "område: transkribering"
+            else if (/(ljud|inspel|audio|mikrofon)/.test(title)) area = "område: ljud"
+            else if (/(synk|sync|google drive|onedrive|dropbox|moln)/.test(title)) area = "område: synk"
+            else if (/(ui|sidofält|sidebar|tema|färg|layout|ikon|knapp)/.test(title)) area = "område: ui"
+            const add = []
+            if (!hasPriority) add.push("prioritet: medium")
+            if (!hasArea) add.push(area)
+            if (add.length) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                labels: add,
+              })
+            }

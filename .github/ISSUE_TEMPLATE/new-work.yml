@@ -1,0 +1,21 @@
+name: Nytt arbete
+description: Fånga en förbättring, bugg eller teknisk uppgift för Lectio.
+title: ""
+labels: ["prioritet: medium", "område: data"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Beskriv det önskade resultatet. Nya issues får alltid en prioritet och ett område; ändra etiketter efter behov.
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Önskat resultat
+      description: Vad ska fungera annorlunda när arbetet är klart?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Kontext eller exempel
+      description: Valfritt – skärmdump, feltext eller ett konkret användningsfall.
