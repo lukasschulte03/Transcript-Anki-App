@@ -8,6 +8,8 @@ type QueuedTask = { id: string; run: () => Promise<void> };
 
 const pending: QueuedTask[] = [];
 let running = false;
+let activeId: string | undefined;
+const cancelledActive = new Set<string>();
 
 async function drain() {
   if (running) return;
@@ -15,7 +17,15 @@ async function drain() {
   try {
     while (pending.length) {
       const task = pending.shift();
-      if (task) await task.run();
+      if (task) {
+        activeId = task.id;
+        try {
+          await task.run();
+        } finally {
+          cancelledActive.delete(task.id);
+          activeId = undefined;
+        }
+      }
     }
   } finally {
     running = false;
@@ -33,4 +43,15 @@ export function cancelQueuedTranscription(id: string) {
   if (index < 0) return false;
   pending.splice(index, 1);
   return true;
+}
+
+/** Signals feature-level work to stop before its next API upload/chunk. */
+export function cancelActiveTranscription(id: string) {
+  if (activeId !== id) return false;
+  cancelledActive.add(id);
+  return true;
+}
+
+export function isActiveTranscriptionCancelled(id: string) {
+  return cancelledActive.has(id);
 }

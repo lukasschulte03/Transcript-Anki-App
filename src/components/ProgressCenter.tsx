@@ -7,9 +7,9 @@ import type {
   BackgroundJobKind,
   BackgroundJobStatus,
 } from "../core/types";
-import { cancelDownload } from "../services/localStt";
+import { cancelDownload, cancelLocalTranscription } from "../services/localStt";
 import { isTauri } from "../services/platform";
-import { cancelQueuedTranscription } from "../services/transcriptionQueue";
+import { cancelActiveTranscription, cancelQueuedTranscription } from "../services/transcriptionQueue";
 
 interface NativeProgressEvent {
   id: string;
@@ -63,6 +63,10 @@ function JobRow({ job }: { job: BackgroundJob }) {
         if (cancelQueuedTranscription(job.id)) {
           upsertJob({ ...job, phase: "cancelled", status: "cancelled", detail: "Togs bort från kön." });
         }
+      } else if (job.kind === "transcription" && active) {
+        cancelActiveTranscription(job.id);
+        await cancelLocalTranscription(job.id);
+        upsertJob({ ...job, detail: "Avbryter transkriberingen…" });
       } else if (job.kind === "download") {
         await cancelDownload(job.id);
       }
@@ -108,12 +112,12 @@ function JobRow({ job }: { job: BackgroundJob }) {
           </div>
           <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">{detail}</p>
         </div>
-        {(queued && job.kind === "transcription") || (active && job.kind === "download") ? (
+        {job.kind === "transcription" && (queued || active) || (active && job.kind === "download") ? (
           <button
             className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
             onClick={() => void cancel()}
-            aria-label={queued ? "Ta bort från transkriptionskön" : "Avbryt nedladdning"}
-            title={queued ? "Ta bort från kön" : "Avbryt nedladdning"}
+            aria-label={queued ? "Ta bort från transkriptionskön" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
+            title={queued ? "Ta bort från kön" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
           >
             <X className="size-3.5" />
           </button>

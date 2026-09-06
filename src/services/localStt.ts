@@ -65,6 +65,11 @@ export async function cancelDownload(jobId: string) {
   return invoke<void>("cancel_download", { jobId });
 }
 
+export async function cancelLocalTranscription(jobId: string) {
+  if (!isTauri()) return;
+  return invoke<void>("cancel_transcription", { jobId });
+}
+
 const cloudUploadLimitBytes = 20 * 1024 * 1024;
 
 /**

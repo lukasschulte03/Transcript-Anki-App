@@ -21,6 +21,7 @@ use tokio::{
 };
 
 static CANCELLED_DOWNLOADS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static CANCELLED_TRANSCRIPTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static GOOGLE_OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, GoogleOAuthSession>>> =
     OnceLock::new();
 
@@ -244,6 +245,29 @@ fn cancelled_downloads() -> &'static Mutex<HashSet<String>> {
     CANCELLED_DOWNLOADS.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+fn cancelled_transcriptions() -> &'static Mutex<HashSet<String>> {
+    CANCELLED_TRANSCRIPTIONS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn begin_transcription(id: &str) {
+    if let Ok(mut transcriptions) = cancelled_transcriptions().lock() {
+        transcriptions.remove(id);
+    }
+}
+
+fn transcription_is_cancelled(id: &str) -> bool {
+    cancelled_transcriptions()
+        .lock()
+        .map(|transcriptions| transcriptions.contains(id))
+        .unwrap_or(false)
+}
+
+fn finish_transcription(id: &str) {
+    if let Ok(mut transcriptions) = cancelled_transcriptions().lock() {
+        transcriptions.remove(id);
+    }
+}
+
 fn begin_download(id: &str) {
     if let Ok(mut downloads) = cancelled_downloads().lock() {
         downloads.remove(id);
@@ -263,6 +287,15 @@ async fn cancel_download(job_id: String) -> Result<(), String> {
         .lock()
         .map_err(|_| "Kunde inte avbryta nedladdningen".to_string())?;
     downloads.insert(job_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_transcription(job_id: String) -> Result<(), String> {
+    let mut transcriptions = cancelled_transcriptions()
+        .lock()
+        .map_err(|_| "Kunde inte avbryta transkriberingen".to_string())?;
+    transcriptions.insert(job_id);
     Ok(())
 }
 
@@ -1134,6 +1167,7 @@ async fn transcribe_local(
     job_id: String,
     initial_prompt: Option<String>,
 ) -> Result<String, String> {
+    begin_transcription(&job_id);
     let label = "Lokal transkribering";
     emit_progress(
         &app,
@@ -1254,6 +1288,12 @@ async fn transcribe_local(
             "Ljudkonvertering misslyckades: {}",
             String::from_utf8_lossy(&converted.stderr)
         ));
+    }
+    if transcription_is_cancelled(&job_id) {
+        let _ = fs::remove_dir_all(&run_dir).await;
+        finish_transcription(&job_id);
+        emit_progress(&app, &job_id, "transcription", label, "cancelled", "cancelled", 0, None, Some("Transkriberingen avbröts.".into()));
+        return Err("TRANSCRIPTION_CANCELLED".into());
     }
     let cores = std::thread::available_parallelism()
         .map(|value| value.get())
@@ -1416,15 +1456,28 @@ async fn transcribe_local(
                     return Err(format!("Whisper-processen avbröts: {error}"));
                 }
             },
-            _ = heartbeat.tick() => emit_progress(
-                &app, &job_id, "transcription", label, "transcribing", "active",
-                last_progress_millis, total_millis,
-                Some(if latest_preview.is_empty() {
-                    format!("{} · {} min", execution_detail, started.elapsed().as_secs() / 60)
-                } else {
-                    format!("{} · {}", execution_detail, latest_preview)
-                }),
-            ),
+            _ = heartbeat.tick() => {
+                if transcription_is_cancelled(&job_id) {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    let _ = fs::remove_dir_all(&run_dir).await;
+                    finish_transcription(&job_id);
+                    emit_progress(
+                        &app, &job_id, "transcription", label, "cancelled", "cancelled",
+                        last_progress_millis, total_millis, Some("Transkriberingen avbröts.".into()),
+                    );
+                    return Err("TRANSCRIPTION_CANCELLED".into());
+                }
+                emit_progress(
+                    &app, &job_id, "transcription", label, "transcribing", "active",
+                    last_progress_millis, total_millis,
+                    Some(if latest_preview.is_empty() {
+                        format!("{} · {} min", execution_detail, started.elapsed().as_secs() / 60)
+                    } else {
+                        format!("{} · {}", execution_detail, latest_preview)
+                    }),
+                );
+            },
         }
     };
     let stderr = stderr_output.into_bytes();
@@ -1608,6 +1661,7 @@ pub fn run() {
             complete_google_drive_oauth,
             disconnect_google_drive,
             google_drive_access_token,
+            cancel_transcription,
             local_engine_status,
             diagnostic_snapshot,
             install_nvidia_runtime,

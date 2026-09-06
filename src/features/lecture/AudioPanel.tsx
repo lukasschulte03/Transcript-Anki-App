@@ -42,6 +42,7 @@ import {
   transcribeWithLocalWhisper,
 } from "../../services/localStt";
 import { enqueueTranscription } from "../../services/transcriptionQueue";
+import { isActiveTranscriptionCancelled } from "../../services/transcriptionQueue";
 import {
   deleteCredential,
   readCredential,
@@ -657,7 +658,8 @@ export function AudioPanel({
       const cachedApiChunks = apiResumeKey
         ? [...(apiChunkCache.get(apiResumeKey) ?? [])]
         : [];
-      for (const [index, entry] of partsWithAssets.entries()) {
+        for (const [index, entry] of partsWithAssets.entries()) {
+        if (isActiveTranscriptionCancelled(jobId)) throw new Error("TRANSCRIPTION_CANCELLED");
         upsertJob({
           id: jobId,
           kind: "transcription",
@@ -677,6 +679,7 @@ export function AudioPanel({
             : [entry.asset.blob];
         let uploadOffset = 0;
         for (const [uploadIndex, uploadPart] of uploadParts.entries()) {
+          if (isActiveTranscriptionCancelled(jobId)) throw new Error("TRANSCRIPTION_CANCELLED");
           const cachedChunk = cachedApiChunks.find(
             (chunk) =>
               chunk.assetId === entry.part.assetId &&
@@ -776,6 +779,7 @@ export function AudioPanel({
       });
       toast.success(`${mergedSegments.length} segment transkriberades`);
     } catch (e) {
+      const cancelled = String(e).includes("TRANSCRIPTION_CANCELLED");
       upsertJob({
         id: jobId,
         kind: "transcription",
@@ -783,15 +787,18 @@ export function AudioPanel({
           transcribeMode === "local"
             ? "Lokal transkribering"
             : "API-transkribering",
-        phase: "error",
-        status: "error",
+        phase: cancelled ? "cancelled" : "error",
+        status: cancelled ? "cancelled" : "error",
         current: 0,
         detail:
-          transcribeMode === "api"
+          cancelled
+            ? "Transkriberingen avbröts."
+            : transcribeMode === "api"
             ? "Försök igen för att fortsätta från redan klara API-delar."
             : "Transkriberingen kunde inte slutföras.",
       });
-      toast.error(String(e));
+      if (cancelled) toast.message("Transkriberingen avbröts");
+      else toast.error(String(e));
     }
       },
     });
