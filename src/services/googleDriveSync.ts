@@ -5,9 +5,9 @@ import { uid } from "../lib/utils";
 import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
 
-const DRIVE_API = "https://www.googleapis.com/drive/v3";
-const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
-const FOLDER_MIME = "application/vnd.google-apps.folder";
+export const DRIVE_API = "https://www.googleapis.com/drive/v3";
+export const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
+export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
 type RemoteAsset = Omit<StoredAsset, "blob"> & {
   hash: string;
@@ -27,7 +27,7 @@ type RemoteManifest = {
   assets: RemoteAsset[];
 };
 
-type DriveFile = { id: string; name: string; mimeType?: string };
+export type DriveFile = { id: string; name: string; mimeType?: string; size?: string; modifiedTime?: string; parents?: string[] };
 
 function syncJob(patch: Record<string, unknown>) {
   useAppStore.getState().upsertJob({
@@ -50,7 +50,7 @@ function getDeviceId() {
   return id;
 }
 
-async function request(url: string, token: string, init: RequestInit = {}) {
+export async function googleDriveRequest(url: string, token: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${token}`);
   const response = await netFetch(url, { ...init, headers });
@@ -61,11 +61,11 @@ async function request(url: string, token: string, init: RequestInit = {}) {
   return response;
 }
 
-function driveQuery(query: string) {
+export function driveQuery(query: string, fields = "files(id,name,mimeType)") {
   return `${DRIVE_API}/files?${new URLSearchParams({
     q: query,
     spaces: "drive",
-    fields: "files(id,name,mimeType)",
+    fields,
     pageSize: "100",
   })}`;
 }
@@ -74,17 +74,17 @@ function quote(value: string) {
   return value.replace(/'/g, "\\'");
 }
 
-async function findNamedFile(name: string, parentId: string, token: string) {
+export async function findNamedFile(name: string, parentId: string, token: string) {
   const query = `name='${quote(name)}' and '${parentId}' in parents and trashed=false`;
-  const response = await request(driveQuery(query), token);
+  const response = await googleDriveRequest(driveQuery(query), token);
   const result = (await response.json()) as { files?: DriveFile[] };
   return result.files?.[0];
 }
 
-async function ensureFolder(name: string, parentId: string, token: string) {
+export async function ensureFolder(name: string, parentId: string, token: string) {
   const existing = await findNamedFile(name, parentId, token);
   if (existing?.mimeType === FOLDER_MIME) return existing.id;
-  const response = await request(`${DRIVE_API}/files?fields=id,name`, token, {
+  const response = await googleDriveRequest(`${DRIVE_API}/files?fields=id,name`, token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, mimeType: FOLDER_MIME, parents: [parentId] }),
@@ -92,7 +92,7 @@ async function ensureFolder(name: string, parentId: string, token: string) {
   return ((await response.json()) as DriveFile).id;
 }
 
-async function ensurePath(path: string, token: string) {
+export async function ensurePath(path: string, token: string) {
   let parent = "root";
   for (const name of path.split("/").map((part) => part.trim()).filter(Boolean)) {
     parent = await ensureFolder(name, parent, token);
@@ -111,7 +111,7 @@ async function createResumableUpload(
   parentId: string,
   blob: Blob,
 ) {
-  const response = await request(
+  const response = await googleDriveRequest(
     `${DRIVE_UPLOAD}/files?uploadType=resumable&fields=id,name`,
     token,
     {
@@ -126,7 +126,7 @@ async function createResumableUpload(
   );
   const location = response.headers.get("location");
   if (!location) throw new Error("Google Drive skapade ingen återupptagbar uppladdning.");
-  const upload = await request(location, token, {
+  const upload = await googleDriveRequest(location, token, {
     method: "PUT",
     headers: { "Content-Type": blob.type || "application/octet-stream" },
     body: blob,
@@ -135,7 +135,7 @@ async function createResumableUpload(
 }
 
 async function updateFile(token: string, id: string, blob: Blob) {
-  await request(`${DRIVE_UPLOAD}/files/${id}?uploadType=media`, token, {
+  await googleDriveRequest(`${DRIVE_UPLOAD}/files/${id}?uploadType=media`, token, {
     method: "PATCH",
     headers: { "Content-Type": blob.type || "application/octet-stream" },
     body: blob,
@@ -145,7 +145,7 @@ async function updateFile(token: string, id: string, blob: Blob) {
 async function readManifest(token: string, metadataFolder: string) {
   const file = await findNamedFile("library.json", metadataFolder, token);
   if (!file) return undefined;
-  const response = await request(`${DRIVE_API}/files/${file.id}?alt=media`, token);
+  const response = await googleDriveRequest(`${DRIVE_API}/files/${file.id}?alt=media`, token);
   return { file, manifest: (await response.json()) as RemoteManifest };
 }
 
@@ -156,7 +156,7 @@ async function downloadRemoteLibrary(token: string, remote: RemoteManifest) {
   const existingIds = new Set((await db.assets.toArray()).map((asset) => asset.id));
   for (const [index, asset] of remote.assets.entries()) {
     if (existingIds.has(asset.id)) continue;
-    const response = await request(`${DRIVE_API}/files/${asset.remoteId}?alt=media`, token);
+    const response = await googleDriveRequest(`${DRIVE_API}/files/${asset.remoteId}?alt=media`, token);
     const blob = await response.blob();
     const { hash: _hash, remoteId: _remoteId, ...stored } = asset;
     await db.assets.put({ ...stored, blob });

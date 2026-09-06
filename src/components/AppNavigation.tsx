@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Home,
+  Inbox,
   Keyboard,
   PanelLeftClose,
   PanelLeftOpen,
@@ -14,6 +15,7 @@ const navigation = [
   { id: "dashboard", label: "Översikt", icon: Home },
   { id: "workspace", label: "Bibliotek", icon: BookOpen },
   { id: "cards", label: "Anki-kort", icon: Sparkles },
+  { id: "inbox", label: "Inkorg", icon: Inbox },
   { id: "settings", label: "Inställningar", icon: Settings },
 ] as const;
 
@@ -45,7 +47,7 @@ export function AppNavigation() {
             Arbetsyta
           </p>
         )}
-        {navigation.slice(0, 3).map(({ id, label, icon: Icon }) => (
+        {navigation.slice(0, 4).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setActiveView(id)}

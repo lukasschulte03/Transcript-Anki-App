@@ -458,7 +458,10 @@ async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
         .append_pair("client_id", GOOGLE_DRIVE_CLIENT_ID)
         .append_pair("redirect_uri", &redirect_uri)
         .append_pair("response_type", "code")
-        .append_pair("scope", "https://www.googleapis.com/auth/drive.file")
+        // Inbox files are created by the user's recorder, rather than Lectio.
+        // Full Drive scope lets Lectio list only the configured Lectio/Inbox
+        // folder and move imported files to its archive folder.
+        .append_pair("scope", "https://www.googleapis.com/auth/drive")
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256")

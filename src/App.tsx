@@ -39,6 +39,11 @@ const Dashboard = lazy(() =>
     default: module.Dashboard,
   })),
 );
+const DriveInbox = lazy(() =>
+  import("./features/inbox/DriveInbox").then((module) => ({
+    default: module.DriveInbox,
+  })),
+);
 
 function ViewLoader() {
   return (
@@ -154,6 +159,8 @@ export default function App() {
               <Dashboard />
             ) : activeView === "cards" ? (
               <CardStudio />
+            ) : activeView === "inbox" ? (
+              <DriveInbox />
             ) : activeView === "settings" ? (
               <SettingsView />
             ) : selected?.type === "lecture" ? (
