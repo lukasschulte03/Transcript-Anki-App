@@ -1,6 +1,7 @@
 import * as Sentry from "@sentry/react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadText } from "../lib/utils";
+import { useAppStore } from "../core/store";
 import { isTauri } from "./platform";
 
 const MAX_EVENTS = 30;
@@ -12,11 +13,31 @@ export type DiagnosticEvent = {
   message: string;
 };
 
+type SafeJob = {
+  kind: string;
+  phase: string;
+  status: string;
+  current: number;
+  total?: number;
+  startedAt: string;
+  updatedAt: string;
+};
+
 export type DiagnosticSnapshot = {
   generatedAt: string;
   app: { name: "Lectio"; version: string; desktop: boolean };
   device: Record<string, unknown>;
   events: DiagnosticEvent[];
+  runtime: {
+    transcriptionProvider: string;
+    localModel: string;
+    acceleration: string;
+    aiMode: string;
+    ankiConfigured: boolean;
+    cloudConnected: boolean;
+    recentJobs: SafeJob[];
+  };
+  suggestedActions: string[];
 };
 
 const events: DiagnosticEvent[] = [];
@@ -24,10 +45,27 @@ const events: DiagnosticEvent[] = [];
 // Do not allow a path, token, email address, or pasted content to leave the app.
 export function redactDiagnosticText(value: unknown) {
   return String(value ?? "")
+    .replace(/[A-Za-z]:[\\/][^\r\n]*/g, "[redacted-path]")
     .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, "C:\\Users\\[redacted]")
-    .replace(/(?:api[_ -]?key|token|authorization|bearer)[=: ]+[^\s,;]+/gi, "$1=[redacted]")
+    .replace(/(?:api[_ -]?key|client[_ -]?secret|refresh[_ -]?token|access[_ -]?token|token|authorization|bearer|password|secret)["']?\s*[:=]\s*["']?[^\s,;}"']+/gi, "$1=[redacted]")
     .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
     .slice(0, 800);
+}
+
+export function diagnosticSuggestions(events: DiagnosticEvent[]) {
+  const text = events.map((event) => event.message).join("\n").toLocaleLowerCase();
+  const suggestions: string[] = [];
+  if (/acl|open_url|not allowed/.test(text))
+    suggestions.push("Installera den senaste Lectio-versionen och försök öppna länken igen.");
+  if (/google.*(session|inloggning)|oauth|access_denied/.test(text))
+    suggestions.push("Avbryt den aktuella Google-inloggningen och koppla kontot igen under Inställningar.");
+  if (/whisper.*json|lokala talverktyg|ffmpeg/.test(text))
+    suggestions.push("Kontrollera att ljudfilen och vald Whisper-modell finns kvar, och försök transkribera igen.");
+  if (/anki/.test(text))
+    suggestions.push("Öppna Anki och kontrollera AnkiConnect-adressen under Inställningar.");
+  if (!suggestions.length)
+    suggestions.push("Bifoga rapporten och beskriv stegen precis innan problemet uppstod.");
+  return suggestions;
 }
 
 export function recordDiagnostic(area: string, error: unknown) {
@@ -71,11 +109,32 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
       recordDiagnostic("diagnostics", error);
     }
   }
+  const state = useAppStore.getState();
+  const safeJobs: SafeJob[] = state.jobs.slice(-8).map((job) => ({
+    kind: job.kind,
+    phase: job.phase,
+    status: job.status,
+    current: job.current,
+    total: job.total,
+    startedAt: job.startedAt,
+    updatedAt: job.updatedAt,
+  }));
+  const snapshotEvents = [...events];
   return {
     generatedAt: new Date().toISOString(),
     app: { name: "Lectio", version: APP_VERSION, desktop: isTauri() },
     device,
-    events: [...events],
+    events: snapshotEvents,
+    runtime: {
+      transcriptionProvider: state.settings.transcriptionProvider,
+      localModel: state.settings.localTranscriptionModel ?? "base",
+      acceleration: state.settings.localTranscriptionAcceleration ?? "auto",
+      aiMode: state.settings.aiMode,
+      ankiConfigured: Boolean(state.settings.ankiUrl?.trim()),
+      cloudConnected: Boolean(state.settings.cloudSync.connectedAt),
+      recentJobs: safeJobs,
+    },
+    suggestedActions: diagnosticSuggestions(snapshotEvents),
   };
 }
 

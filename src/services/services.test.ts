@@ -15,7 +15,7 @@ import { parseWhisperJson } from "./localStt";
 import { hasClozeMarkup, lectureDeckName, needsAnkiSync, syncCard, testAnki, withoutStructuralTags } from "./anki";
 import { builtInPalettes, validateTheme } from "../core/theme";
 import { suggestSlideMappings } from "./slideMatching";
-import { redactDiagnosticText } from "./diagnostics";
+import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
 
 describe("diagnostik", () => {
@@ -27,6 +27,11 @@ describe("diagnostik", () => {
     expect(result).not.toContain("hemlig");
     expect(result).not.toContain("lukas@example.com");
     expect(result).toContain("[redacted]");
+  });
+
+  it("ger ett säkert, relevant felsökningsförslag", () => {
+    expect(diagnosticSuggestions([{ at: "now", area: "app", message: "Command plugin:opener|open_url not allowed by ACL" }])[0])
+      .toContain("senaste Lectio-versionen");
   });
 });
 

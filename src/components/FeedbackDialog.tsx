@@ -92,10 +92,10 @@ export function FeedbackDialog({
             onChange={(event) => setIncludeDiagnostics(event.target.checked)}
             className="mt-0.5 size-4 accent-[var(--palette-primary)]"
           />
-          <span>
-            <span className="block text-sm font-medium text-[var(--palette-text)]">Bifoga teknisk diagnostik</span>
-            <span className="mt-0.5 block text-xs leading-5 text-[var(--palette-text-muted)]">Appversion, Windows, GPU/Whisper-status och senaste tekniska fel.</span>
-          </span>
+            <span>
+              <span className="block text-sm font-medium text-[var(--palette-text)]">Bifoga teknisk diagnostik</span>
+            <span className="mt-0.5 block text-xs leading-5 text-[var(--palette-text-muted)]">Appversion, Windows, GPU/Whisper-status, säkra jobbstatusar, senaste tekniska fel och felsökningsförslag.</span>
+            </span>
         </label>
         <div className="flex flex-wrap items-center justify-between gap-2">
           <Button variant="ghost" size="sm" onClick={() => void previewDiagnostics()}>
