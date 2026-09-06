@@ -624,6 +624,18 @@ struct LocalEngineStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LocalTranscriptionBenchmark {
+    model: String,
+    acceleration: String,
+    realtime_factor: f64,
+    duration_seconds: f64,
+    elapsed_seconds: f64,
+    gpu_used: bool,
+    measured_at: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct DiagnosticSnapshot {
     os: String,
     architecture: String,
@@ -797,6 +809,94 @@ async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
 #[tauri::command]
 async fn local_engine_status(app: AppHandle) -> Result<LocalEngineStatus, String> {
     engine_status(&app).await
+}
+
+fn silence_wav(seconds: u32) -> Vec<u8> {
+    let sample_rate = 16_000_u32;
+    let channels = 1_u16;
+    let bits_per_sample = 16_u16;
+    let data_size = seconds * sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8;
+    let mut bytes = Vec::with_capacity(44 + data_size as usize);
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + data_size).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&channels.to_le_bytes());
+    bytes.extend_from_slice(&sample_rate.to_le_bytes());
+    bytes.extend_from_slice(&(sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8).to_le_bytes());
+    bytes.extend_from_slice(&(channels * bits_per_sample / 8).to_le_bytes());
+    bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&data_size.to_le_bytes());
+    bytes.resize(44 + data_size as usize, 0);
+    bytes
+}
+
+/// Measures local inference on a synthetic WAV. No lecture audio is used or retained.
+#[tauri::command]
+async fn benchmark_local_engine(
+    app: AppHandle,
+    model: String,
+    acceleration: String,
+) -> Result<LocalTranscriptionBenchmark, String> {
+    let model = valid_model(&model)?;
+    if acceleration != "cpu" && acceleration != "nvidia" {
+        return Err("Välj CPU eller NVIDIA för prestandatestet".into());
+    }
+    let model_path = models_dir(&app)?.join(format!("ggml-{model}.bin"));
+    if !model_path.exists() {
+        return Err(format!("Whisper {model} är inte nedladdad"));
+    }
+    let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
+    let runtime_dir = nvidia_runtime_dir(&app)?;
+    let use_nvidia = acceleration == "nvidia";
+    let whisper = if use_nvidia {
+        if nvidia_gpu_name().await.is_none() || !nvidia_runtime_is_ready(&runtime_dir).await {
+            return Err("NVIDIA-motorn är inte redo för prestandatestet".into());
+        }
+        find_file(&runtime_dir, "whisper-cli.exe")
+            .ok_or_else(|| "NVIDIA-runtime saknar Whisper".to_string())?
+    } else {
+        resource_dir.join("whisper").join("whisper-cli.exe")
+    };
+    if !whisper.exists() {
+        return Err("Whisper-motorn saknas i installationen".into());
+    }
+    let work_dir = app.path().app_data_dir().map_err(|error| error.to_string())?
+        .join("benchmark-temp");
+    fs::create_dir_all(&work_dir).await.map_err(|error| error.to_string())?;
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let wav = work_dir.join(format!("{stamp}.wav"));
+    let output = work_dir.join(format!("{stamp}-result"));
+    const SAMPLE_SECONDS: u32 = 20;
+    fs::write(&wav, silence_wav(SAMPLE_SECONDS)).await.map_err(|error| error.to_string())?;
+    let threads = std::thread::available_parallelism().map(|value| value.get()).unwrap_or(4)
+        .saturating_sub(1).clamp(2, if use_nvidia { 12 } else { 8 }).to_string();
+    let started = std::time::Instant::now();
+    let mut command = Command::new(&whisper);
+    command.current_dir(whisper.parent().unwrap_or(&work_dir))
+        .arg("-m").arg(&model_path).arg("-f").arg(&wav)
+        .arg("-otxt").arg("-nt").arg("-of").arg(&output)
+        .arg("-t").arg(threads).stdout(Stdio::piped()).stderr(Stdio::piped());
+    if use_nvidia { command.arg("-dev").arg("0").arg("-fa"); }
+    let result = command.output().await.map_err(|error| format!("Kunde inte starta Whisper-testet: {error}"))?;
+    let elapsed_seconds = started.elapsed().as_secs_f64();
+    let report = format!("{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)).to_ascii_lowercase();
+    let gpu_used = report.contains("use gpu    = 1") || report.contains("use gpu = 1");
+    let _ = fs::remove_file(&wav).await;
+    let _ = fs::remove_file(output.with_extension("txt")).await;
+    if !result.status.success() {
+        return Err(format!("Whisper-testet misslyckades: {}", process_output_excerpt(&result.stderr)));
+    }
+    if use_nvidia && !gpu_used {
+        return Err("NVIDIA-testet startade men Whisper bekräftade inte GPU-användning".into());
+    }
+    Ok(LocalTranscriptionBenchmark {
+        model: model.into(), acceleration, realtime_factor: elapsed_seconds / f64::from(SAMPLE_SECONDS),
+        duration_seconds: f64::from(SAMPLE_SECONDS), elapsed_seconds, gpu_used,
+        measured_at: SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_secs().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1715,6 +1815,7 @@ pub fn run() {
             google_drive_access_token,
             cancel_transcription,
             local_engine_status,
+            benchmark_local_engine,
             diagnostic_snapshot,
             install_nvidia_runtime,
             remove_nvidia_runtime,

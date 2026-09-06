@@ -152,6 +152,20 @@ describe("transkriptionsrekommendation", () => {
     expect(result.model).toBe("base");
     expect(result.warning).toContain("inte redo");
   });
+
+  it("använder ett matchande lokalt benchmark för tidsuppskattningen", () => {
+    const result = recommendLocalTranscription({
+      durationSeconds: 60 * 10,
+      engine: { cpuThreads: 8, nvidiaDetected: false, nvidiaName: null, nvidiaRuntimeInstalled: false, nvidiaRuntimeReady: false, nvidiaRuntimeSize: 0 },
+      benchmarks: {
+        cpu: {
+          model: "base", acceleration: "cpu", realtimeFactor: 0.1,
+          durationSeconds: 20, elapsedSeconds: 2, gpuUsed: false, measuredAt: "now",
+        },
+      },
+    });
+    expect(result.estimate).toContain("baserat på ditt test");
+  });
 });
 
 describe("inspelningsåterställning", () => {

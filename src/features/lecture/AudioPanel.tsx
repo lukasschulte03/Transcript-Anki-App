@@ -844,8 +844,9 @@ export function AudioPanel({
       recommendLocalTranscription({
         durationSeconds: knownDuration,
         engine: localEngine,
+        benchmarks: settings.localTranscriptionBenchmarks,
       }),
-    [knownDuration, localEngine],
+    [knownDuration, localEngine, settings.localTranscriptionBenchmarks],
   );
   const current = audioUrl ? partOffset + playbackTime : elapsed;
   const registerDuration = useCallback(

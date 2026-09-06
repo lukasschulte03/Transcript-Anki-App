@@ -47,6 +47,7 @@ import {
   resolvePalette,
 } from "../../core/theme";
 import {
+  benchmarkLocalEngine,
   downloadLocalModel,
   getLocalModelStatus,
   getLocalEngineStatus,
@@ -1534,6 +1535,7 @@ function LocalModelManager() {
   const [engine, setEngine] = useState<LocalEngineStatus | null>(null);
   const [working, setWorking] = useState<LocalModel | null>(null);
   const [workingEngine, setWorkingEngine] = useState(false);
+  const [benchmarking, setBenchmarking] = useState(false);
   const refresh = async () => {
     const [values, engineStatus] = await Promise.all([
       Promise.all(localModels.map((model) => getLocalModelStatus(model.id))),
@@ -1632,6 +1634,32 @@ function LocalModelManager() {
     }
   };
   const acceleration = settings.localTranscriptionAcceleration ?? "auto";
+  const benchmarkAcceleration =
+    acceleration === "nvidia" ||
+    (acceleration === "auto" && engine?.nvidiaRuntimeReady)
+      ? "nvidia"
+      : "cpu";
+  const runBenchmark = async () => {
+    if (!statuses[selected]?.installed) {
+      toast.error("Ladda ner den valda Whisper-modellen först");
+      return;
+    }
+    setBenchmarking(true);
+    try {
+      const result = await benchmarkLocalEngine(selected, benchmarkAcceleration);
+      updateSettings({
+        localTranscriptionBenchmarks: {
+          ...settings.localTranscriptionBenchmarks,
+          [result.acceleration]: result,
+        },
+      });
+      toast.success("Prestandatestet är klart");
+    } catch (error) {
+      toast.error(String(error));
+    } finally {
+      setBenchmarking(false);
+    }
+  };
   return (
     <div className="space-y-4">
       <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
@@ -1714,6 +1742,19 @@ function LocalModelManager() {
               updateSettings({ localTranscriptionAcceleration: "cpu" })
             }
           />
+        </div>
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+          <span>
+            Testa {localModels.find((model) => model.id === selected)?.name ?? selected} på {benchmarkAcceleration === "nvidia" ? "NVIDIA" : "CPU"}. Testet använder 20 sekunders syntetiskt ljud och sparas bara lokalt.
+          </span>
+          <Button size="sm" variant="secondary" onClick={() => void runBenchmark()} disabled={benchmarking || !statuses[selected]?.installed}>
+            {benchmarking ? "Testar…" : "Kör prestandatest"}
+          </Button>
+          {settings.localTranscriptionBenchmarks[benchmarkAcceleration] && (
+            <span className="w-full text-slate-500">
+              Senaste test: {Math.max(1, Math.round(1 / settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.realtimeFactor))}× snabbare än realtid · används för tidsuppskattningar.
+            </span>
+          )}
         </div>
       </div>
 

@@ -1,4 +1,5 @@
 import type { LocalEngineStatus, LocalModel } from "./localStt";
+import type { LocalTranscriptionBenchmark } from "../core/types";
 
 type ModelProfile = {
   download: string;
@@ -35,9 +36,11 @@ function estimateRange(minutes: number) {
 export function recommendLocalTranscription({
   durationSeconds,
   engine,
+  benchmarks = {},
 }: {
   durationSeconds: number;
   engine: LocalEngineStatus | null;
+  benchmarks?: Partial<Record<"cpu" | "nvidia", LocalTranscriptionBenchmark>>;
 }): TranscriptionRecommendation {
   const hasReadyNvidia = Boolean(engine?.nvidiaDetected && engine.nvidiaRuntimeReady);
   const cpuThreads = engine?.cpuThreads ?? 0;
@@ -50,9 +53,12 @@ export function recommendLocalTranscription({
         ? "small"
         : "base";
   const profile = profiles[model];
-  const estimatedMinutes = durationMinutes * (
+  const benchmark = benchmarks[hasReadyNvidia ? "nvidia" : "cpu"];
+  const estimatedMinutes = durationMinutes * (benchmark?.model === model
+    ? benchmark.realtimeFactor
+    : (
     hasReadyNvidia ? profile.gpuMinutesPerAudioMinute : profile.cpuMinutesPerAudioMinute
-  );
+      ));
   const gpuName = engine?.nvidiaName ? ` på ${engine.nvidiaName}` : " med NVIDIA";
 
   return {
@@ -62,7 +68,7 @@ export function recommendLocalTranscription({
       : model === "small"
         ? "Datorn har många CPU-trådar, så Small ger en bra kvalitetsnivå utan grafikkort."
         : "Base är det säkraste och snabbaste standardvalet på CPU för längre ljudfiler.",
-    estimate: `${estimateRange(estimatedMinutes)} ${hasReadyNvidia ? "med NVIDIA" : "på CPU"}`,
+    estimate: `${estimateRange(estimatedMinutes)} ${hasReadyNvidia ? "med NVIDIA" : "på CPU"}${benchmark?.model === model ? " · baserat på ditt test" : ""}`,
     resources: [profile.download, profile.ram, hasReadyNvidia && profile.vram].filter(Boolean).join(" · "),
     warning: engine?.nvidiaDetected && !engine.nvidiaRuntimeReady
       ? "NVIDIA hittades, men CUDA-motorn är inte redo. Den här körningen använder CPU."

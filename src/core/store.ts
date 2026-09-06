@@ -169,6 +169,7 @@ export const useAppStore = create<AppState>()(
         transcriptionProvider: "local",
         localTranscriptionModel: "base",
         localTranscriptionAcceleration: "auto",
+        localTranscriptionBenchmarks: {},
         transcriptionModel: "whisper-1",
         transcriptionBaseUrl: "https://api.openai.com/v1",
         transcriptionPrompt: "",

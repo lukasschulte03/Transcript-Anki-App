@@ -145,6 +145,9 @@ export interface AppSettings {
   localTranscriptionModel:
     "tiny" | "base" | "small" | "medium" | "large-v3-turbo" | "large-v3";
   localTranscriptionAcceleration: "auto" | "cpu" | "nvidia";
+  localTranscriptionBenchmarks: Partial<
+    Record<"cpu" | "nvidia", LocalTranscriptionBenchmark>
+  >;
   transcriptionModel: string;
   transcriptionBaseUrl: string;
   transcriptionPrompt: string;
@@ -153,6 +156,16 @@ export interface AppSettings {
   cloudSync: CloudSyncConfiguration;
   /** Number of local metadata snapshots kept before old ones are pruned. */
   backupLimit: number;
+}
+
+export interface LocalTranscriptionBenchmark {
+  model: AppSettings["localTranscriptionModel"];
+  acceleration: "cpu" | "nvidia";
+  realtimeFactor: number;
+  durationSeconds: number;
+  elapsedSeconds: number;
+  gpuUsed: boolean;
+  measuredAt: string;
 }
 
 /** A provider-neutral direct cloud target. */

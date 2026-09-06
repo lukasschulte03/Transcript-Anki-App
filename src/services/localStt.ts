@@ -4,6 +4,7 @@ import { mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { uid } from "../lib/utils";
 import { isTauri } from "./platform";
 import { flagTranscriptionQuality, type TranscriptionResult } from "./transcription";
+import type { LocalTranscriptionBenchmark } from "../core/types";
 
 export type LocalModel =
   "tiny" | "base" | "small" | "medium" | "large-v3-turbo" | "large-v3";
@@ -35,6 +36,18 @@ export async function getLocalEngineStatus() {
       nvidiaRuntimeSize: 0,
     } satisfies LocalEngineStatus;
   return invoke<LocalEngineStatus>("local_engine_status");
+}
+
+export async function benchmarkLocalEngine(
+  model: LocalModel,
+  acceleration: "cpu" | "nvidia",
+) {
+  if (!isTauri())
+    throw new Error("Prestandatestet kan bara köras i desktopappen.");
+  return invoke<LocalTranscriptionBenchmark>("benchmark_local_engine", {
+    model,
+    acceleration,
+  });
 }
 
 export async function installNvidiaRuntime() {
