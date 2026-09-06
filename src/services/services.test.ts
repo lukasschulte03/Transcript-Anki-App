@@ -169,6 +169,9 @@ describe("kortformat", () => {
     expect(prompt).toContain("BEFINTLIGA KORT I KURSEN");
     expect(prompt).toContain("Vad är peritonit?");
     expect(prompt).toContain("Bedöm själv hur många kort materialet faktiskt motiverar");
+    expect(prompt).toContain("Använd ENDAST fakta som uttryckligen stöds av källmaterialet");
+    expect(prompt).toContain("Fråga inte efter långa listor");
+    expect(prompt).toContain("Välj korttyp efter kunskapen");
     expect(prompt).not.toContain("Skapa 12 högkvalitativa");
     expect(duplicateExplanation("Vad är akut peritonit?", { front: "Vad är peritonit?" })).toContain("peritonit");
   });
