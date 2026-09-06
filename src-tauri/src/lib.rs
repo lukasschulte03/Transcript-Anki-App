@@ -28,6 +28,8 @@ const GOOGLE_DRIVE_CLIENT_ID: &str =
     "607463229684-df99plb7hagdnlfsr1uleko6q6g78lpi.apps.googleusercontent.com";
 const GOOGLE_DRIVE_CREDENTIAL_KEY: &str = "cloud-sync-google-drive";
 const GOOGLE_DRIVE_CLIENT_SECRET_KEY: &str = "google-drive-client-secret";
+const BUNDLED_GOOGLE_DRIVE_CLIENT_SECRET: Option<&str> =
+    option_env!("LECTIO_GOOGLE_DRIVE_CLIENT_SECRET");
 
 struct GoogleOAuthSession {
     receiver: oneshot::Receiver<Result<String, String>>,
@@ -276,11 +278,14 @@ fn credential_entry(key: &str) -> Result<keyring::Entry, String> {
 }
 
 async fn google_drive_client_secret() -> Result<String, String> {
+    if let Some(secret) = BUNDLED_GOOGLE_DRIVE_CLIENT_SECRET.filter(|value| !value.trim().is_empty()) {
+        return Ok((*secret).to_string());
+    }
     tokio::task::spawn_blocking(|| {
         credential_entry(GOOGLE_DRIVE_CLIENT_SECRET_KEY)?
             .get_password()
             .map_err(|_| {
-                "Google Drive-klienthemligheten saknas i Windows Credential Manager. Kontakta utvecklaren."
+                "Google Drive-klientkonfigurationen saknas. Installera den senaste Lectio-versionen."
                     .to_string()
             })
     })
