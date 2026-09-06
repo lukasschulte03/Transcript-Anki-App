@@ -33,7 +33,8 @@ const BUNDLED_GOOGLE_DRIVE_CLIENT_SECRET: Option<&str> =
     option_env!("LECTIO_GOOGLE_DRIVE_CLIENT_SECRET");
 
 struct GoogleOAuthSession {
-    receiver: oneshot::Receiver<Result<String, String>>,
+    receiver: Option<oneshot::Receiver<Result<String, String>>>,
+    cancel: Option<oneshot::Sender<()>>,
     verifier: String,
     redirect_uri: String,
 }
@@ -103,6 +104,14 @@ fn oauth_response(status: &str, body: &str) -> String {
     )
 }
 
+fn google_oauth_error(error: &str) -> String {
+    match error {
+        "access_denied" => "Google-inloggningen avbröts eller nekades. Du kan försöka igen när du vill.".into(),
+        "temporarily_unavailable" => "Google är tillfälligt otillgängligt. Försök igen om en stund.".into(),
+        _ => "Google kunde inte slutföra inloggningen. Försök igen.".into(),
+    }
+}
+
 async fn receive_google_oauth_callback(
     listener: TcpListener,
     expected_state: String,
@@ -129,7 +138,7 @@ async fn receive_google_oauth_callback(
             parameters.get("state"),
             parameters.get("error"),
         ) {
-            (_, _, Some(error)) => Err(format!("Google avbröt inloggningen: {error}")),
+            (_, _, Some(error)) => Err(google_oauth_error(error)),
             (Some(code), Some(state), _) if state == &expected_state => Ok(code.clone()),
             (Some(_), _, _) => Err("OAuth-svaret kunde inte verifieras. Försök igen.".into()),
             _ => Err("Google skickade ingen auktoriseringskod.".into()),
@@ -401,6 +410,13 @@ async fn delete_credential(key: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
+    if !google_oauth_sessions()
+        .lock()
+        .map_err(|_| "Kunde inte läsa OAuth-sessioner".to_string())?
+        .is_empty()
+    {
+        return Err("En Google-inloggning pågår redan. Avbryt den eller slutför den först.".into());
+    }
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .map_err(|error| format!("Kunde inte starta den lokala inloggningen: {error}"))?;
@@ -414,10 +430,14 @@ async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let redirect_uri = format!("http://127.0.0.1:{port}/oauth/google-drive");
     let (sender, receiver) = oneshot::channel();
+    let (cancel_sender, cancel_receiver) = oneshot::channel();
     let callback_state = state.clone();
     tauri::async_runtime::spawn(async move {
         let receive = receive_google_oauth_callback(listener, callback_state, sender);
-        let _ = time::timeout(Duration::from_secs(300), receive).await;
+        tokio::select! {
+            _ = time::timeout(Duration::from_secs(300), receive) => {},
+            _ = cancel_receiver => {},
+        }
     });
     google_oauth_sessions()
         .lock()
@@ -425,7 +445,8 @@ async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
         .insert(
             session_id.clone(),
             GoogleOAuthSession {
-                receiver,
+                receiver: Some(receiver),
+                cancel: Some(cancel_sender),
                 verifier,
                 redirect_uri: redirect_uri.clone(),
             },
@@ -452,17 +473,43 @@ async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
     })
 }
 
+/// Stops a locally pending OAuth attempt. The browser page may remain open,
+/// but its state/verifier is immediately discarded and cannot be reused.
+#[tauri::command]
+async fn cancel_google_drive_oauth(session_id: String) -> Result<(), String> {
+    let removed = google_oauth_sessions()
+        .lock()
+        .map_err(|_| "Kunde inte avbryta inloggningen".to_string())?
+        .remove(&session_id);
+    if let Some(mut session) = removed {
+        if let Some(cancel) = session.cancel.take() {
+            let _ = cancel.send(());
+        }
+        Ok(())
+    } else {
+        Err("Inloggningssessionen är redan avslutad. Försök igen.".into())
+    }
+}
+
 #[tauri::command]
 async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveConnection, String> {
-    let session = google_oauth_sessions()
+    let (receiver, verifier, redirect_uri) = google_oauth_sessions()
         .lock()
         .map_err(|_| "Kunde inte läsa OAuth-sessionen".to_string())?
-        .remove(&session_id)
-        .ok_or_else(|| "Inloggningssessionen saknas eller har gått ut. Försök igen.".to_string())?;
-    let code = session
-        .receiver
+        .get_mut(&session_id)
+        .ok_or_else(|| "Inloggningssessionen saknas eller har gått ut. Försök igen.".to_string())
+        .and_then(|session| {
+            session
+                .receiver
+                .take()
+                .map(|receiver| (receiver, session.verifier.clone(), session.redirect_uri.clone()))
+                .ok_or_else(|| "Inloggningen väntar redan på ett svar. Försök igen om en stund.".to_string())
+        })?;
+    let code_result = receiver
         .await
-        .map_err(|_| "Inloggningen hann gå ut. Försök igen.".to_string())??;
+        .map_err(|_| "Inloggningen hann gå ut. Försök igen.".to_string());
+    let _ = google_oauth_sessions().lock().map(|mut sessions| sessions.remove(&session_id));
+    let code = code_result??;
     let client_secret = google_drive_client_secret().await?;
     let response = reqwest::Client::new()
         .post("https://oauth2.googleapis.com/token")
@@ -470,8 +517,8 @@ async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveCo
             ("client_id", GOOGLE_DRIVE_CLIENT_ID),
             ("client_secret", &client_secret),
             ("code", &code),
-            ("code_verifier", &session.verifier),
-            ("redirect_uri", &session.redirect_uri),
+            ("code_verifier", &verifier),
+            ("redirect_uri", &redirect_uri),
             ("grant_type", "authorization_code"),
         ])
         .send()
@@ -1659,6 +1706,7 @@ pub fn run() {
             delete_credential,
             start_google_drive_oauth,
             complete_google_drive_oauth,
+            cancel_google_drive_oauth,
             disconnect_google_drive,
             google_drive_access_token,
             cancel_transcription,

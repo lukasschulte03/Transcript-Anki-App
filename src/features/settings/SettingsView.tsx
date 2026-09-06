@@ -33,6 +33,7 @@ import { confirmStorageForImport, downloadBlob } from "../../lib/utils";
 import type { LibraryBackup, StoredAsset, ThemePalette } from "../../core/types";
 import {
   connectGoogleDrive,
+  cancelGoogleDriveConnection,
   disconnectGoogleDrive,
   syncErrorMessage,
   syncProviderOptions,
@@ -287,10 +288,17 @@ export function SettingsView() {
       });
       toast.success(`Google Drive anslöts: ${connection.accountLabel}`);
     } catch (error) {
-      toast.error(syncErrorMessage(error, "Kunde inte ansluta Google Drive."));
+      const message = syncErrorMessage(error, "Kunde inte ansluta Google Drive.");
+      if (message.includes("avbröts")) toast.message(message);
+      else toast.error(message);
     } finally {
       setCloudConnectBusy(false);
     }
+  };
+  const cancelCloudConnection = async () => {
+    await cancelGoogleDriveConnection();
+    setCloudConnectBusy(false);
+    toast.message("Google-inloggningen avbröts. Du kan försöka igen direkt.");
   };
   const syncCloudLibrary = async () => {
     if (!settings.cloudSync.connectedAt) {
@@ -839,6 +847,11 @@ export function SettingsView() {
                             {cloudConnectBusy && <LoaderCircle className="size-3.5 animate-spin" />}
                             Koppla Google Drive
                           </Button>
+                          {cloudConnectBusy && (
+                            <Button variant="ghost" size="sm" onClick={() => void cancelCloudConnection()}>
+                              Avbryt inloggning
+                            </Button>
+                          )}
                           <span className="text-xs text-[var(--palette-text-subtle)]">
                             {!isTauri()
                               ? "Öppna desktopappen för att koppla ett konto"

@@ -28,6 +28,9 @@ interface GoogleDriveConnection {
   connectedAt: string;
 }
 
+let activeGoogleSessionId: string | undefined;
+const cancelledGoogleSessions = new Set<string>();
+
 export function syncErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) return error.message;
   if (typeof error === "string" && error.trim()) return error;
@@ -42,11 +45,36 @@ export function syncErrorMessage(error: unknown, fallback: string) {
 export async function connectGoogleDrive(): Promise<GoogleDriveConnection> {
   if (!isTauri())
     throw new Error("Google Drive kan bara kopplas i Lectios desktopapp.");
+  if (activeGoogleSessionId)
+    throw new Error("En Google-inloggning pågår redan.");
   const start = await invoke<GoogleOAuthStart>("start_google_drive_oauth");
-  await openExternal(start.authorizationUrl);
-  return invoke<GoogleDriveConnection>("complete_google_drive_oauth", {
-    sessionId: start.sessionId,
-  });
+  activeGoogleSessionId = start.sessionId;
+  try {
+    await openExternal(start.authorizationUrl);
+    return await invoke<GoogleDriveConnection>("complete_google_drive_oauth", {
+      sessionId: start.sessionId,
+    });
+  } catch (error) {
+    if (cancelledGoogleSessions.has(start.sessionId))
+      throw new Error("Google-inloggningen avbröts.");
+    await invoke<void>("cancel_google_drive_oauth", { sessionId: start.sessionId }).catch(() => undefined);
+    throw error;
+  } finally {
+    cancelledGoogleSessions.delete(start.sessionId);
+    activeGoogleSessionId = undefined;
+  }
+}
+
+export async function cancelGoogleDriveConnection() {
+  const sessionId = activeGoogleSessionId;
+  if (!sessionId || !isTauri()) return false;
+  try {
+    await invoke<void>("cancel_google_drive_oauth", { sessionId });
+    cancelledGoogleSessions.add(sessionId);
+    return true;
+  } finally {
+    activeGoogleSessionId = undefined;
+  }
 }
 
 export async function disconnectGoogleDrive() {
