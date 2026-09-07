@@ -119,7 +119,10 @@ export default function App() {
       startupSyncStarted.current ||
       !isTauri() ||
       !settings.cloudSync.connectedAt ||
-      !settings.cloudSync.autoSyncOnStartAndClose
+      !settings.cloudSync.autoSyncOnStartAndClose ||
+      // Do not let an automatic retry block startup after this device has
+      // already completed a cloud sync. Manual/close sync remains available.
+      Boolean(settings.cloudSync.lastSyncedAt)
     ) {
       return;
     }
