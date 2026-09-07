@@ -508,6 +508,26 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       v2Operations = [...remoteOperations, ...local.operations];
       snapshot = applySyncOperations(v2State.base, v2Operations);
       v2State.nextSequence = local.nextSequence;
+      // A routine startup/close sync with no local or remote changes must not
+      // re-hash every recording or rewrite metadata. This keeps v2 fast even
+      // for libraries with many large lectures.
+      if (!v2Operations.length) {
+        const completedAt = new Date().toISOString();
+        useAppStore.getState().updateSettings({
+          cloudSync: {
+            ...useAppStore.getState().settings.cloudSync,
+            remotePath: rootPath,
+            lastSyncedAt: completedAt,
+          },
+        });
+        syncJob({
+          phase: "complete",
+          status: "complete",
+          current: 0,
+          detail: "Biblioteket är redan uppdaterat.",
+        });
+        return;
+      }
     } else if (existing && (syncBase || isRecoveredCopy)) {
       const merged = syncBase
         ? mergeLibrarySnapshots(
