@@ -9,6 +9,7 @@ import {
   Layers3,
   MoreHorizontal,
   PanelLeftClose,
+  Pencil,
   Plus,
   Search,
   Shapes,
@@ -79,6 +80,7 @@ export function LibrarySidebar() {
     settings,
     updateSettings,
     addNode,
+    updateNode,
     moveNode,
     reorderNode,
     selectNode,
@@ -89,6 +91,8 @@ export function LibrarySidebar() {
     null,
   );
   const [title, setTitle] = useState("");
+  const [renameNode, setRenameNode] = useState<LibraryNode | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
@@ -153,6 +157,23 @@ export function LibrarySidebar() {
     addNode(createRequest.parentId, createRequest.type, title.trim());
     setTitle("");
     setCreateRequest(null);
+  };
+  const openRename = (node: LibraryNode) => {
+    setRenameNode(node);
+    setRenameTitle(node.title);
+  };
+  const rename = () => {
+    const nextTitle = renameTitle.trim();
+    if (!renameNode || !nextTitle) {
+      toast.error("Skriv ett namn innan du sparar");
+      return;
+    }
+    if (nextTitle !== renameNode.title) {
+      updateNode(renameNode.id, { title: nextTitle });
+      toast.success(`${labelByType[renameNode.type]} har bytt namn`);
+    }
+    setRenameNode(null);
+    setRenameTitle("");
   };
 
   const onDragStart = (event: DragEvent<HTMLElement>, nodeId: string) => {
@@ -345,6 +366,7 @@ export function LibrarySidebar() {
               selectedId={selectedId}
               onSelect={selectNode}
               onCreate={setCreateRequest}
+              onRename={openRename}
               onRemove={removeNode}
               {...dragHandlers}
             />
@@ -408,6 +430,42 @@ export function LibrarySidebar() {
           </div>
         </div>
       </Dialog>
+      <Dialog
+        open={!!renameNode}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRenameNode(null);
+            setRenameTitle("");
+          }
+        }}
+        title={`Byt namn på ${renameNode ? labelByType[renameNode.type].toLowerCase() : "objekt"}`}
+        description="Namnet uppdateras i biblioteket och används vid nästa Anki- och molnsynk."
+      >
+        <div className="space-y-4">
+          <div>
+            <Label htmlFor="rename-library-node">Namn</Label>
+            <Input
+              id="rename-library-node"
+              autoFocus
+              value={renameTitle}
+              onChange={(event) => setRenameTitle(event.target.value)}
+              onKeyDown={(event) => event.key === "Enter" && rename()}
+              aria-describedby="rename-library-node-help"
+            />
+            <p id="rename-library-node-help" className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]">
+              Tomma namn kan inte sparas.
+            </p>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setRenameNode(null)}>
+              Avbryt
+            </Button>
+            <Button onClick={rename} disabled={!renameTitle.trim()}>
+              Spara namn
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </aside>
   );
 }
@@ -418,6 +476,7 @@ function CourseItem({
   selectedId,
   onSelect,
   onCreate,
+  onRename,
   onRemove,
   draggedNodeId,
   dropTargetId,
@@ -431,6 +490,7 @@ function CourseItem({
   selectedId: string;
   onSelect: (id: string) => void;
   onCreate: (request: CreateRequest) => void;
+  onRename: (node: LibraryNode) => void;
   onRemove: (id: string) => void;
 } & TreeDragHandlers) {
   const [expanded, setExpanded] = useState(true);
@@ -475,6 +535,11 @@ function CourseItem({
         <NodeMenu
           items={[
             {
+              label: "Byt namn",
+              icon: Pencil,
+              action: () => onRename(course),
+            },
+            {
               label: "Ny modul",
               icon: Plus,
               action: () => onCreate({ parentId: course.id, type: "module" }),
@@ -501,6 +566,7 @@ function CourseItem({
                 selectedId={selectedId}
                 onSelect={onSelect}
                 onCreate={onCreate}
+                onRename={onRename}
                 onRemove={onRemove}
                 draggedNodeId={draggedNodeId}
                 dropTargetId={dropTargetId}
@@ -530,6 +596,7 @@ function ModuleItem({
   selectedId,
   onSelect,
   onCreate,
+  onRename,
   onRemove,
   draggedNodeId,
   dropTargetId,
@@ -543,6 +610,7 @@ function ModuleItem({
   selectedId: string;
   onSelect: (id: string) => void;
   onCreate: (request: CreateRequest) => void;
+  onRename: (node: LibraryNode) => void;
   onRemove: (id: string) => void;
 } & TreeDragHandlers) {
   const [expanded, setExpanded] = useState(true);
@@ -590,6 +658,11 @@ function ModuleItem({
         </button>
         <NodeMenu
           items={[
+            {
+              label: "Byt namn",
+              icon: Pencil,
+              action: () => onRename(module),
+            },
             {
               label: "Nytt ämne",
               icon: Shapes,
@@ -650,6 +723,11 @@ function ModuleItem({
                 </button>
                 <NodeMenu
                   items={[
+                    {
+                      label: "Byt namn",
+                      icon: Pencil,
+                      action: () => onRename(leaf),
+                    },
                     {
                       label: `Ta bort ${labelByType[leaf.type].toLowerCase()}`,
                       icon: Trash2,

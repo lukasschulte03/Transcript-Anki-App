@@ -3,6 +3,7 @@ import {
   forwardRef,
   isValidElement,
   type InputHTMLAttributes,
+  type LabelHTMLAttributes,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
@@ -45,9 +46,12 @@ export function Textarea(props: TextareaHTMLAttributes<HTMLTextAreaElement>) {
     />
   );
 }
-export function Label({ children }: { children: React.ReactNode }) {
+export function Label({ children, className, ...props }: LabelHTMLAttributes<HTMLLabelElement>) {
   return (
-    <label className="mb-1.5 block text-xs font-medium text-[var(--palette-text-muted)]">
+    <label
+      {...props}
+      className={cn("mb-1.5 block text-xs font-medium text-[var(--palette-text-muted)]", className)}
+    >
       {children}
     </label>
   );
