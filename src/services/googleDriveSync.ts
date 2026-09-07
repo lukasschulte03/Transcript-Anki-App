@@ -11,7 +11,12 @@ import {
   type MergeConflict,
   type MergeResolution,
 } from "./libraryMerge";
-import type { SyncV2State } from "./syncV2";
+import {
+  applySyncOperations,
+  createSyncOperations,
+  type SyncOperation,
+  type SyncV2State,
+} from "./syncV2";
 
 export const DRIVE_API = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -119,6 +124,17 @@ export async function findNamedFile(
   const response = await googleDriveRequest(driveQuery(query), token);
   const result = (await response.json()) as { files?: DriveFile[] };
   return result.files?.[0];
+}
+
+async function listFiles(parentId: string, token: string) {
+  const response = await googleDriveRequest(
+    driveQuery(
+      `'${parentId}' in parents and trashed=false`,
+      "files(id,name,mimeType,modifiedTime)",
+    ),
+    token,
+  );
+  return ((await response.json()) as { files?: DriveFile[] }).files ?? [];
 }
 
 export async function ensureFolder(
@@ -302,6 +318,30 @@ async function seedSyncV2(
   } satisfies SyncV2State);
 }
 
+async function readSyncV2Operations(
+  folderId: string,
+  token: string,
+  known: Set<string>,
+  libraryId: string,
+) {
+  const files = await listFiles(folderId, token);
+  const operations: SyncOperation[] = [];
+  for (const file of files) {
+    if (!file.name.endsWith(".json") || file.name === "checkpoint.json")
+      continue;
+    const id = file.name.slice(0, -5);
+    if (known.has(id)) continue;
+    const response = await googleDriveRequest(
+      `${DRIVE_API}/files/${file.id}?alt=media`,
+      token,
+    );
+    const operation = (await response.json()) as SyncOperation;
+    if (operation.id === id && operation.libraryId === libraryId)
+      operations.push(operation);
+  }
+  return operations;
+}
+
 /**
  * A restored local backup can legitimately be missing `lastSyncedAt`.  Do not
  * mistake it for a different library merely because that bookkeeping value was
@@ -420,6 +460,9 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       settings: state.settings,
     };
     const existing = await readManifest(token, metadataFolder);
+    const v2State = await db.syncV2States.get(syncV2StateId(rootPath));
+    let v2Folder: string | undefined;
+    let v2Operations: SyncOperation[] = [];
     const isRecoveredCopy =
       existing &&
       isLikelySameGoogleDriveLibrary(
@@ -453,7 +496,19 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       return;
     }
     const syncBase = await db.syncBases.get(syncBaseId(rootPath));
-    if (existing && (syncBase || isRecoveredCopy)) {
+    if (v2State) {
+      v2Folder = await ensureFolder("sync-v2", metadataFolder, token);
+      const remoteOperations = await readSyncV2Operations(
+        v2Folder,
+        token,
+        new Set(v2State.knownOperationIds),
+        v2State.libraryId,
+      );
+      const local = createSyncOperations(v2State.base, snapshot, v2State);
+      v2Operations = [...remoteOperations, ...local.operations];
+      snapshot = applySyncOperations(v2State.base, v2Operations);
+      v2State.nextSequence = local.nextSequence;
+    } else if (existing && (syncBase || isRecoveredCopy)) {
       const merged = syncBase
         ? mergeLibrarySnapshots(
             syncBase.snapshot,
@@ -540,6 +595,35 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       snapshot: snapshotForCloud(snapshot),
       assets: remoteAssets,
     };
+    if (v2Folder) {
+      for (const operation of v2Operations.filter(
+        (item) => item.deviceId === getDeviceId(),
+      )) {
+        const existingOperation = await findNamedFile(
+          `${operation.id}.json`,
+          v2Folder,
+          token,
+        );
+        if (!existingOperation)
+          await createResumableUpload(
+            token,
+            `${operation.id}.json`,
+            v2Folder,
+            new Blob([JSON.stringify(operation)], { type: "application/json" }),
+          );
+      }
+      await db.syncV2States.put({
+        ...v2State!,
+        base: snapshot,
+        knownOperationIds: [
+          ...new Set([
+            ...v2State!.knownOperationIds,
+            ...v2Operations.map((item) => item.id),
+          ]),
+        ],
+        updatedAt: new Date().toISOString(),
+      });
+    }
     const bytes = new Blob([JSON.stringify(manifest)], {
       type: "application/json",
     });
