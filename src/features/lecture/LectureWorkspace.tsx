@@ -37,6 +37,26 @@ function qualityFlagLabel(flag: string) {
   }[flag] ?? "att granska";
 }
 
+function escapedSearchPattern(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function highlightedTranscriptText(text: string, query: string) {
+  const needle = query.trim();
+  if (!needle) return text;
+  const parts = text.split(new RegExp(`(${escapedSearchPattern(needle)})`, "gi"));
+  return parts.map((part, index) =>
+    index % 2 ? (
+      <mark
+        key={`${part}-${index}`}
+        className="rounded-sm bg-[var(--palette-warning-muted)] px-0.5 font-inherit text-inherit"
+      >
+        {part}
+      </mark>
+    ) : part,
+  );
+}
+
 export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const {
     nodes,
@@ -86,6 +106,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const [importOpen, setImportOpen] = useState(false);
   const [rawTranscript, setRawTranscript] = useState("");
   const [transcriptQuery, setTranscriptQuery] = useState("");
+  const [searchResultIds, setSearchResultIds] = useState<string[] | null>(null);
+  const [editingSegmentId, setEditingSegmentId] = useState<string | null>(null);
+  const [segmentDraft, setSegmentDraft] = useState("");
   const [transcriptReplacement, setTranscriptReplacement] = useState("");
   const [showOnlySuspicious, setShowOnlySuspicious] = useState(false);
   const [lectureSettingsOpen, setLectureSettingsOpen] = useState(false);
@@ -102,13 +125,24 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     () => transcript.find((s) => time >= s.start && time < s.end)?.id,
     [time, transcript],
   );
-  const visibleTranscript = useMemo(() => {
-    const query = transcriptQuery.trim().toLocaleLowerCase();
-    return transcript.filter((segment) =>
-      (!showOnlySuspicious || segment.suspicious) &&
-      (!query || segment.text.toLocaleLowerCase().includes(query)),
-    );
-  }, [showOnlySuspicious, transcript, transcriptQuery]);
+  const matchingSegmentIds = (
+    query: string,
+    source = transcript,
+    suspiciousOnly = showOnlySuspicious,
+  ) => {
+    const normalizedQuery = query.trim().toLocaleLowerCase("sv");
+    if (!normalizedQuery) return null;
+    return source
+      .filter((segment) =>
+        (!suspiciousOnly || segment.suspicious) &&
+        segment.text.toLocaleLowerCase("sv").includes(normalizedQuery),
+      )
+      .map((segment) => segment.id);
+  };
+  const visibleTranscript = useMemo(() => transcript.filter((segment) =>
+    (!showOnlySuspicious || segment.suspicious) &&
+    (!transcriptQuery.trim() || searchResultIds?.includes(segment.id)),
+  ), [showOnlySuspicious, transcript, transcriptQuery, searchResultIds]);
   const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
   const qualitySummary = suspiciousSegments.reduce<Record<string, number>>(
     (summary, segment) => {
@@ -235,15 +269,33 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const replaceTranscriptMatches = () => {
     const query = transcriptQuery.trim();
     if (!query) return;
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const matcher = new RegExp(escaped, "gi");
-    visibleTranscript.forEach((segment) => {
+    const matcher = new RegExp(escapedSearchPattern(query), "gi");
+    const replacedIds = new Set(visibleTranscript.map((segment) => segment.id));
+    const updatedTranscript = transcript.map((segment) => {
+      if (!replacedIds.has(segment.id)) return segment;
+      const text = segment.text.replace(matcher, transcriptReplacement);
       updateSegment(
         segment.id,
-        segment.text.replace(matcher, transcriptReplacement),
+        text,
       );
+      return { ...segment, text };
     });
+    setSearchResultIds(matchingSegmentIds(transcriptQuery, updatedTranscript));
     toast.success(`${visibleTranscript.length} segment uppdaterades`);
+  };
+  const beginSegmentEdit = (segment: (typeof transcript)[number]) => {
+    setEditingSegmentId(segment.id);
+    setSegmentDraft(segment.text);
+  };
+  const finishSegmentEdit = (segment: (typeof transcript)[number]) => {
+    const nextText = segmentDraft;
+    if (nextText !== segment.text) updateSegment(segment.id, nextText);
+    setEditingSegmentId(null);
+    setSegmentDraft("");
+    const updatedTranscript = transcript.map((item) =>
+      item.id === segment.id ? { ...item, text: nextText } : item,
+    );
+    setSearchResultIds(matchingSegmentIds(transcriptQuery, updatedTranscript));
   };
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
@@ -382,7 +434,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => setShowOnlySuspicious((current) => !current)}
+                    onClick={() => {
+                      const next = !showOnlySuspicious;
+                      setShowOnlySuspicious(next);
+                      setSearchResultIds(matchingSegmentIds(transcriptQuery, transcript, next));
+                    }}
                     aria-pressed={showOnlySuspicious}
                   >
                     {showOnlySuspicious ? "Visa alla" : `Granska ${suspiciousSegments.length}`}
@@ -402,7 +458,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 <Input
                   data-lectio-transcript-search
                   value={transcriptQuery}
-                  onChange={(event) => setTranscriptQuery(event.target.value)}
+                  onChange={(event) => {
+                    const query = event.target.value;
+                    setTranscriptQuery(query);
+                    setSearchResultIds(matchingSegmentIds(query));
+                  }}
                   placeholder="Sök i transkript"
                   className="h-8 min-w-36 flex-1 text-xs"
                 />
@@ -444,15 +504,25 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                       >
                         {formatTime(s.start)}
                       </button>
-                      <textarea
-                        value={s.text}
-                        onChange={(e) => updateSegment(s.id, e.target.value)}
-                        rows={Math.min(
-                          5,
-                          Math.max(1, Math.ceil(s.text.length / 65)),
-                        )}
-                        className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
-                      />
+                      {editingSegmentId === s.id ? (
+                        <textarea
+                          autoFocus
+                          value={segmentDraft}
+                          onChange={(event) => setSegmentDraft(event.target.value)}
+                          onBlur={() => finishSegmentEdit(s)}
+                          rows={Math.min(5, Math.max(1, Math.ceil(segmentDraft.length / 65)))}
+                          className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => beginSegmentEdit(s)}
+                          className="min-w-0 flex-1 whitespace-pre-wrap text-left text-sm leading-5 text-[var(--palette-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--palette-focus-ring)]"
+                          title="Klicka för att redigera"
+                        >
+                          {highlightedTranscriptText(s.text, transcriptQuery)}
+                        </button>
+                      )}
                       {s.suspicious && (
                         <button
                           className="mt-1 shrink-0 rounded bg-[var(--palette-warning-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--palette-warning)]"
