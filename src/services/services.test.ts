@@ -345,7 +345,7 @@ describe("kortformat", () => {
     ).rejects.toThrow("bas-URL");
   });
 
-  it("skickar kortfattade befintliga kurskort som dubblettskydd till AI:n", () => {
+  it("bygger en kompakt prompt utan instruktioner för otillåtna korttyper", () => {
     const prompt = createCardPrompt({
       lectureId: "lecture",
       title: "Akut buk",
@@ -355,18 +355,30 @@ describe("kortformat", () => {
       markers: [],
       slideText: "",
       count: 12,
-      types: ["basic"],
+      types: ["basic", "concept"],
       preferences: [],
       existingCards: [{ front: "Vad är peritonit?", back: "Inflammation i peritoneum." }],
     });
     expect(prompt).toContain("BEFINTLIGA KORT I KURSEN");
     expect(prompt).toContain("Vad är peritonit?");
-    expect(prompt).toContain("Bedöm själv hur många kort materialet faktiskt motiverar");
-    expect(prompt).toContain("Använd ENDAST fakta som uttryckligen stöds av källmaterialet");
-    expect(prompt).toContain("Fråga inte efter långa listor");
-    expect(prompt).toContain("Välj korttyp efter kunskapen");
-    expect(prompt).not.toContain("Skapa 12 högkvalitativa");
+    expect(prompt).toContain("Promptversion: 1");
+    expect(prompt).toContain("Använd endast uttryckligt källstöd");
+    expect(prompt).toContain('"type":"basic|concept"');
+    expect(prompt).toContain("basic: en tydlig fråga");
+    expect(prompt).toContain("concept: testa ett samband");
+    expect(prompt).not.toContain("cloze: front måste");
+    expect(prompt).not.toContain("problem: testa en konkret");
+    expect(prompt).not.toContain("Terminologi: Vad");
     expect(duplicateExplanation("Vad är akut peritonit?", { front: "Vad är peritonit?" })).toContain("peritonit");
+  });
+
+  it("beskriver endast cloze-regler när cloze har valts", () => {
+    const prompt = createCardPrompt({
+      lectureId: "lecture", title: "Akut buk", context: "", notes: "", transcript: [], markers: [], slideText: "",
+      count: 12, types: ["cloze"], preferences: [],
+    });
+    expect(prompt).toContain("cloze: front måste innehålla minst en giltig {{c1::...}}-markering");
+    expect(prompt).not.toContain("basic: en tydlig fråga");
   });
 
   it("skapar Anki-hierarki från kurs, modul och föreläsning", () => {

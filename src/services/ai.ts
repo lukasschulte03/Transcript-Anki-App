@@ -77,6 +77,16 @@ export function transcriptTextForCardGeneration(segments: TranscriptSegment[]) {
     .join("\n");
 }
 
+/** Keep this deliberately compact: inherited context and source material are the expensive parts. */
+const CARD_PROMPT_VERSION = "1";
+const cardTypeInstructions: Record<CardType, string> = {
+  basic: "basic: en tydlig fråga och ett kort, exakt svar.",
+  cloze: "cloze: front måste innehålla minst en giltig {{c1::...}}-markering; back förklarar kort.",
+  concept: "concept: testa ett samband, en mekanism eller orsak–verkan med kort förklaring.",
+  definition: "definition: testa en terms betydelse med tillräckligt sammanhang.",
+  problem: "problem: testa en konkret tillämpning, beräkning eller ett beslut från underlaget.",
+};
+
 export function createCardPrompt(r: CardRequest) {
   const extraRules = [
     ...r.preferences.map((preference) => `- ${preference}`),
@@ -95,7 +105,44 @@ export function createCardPrompt(r: CardRequest) {
     .map((marker) => marker.note.trim() || "Viktigt moment")
     .join("\n");
   const transcriptText = transcriptTextForCardGeneration(r.transcript);
-  return `Du är en noggrann studieassistent. Skapa högkvalitativa Anki-kort på svenska.\n\nREGLER:\n- Repetitionsnivå: ${r.density === "few" ? "Få" : r.density === "many" ? "Många" : "Lagom"}. ${densityInstruction}\n- Bedöm själv hur många kort materialet faktiskt motiverar. Fyll aldrig ut till en bestämd kvot. Välj bara sådant som en student sannolikt har nytta av att aktivt repetera senare.\n- Skapa aldrig fler än ${r.count} kort; detta är endast en teknisk säkerhetsgräns.\n- Använd ENDAST fakta som uttryckligen stöds av källmaterialet nedan. Gissa inte, fyll inte i luckor och avstå från kort om underlaget inte räcker.\n- Ett tydligt, atomärt koncept per kort. Frågan ska ha ett entydigt svar och innehålla tillräckligt sammanhang för att fungera utan sliden eller transkriptet.\n- Undvik triviala och duplicerade kort. Skapa inte förväxlingsbara syskonkort; gör närliggande frågor tydligt olika.\n- Fråga inte efter långa listor. Dela upp listor i separata kort, utom när ordning eller helheten är själva kunskapen.\n- Skapa inte ett kort som testar samma faktum eller begrepp som något i BEFINTLIGA KORT.\n- Prioritera förståelse, examinationsrelevans och markerade moment.\n- Skriv aldrig ljudtidsstämplar eller andra tidsreferenser i korten.\n- Välj korttyp efter kunskapen: basic/concept för definitioner, orsak–verkan och förståelse; cloze endast när en kort, naturlig sats blir tydligare; problem för beräkning, beslut eller tillämpning.\n- Om type är cloze MÅSTE front innehålla minst en giltig Anki-markering, exempelvis "Njurens viktigaste funktion är {{c1::filtrering av blodet}}.". Lägg en frivillig förklaring i back. Skapa aldrig ett cloze-kort utan {{c1::...}}-syntax.\n- Svara ENDAST med giltig JSON enligt: {"cards":[{"type":"basic|cloze|concept|definition|problem","front":"...","back":"...","tags":["..."]}]}\n- Tillåtna korttyper: ${r.types.join(", ")}.\n${extraRules}\n\nFÖRELÄSNING: ${r.title}\n\nBEFINTLIGA KORT I KURSEN (undvik att upprepa dem):\n${existingCards || "(inga)"}\n\nÄRVD KONTEXT:\n${r.context || "(ingen)"}\n\nANTECKNINGAR:\n${r.notes || "(inga)"}\n\nMARKERADE MOMENT:\n${markerText || "(inga)"}\n\nTEXT FRÅN SLIDES:\n${r.slideText || "(ingen slide-text)"}\n\nTRANSKRIPT:\n${transcriptText || "(inget transcript)"}`;
+  const allowedTypes = r.types.map((type) => cardTypeInstructions[type]).join("\n- ");
+  return `Skapa Anki-kort på svenska. Promptversion: ${CARD_PROMPT_VERSION}.
+
+UPPDRAG
+- Repetitionsnivå: ${r.density === "few" ? "Få" : r.density === "many" ? "Många" : "Lagom"}. ${densityInstruction}
+- Bedöm själv ett nyttigt antal kort, utan utfyllnad; högst ${r.count} (tekniskt tak).
+
+REGLER
+- Använd endast uttryckligt källstöd. Gissa inte.
+- Ett atomärt, entydigt koncept per kort; tillräckligt sammanhang utan originalkällan.
+- Prioritera förståelse, examination och markerade moment. Undvik trivialitet, dubbletter och långa osorterade listor.
+- Skapa inte samma faktum som i BEFINTLIGA KORT. Skriv aldrig ljudtidsstämplar eller prefixet "Terminologi:".
+
+KORTTYPER (använd endast dessa)
+- ${allowedTypes}
+
+FORMAT
+Svara endast med giltig JSON: {"cards":[{"type":"${r.types.join("|")}","front":"...","back":"...","tags":["..."]}]}
+${extraRules ? `\nEXTRA PREFERENSER\n${extraRules}\n` : ""}
+FÖRELÄSNING: ${r.title}
+
+BEFINTLIGA KORT I KURSEN (undvik att upprepa dem):
+${existingCards || "(inga)"}
+
+ÄRVD KONTEXT:
+${r.context || "(ingen)"}
+
+ANTECKNINGAR:
+${r.notes || "(inga)"}
+
+MARKERADE MOMENT:
+${markerText || "(inga)"}
+
+TEXT FRÅN SLIDES:
+${r.slideText || "(ingen slide-text)"}
+
+TRANSKRIPT:
+${transcriptText || "(inget transcript)"}`;
 }
 
 export function parseCardResponse(
