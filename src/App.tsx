@@ -15,8 +15,6 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { FeedbackDialog } from "./components/FeedbackDialog";
-import { Button } from "./components/ui/Button";
-import { Dialog } from "./components/ui/Dialog";
 import { syncGoogleDrive } from "./services/googleDriveSync";
 import { syncErrorMessage } from "./services/sync";
 import { isTauri } from "./services/platform";
@@ -78,40 +76,14 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
-  const [closeSyncState, setCloseSyncState] = useState<
-    "syncing" | { error: string } | undefined
-  >();
   const allowWindowClose = useRef(false);
-  const closeSyncPromise = useRef<Promise<void> | undefined>(undefined);
+  const closeAttemptStarted = useRef(false);
 
   const closeWindow = useCallback(async () => {
     allowWindowClose.current = true;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     await getCurrentWindow().close();
   }, []);
-
-  const syncBeforeClose = useCallback(() => {
-    if (closeSyncPromise.current) return closeSyncPromise.current;
-    setCloseSyncState("syncing");
-    const task = syncGoogleDrive()
-      .then(async () => {
-        setCloseSyncState(undefined);
-        await closeWindow();
-      })
-      .catch((error: unknown) => {
-        setCloseSyncState({
-          error: syncErrorMessage(
-            error,
-            "Google Drive-synken kunde inte slutföras.",
-          ),
-        });
-      })
-      .finally(() => {
-        closeSyncPromise.current = undefined;
-      });
-    closeSyncPromise.current = task;
-    return task;
-  }, [closeWindow]);
 
   useEffect(() => {
     if (!isTauri()) return;
@@ -124,7 +96,25 @@ export default function App() {
           if (!cloudSync.connectedAt || !cloudSync.autoSyncOnStartAndClose)
             return;
           event.preventDefault();
-          void syncBeforeClose();
+          if (closeAttemptStarted.current) return;
+          closeAttemptStarted.current = true;
+          // Closing a desktop window must always remain possible. Give the
+          // incremental sync a short opportunity, then preserve local data and
+          // close even if Drive is offline or a request is stalled.
+          const timeout = window.setTimeout(() => {
+            toast.message("Synken fortsätter nästa gång du öppnar Lectio.");
+            void closeWindow();
+          }, 8_000);
+          void syncGoogleDrive()
+            .catch((error: unknown) => {
+              toast.error(
+                `Kunde inte synka innan stängning: ${syncErrorMessage(error, "okänt fel")}`,
+              );
+            })
+            .finally(() => {
+              window.clearTimeout(timeout);
+              void closeWindow();
+            });
         }),
       )
       .then((stopListening) => {
@@ -136,7 +126,7 @@ export default function App() {
         );
       });
     return () => unlisten?.();
-  }, [syncBeforeClose]);
+  }, [closeWindow]);
   useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
@@ -274,60 +264,6 @@ export default function App() {
           onOpenChange={setFeedbackOpen}
           initialError={feedbackError}
         />
-        <Dialog
-          open={Boolean(closeSyncState)}
-          onOpenChange={(open) => {
-            if (!open && closeSyncState !== "syncing")
-              setCloseSyncState(undefined);
-          }}
-          title={
-            closeSyncState === "syncing"
-              ? "Synkar innan Lectio stängs"
-              : "Synken kunde inte slutföras"
-          }
-          description={
-            closeSyncState === "syncing"
-              ? (libraryOperation?.detail ??
-                "Väntar på att Google Drive-synken ska bli klar.")
-              : "Dina lokala ändringar är kvar på datorn. Välj om du vill försöka igen eller stänga utan att synka."
-          }
-        >
-          {closeSyncState === "syncing" ? (
-            <div className="flex items-center gap-3 text-sm text-[var(--palette-text-muted)]">
-              <span
-                className="size-4 animate-spin rounded-full border-2 border-[var(--palette-primary-muted)] border-t-[var(--palette-primary)]"
-                aria-hidden="true"
-              />
-              Stäng inte appen förrän synken är klar.
-            </div>
-          ) : closeSyncState ? (
-            <div className="space-y-4">
-              <p className="rounded-md bg-[var(--palette-danger-muted)] p-3 text-sm leading-5 text-[var(--palette-danger)]">
-                {closeSyncState.error}
-              </p>
-              <div className="flex flex-wrap justify-end gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => setCloseSyncState(undefined)}
-                >
-                  Avbryt stängning
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => void syncBeforeClose()}
-                >
-                  Försök igen
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={() => void closeWindow()}
-                >
-                  Stäng ändå
-                </Button>
-              </div>
-            </div>
-          ) : null}
-        </Dialog>
       </div>
     </TooltipProvider>
   );
