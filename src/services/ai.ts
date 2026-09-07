@@ -116,6 +116,8 @@ export function parseCardResponse(
   const parsed = responseSchema.parse(JSON.parse(json));
   return parsed.cards.map((c) => ({
     ...c,
+    // "Terminologi:" adds no recall cue and makes the card front needlessly repetitive.
+    front: c.front.replace(/^\s*terminologi:\s*/i, "").trim(),
     lectureId,
     status: "generated" as const,
   }));

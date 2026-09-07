@@ -533,6 +533,14 @@ describe("kortformat", () => {
     });
   });
 
+  it("tar bort den överflödiga Terminologi-etiketten från nya kort", () => {
+    const result = parseCardResponse(
+      '{"cards":[{"type":"basic","front":"Terminologi: Vad betyder ileus?","back":"Tarmstopp.","tags":[]}]}',
+      "lecture-1",
+    );
+    expect(result[0]?.front).toBe("Vad betyder ileus?");
+  });
+
   it("reparerar inledande text och avslutande kommatecken", () => {
     const result = parseCardResponse(
       'Här är resultatet:\n{"cards":[{"front":"Fråga?","back":"Svar",}],}',
