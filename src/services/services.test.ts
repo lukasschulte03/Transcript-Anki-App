@@ -580,6 +580,7 @@ describe("kortformat", () => {
       lectureId: "lecture-1",
       title: "TCP",
       context: "Kursmål",
+      sourceStatus: "Transkript: delvis.\nSlides: komplett tillgänglig slide-text är vald.",
       notes: "Egna noter",
       transcript: [
         { id: "s1", lectureId: "lecture-1", start: 1, end: 5, text: "Data" },
@@ -597,5 +598,7 @@ describe("kortformat", () => {
     expect(prompt).not.toContain("[1-5s]");
     expect(prompt).not.toContain("32s");
     expect(prompt).toContain("Slide 1: Flödeskontroll");
+    expect(prompt).toContain("KÄLLTÄCKNING");
+    expect(prompt).toContain("Slides: komplett tillgänglig slide-text är vald");
   });
 });

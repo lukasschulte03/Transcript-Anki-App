@@ -370,6 +370,37 @@ export function CardStudio() {
     contextPreview.reduce((total, item) => total + item.context.length, 0) / 4,
   );
   const cardLimit = density === "few" ? 16 : density === "balanced" ? 36 : 64;
+  const sourceStatus = useMemo(() => {
+    const lectureTranscript = segments.filter((segment) => segment.lectureId === lectureId);
+    const transcriptEnd = lectureTranscript.reduce(
+      (latest, segment) => Math.max(latest, segment.end),
+      0,
+    );
+    const audioDuration = lecture?.audioDuration ?? 0;
+    const transcriptCoverage = !sources.transcript
+      ? "Transkript: inte valt."
+      : !lectureTranscript.length
+        ? "Transkript: inget tillgängligt; använd övriga valda källor självständigt."
+        : audioDuration > 0 && transcriptEnd < audioDuration * 0.98
+          ? `Transkript: delvis, täcker ungefär ${Math.floor(transcriptEnd / 60)} av ${Math.ceil(audioDuration / 60)} minuter.`
+          : "Transkript: valt underlag."
+    return [
+      transcriptCoverage,
+      sources.slides
+        ? lecture?.slideText?.trim()
+          ? "Slides: komplett tillgänglig slide-text är vald och kan ge egna kort."
+          : "Slides: valda, men ingen läsbar slide-text finns."
+        : "Slides: inte valda.",
+      sources.notes
+        ? lecture?.notes?.trim()
+          ? "Anteckningar: valt underlag."
+          : "Anteckningar: valda, men tomma."
+        : "Anteckningar: inte valda.",
+      sources.context
+        ? "Context: valt underlag."
+        : "Context: inte valt.",
+    ].join("\n");
+  }, [lecture?.audioDuration, lecture?.notes, lecture?.slideText, lectureId, segments, sources]);
   const prompt = useMemo(
     () =>
       node
@@ -381,6 +412,7 @@ export function CardStudio() {
                   .map((item) => `${item.title}: ${item.context}`)
                   .join("\n\n")
               : "",
+            sourceStatus,
             notes: sources.notes ? (lecture?.notes ?? "") : "",
             transcript: sources.transcript
               ? segments.filter((x) => x.lectureId === lectureId)
@@ -402,6 +434,7 @@ export function CardStudio() {
       lectureId,
       lecture?.notes,
       lecture?.slideText,
+      lecture?.audioDuration,
       segments,
       markers,
       density,
@@ -412,6 +445,7 @@ export function CardStudio() {
       inheritedSettings.cardStyle,
       courseCards,
       cardLimit,
+      sourceStatus,
     ],
   );
   const importResponse = () => {

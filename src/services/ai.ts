@@ -55,6 +55,8 @@ export interface CardRequest {
   lectureId: string;
   title: string;
   context: string;
+  /** Explains which selected sources are complete versus partial. */
+  sourceStatus?: string;
   notes: string;
   transcript: TranscriptSegment[];
   markers: Marker[];
@@ -117,6 +119,7 @@ REGLER
 - Ett atomärt, entydigt koncept per kort; tillräckligt sammanhang utan originalkällan.
 - Prioritera förståelse, examination och markerade moment. Undvik trivialitet, dubbletter och långa osorterade listor.
 - Skapa inte samma faktum som i BEFINTLIGA KORT. Skriv aldrig ljudtidsstämplar eller prefixet "Terminologi:".
+- Använd varje vald källa självständigt. Saknad transkripttext är inte ett skäl att utelämna fakta som stöds av slides, anteckningar eller context.
 
 KORTTYPER (använd endast dessa)
 - ${allowedTypes}
@@ -125,6 +128,9 @@ FORMAT
 Svara endast med giltig JSON: {"cards":[{"type":"${r.types.join("|")}","front":"...","back":"...","tags":["..."]}]}
 ${extraRules ? `\nEXTRA PREFERENSER\n${extraRules}\n` : ""}
 FÖRELÄSNING: ${r.title}
+
+KÄLLTÄCKNING:
+${r.sourceStatus || "Använd endast de källor som har inkluderats nedan."}
 
 BEFINTLIGA KORT I KURSEN (undvik att upprepa dem):
 ${existingCards || "(inga)"}
