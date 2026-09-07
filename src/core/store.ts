@@ -549,6 +549,14 @@ export const useAppStore = create<AppState>()(
     {
       name: "lectio-state-v1",
       version: 14,
+      // Native operations cannot survive a process restart. In particular, an
+      // interrupted Drive sync used to be rehydrated as an active job and
+      // locked the entire UI even though no sync worker was running.
+      merge: (persistedState, currentState) => ({
+        ...currentState,
+        ...(persistedState as Partial<AppState>),
+        jobs: [],
+      }),
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
         const legacySettings = previous.settings as AppSettings & {
