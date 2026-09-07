@@ -11,6 +11,7 @@ import {
   type MergeConflict,
   type MergeResolution,
 } from "./libraryMerge";
+import type { SyncV2State } from "./syncV2";
 
 export const DRIVE_API = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -249,6 +250,56 @@ async function saveSyncBase(rootPath: string, manifest: RemoteManifest) {
     })),
     createdAt: new Date().toISOString(),
   } satisfies GoogleDriveSyncBase);
+}
+
+const syncV2StateId = (rootPath: string) =>
+  `google-drive-v2:${rootPath.toLocaleLowerCase()}`;
+
+/**
+ * Seeds the v2 protocol from an already verified v1 library. This is additive:
+ * the old manifest remains untouched as a recovery checkpoint.
+ */
+async function seedSyncV2(
+  rootPath: string,
+  metadataFolder: string,
+  snapshot: LibrarySnapshot,
+  token: string,
+) {
+  const stateId = syncV2StateId(rootPath);
+  const existingState = await db.syncV2States.get(stateId);
+  const libraryId = snapshot.nodes.find(
+    (node) => node.type === "workspace",
+  )?.id;
+  if (!libraryId)
+    throw new Error("Sync v2 kunde inte hitta bibliotekets rotobjekt.");
+  const v2Folder = await ensureFolder("sync-v2", metadataFolder, token);
+  const checkpoint = await findNamedFile("checkpoint.json", v2Folder, token);
+  if (!checkpoint) {
+    const payload = new Blob(
+      [
+        JSON.stringify({
+          protocol: 2,
+          libraryId,
+          createdAt: new Date().toISOString(),
+          snapshot: snapshotForCloud(snapshot),
+        }),
+      ],
+      { type: "application/json" },
+    );
+    await createResumableUpload(token, "checkpoint.json", v2Folder, payload);
+  }
+  const now = new Date().toISOString();
+  await db.syncV2States.put({
+    id: stateId,
+    protocol: 2,
+    libraryId,
+    deviceId: getDeviceId(),
+    nextSequence: existingState?.nextSequence ?? 1,
+    base: snapshot,
+    knownOperationIds: existingState?.knownOperationIds ?? [],
+    createdAt: existingState?.createdAt ?? now,
+    updatedAt: now,
+  } satisfies SyncV2State);
 }
 
 /**
@@ -501,6 +552,7 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       settings: { ...snapshot.settings, cloudSync: localCloud },
     });
     await saveSyncBase(rootPath, manifest);
+    await seedSyncV2(rootPath, metadataFolder, snapshot, token);
     useAppStore.getState().updateSettings({
       cloudSync: {
         ...useAppStore.getState().settings.cloudSync,
