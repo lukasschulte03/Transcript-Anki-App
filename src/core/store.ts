@@ -507,7 +507,7 @@ export const useAppStore = create<AppState>()(
             ...legacySettings,
             aiMode:
               legacySettings.aiMode === "api" ? "api" : ("clipboard" as const),
-            aiProvider: ["openai", "anthropic", "gemini", "groq"].includes(
+            aiProvider: ["openai", "anthropic", "gemini", "groq", "custom"].includes(
               legacySettings.aiProvider ?? "",
             )
               ? (legacySettings.aiProvider as AppSettings["aiProvider"])

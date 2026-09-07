@@ -8,6 +8,14 @@ import type {
 } from "../core/types";
 import { netFetch } from "./platform";
 
+export const aiModelSuggestions: Record<AppSettings["aiProvider"], readonly string[]> = {
+  openai: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
+  anthropic: ["claude-sonnet-4-5", "claude-haiku-4-5"],
+  gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
+  groq: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
+  custom: [],
+};
+
 const cardSchema = z.object({
   type: z
     .enum(["basic", "cloze", "concept", "definition", "problem"])
@@ -21,6 +29,26 @@ const responseSchema = z.object({ cards: z.array(cardSchema) });
 async function providerError(response: Response) {
   const body = (await response.text()).replace(/\s+/g, " ").slice(0, 500);
   return new Error(`API-fel ${response.status}${body ? `: ${body}` : ""}`);
+}
+
+function apiBaseUrl(settings: AppSettings) {
+  const configured = settings.aiBaseUrl.trim().replace(/\/+$/, "");
+  if (!settings.aiModel.trim()) throw new Error("Välj eller skriv ett modellnamn innan du genererar.");
+  if (settings.aiProvider === "custom") {
+    if (!configured) throw new Error("Ange en bas-URL för den OpenAI-kompatibla tjänsten.");
+    try {
+      new URL(configured);
+    } catch {
+      throw new Error("Bas-URL:en för AI-tjänsten är inte giltig.");
+    }
+    return configured;
+  }
+  return {
+    openai: "https://api.openai.com/v1",
+    anthropic: "https://api.anthropic.com/v1",
+    gemini: "https://generativelanguage.googleapis.com/v1beta",
+    groq: "https://api.groq.com/openai/v1",
+  }[settings.aiProvider];
 }
 
 export interface CardRequest {
@@ -115,12 +143,7 @@ export async function generateCardsWithApi(
   settings: AppSettings,
   apiKey: string,
 ) {
-  const base = {
-    openai: "https://api.openai.com/v1",
-    anthropic: "https://api.anthropic.com/v1",
-    gemini: "https://generativelanguage.googleapis.com/v1beta",
-    groq: "https://api.groq.com/openai/v1",
-  }[settings.aiProvider];
+  const base = apiBaseUrl(settings);
   if (settings.aiProvider === "anthropic") {
     const response = await netFetch(`${base}/messages`, {
       method: "POST",

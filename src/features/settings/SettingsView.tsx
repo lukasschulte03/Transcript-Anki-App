@@ -58,12 +58,14 @@ import {
   type LocalModel,
   type LocalModelStatus,
 } from "../../services/localStt";
+import { aiModelSuggestions } from "../../services/ai";
 
 const aiBaseUrls = {
   openai: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com/v1",
   gemini: "https://generativelanguage.googleapis.com/v1beta",
   groq: "https://api.groq.com/openai/v1",
+  custom: "",
 } as const;
 
 const transcriptionDefaults = {
@@ -944,9 +946,11 @@ export function SettingsView() {
                           onChange={(event) => {
                             const provider = event.target
                               .value as typeof settings.aiProvider;
+                            const suggestedModel = aiModelSuggestions[provider][0];
                             updateSettings({
                               aiProvider: provider,
                               aiBaseUrl: aiBaseUrls[provider],
+                              aiModel: suggestedModel ?? settings.aiModel,
                             });
                           }}
                         >
@@ -954,18 +958,53 @@ export function SettingsView() {
                           <option value="anthropic">Anthropic</option>
                           <option value="gemini">Gemini</option>
                           <option value="groq">Groq</option>
+                          <option value="custom">OpenAI-kompatibel</option>
                         </Select>
                       </Field>
                       <Field label="Modell">
-                        <Input
-                          value={settings.aiModel}
-                          onChange={(event) =>
-                            updateSettings({ aiModel: event.target.value })
-                          }
-                          placeholder="Providerns modell-ID"
-                        />
+                        <>
+                          <Input
+                            list="lectio-ai-model-suggestions"
+                            value={settings.aiModel}
+                            onChange={(event) =>
+                              updateSettings({ aiModel: event.target.value })
+                            }
+                            placeholder={
+                              settings.aiProvider === "custom"
+                                ? "Exempel: min-lokala-modell"
+                                : "Välj eller skriv modell-ID"
+                            }
+                            aria-describedby="ai-model-help"
+                          />
+                          <datalist id="lectio-ai-model-suggestions">
+                            {aiModelSuggestions[settings.aiProvider].map((model) => (
+                              <option key={model} value={model} />
+                            ))}
+                          </datalist>
+                          <p id="ai-model-help" className="mt-2 text-xs leading-5 text-slate-500">
+                            {aiModelSuggestions[settings.aiProvider].length
+                              ? `Förslag för ${settings.aiProvider}: ${aiModelSuggestions[settings.aiProvider].join(", ")}. Du kan alltid skriva ett eget modell-ID.`
+                              : "Skriv modell-ID:t från din tjänst. Egna modellnamn bevaras."}
+                          </p>
+                        </>
                       </Field>
                     </div>
+                    {settings.aiProvider === "custom" && (
+                      <Field label="Bas-URL för OpenAI-kompatibelt API">
+                        <Input
+                          type="url"
+                          value={settings.aiBaseUrl}
+                          onChange={(event) =>
+                            updateSettings({ aiBaseUrl: event.target.value })
+                          }
+                          placeholder="https://api.exempel.se/v1"
+                          aria-describedby="ai-base-url-help"
+                        />
+                        <p id="ai-base-url-help" className="mt-2 text-xs leading-5 text-slate-500">
+                          Använd en endpoint som stöder OpenAI-formatet för chat completions.
+                        </p>
+                      </Field>
+                    )}
                     <p className="mt-3 text-xs leading-5 text-slate-500">
                       API-nyckeln anges först när du genererar och sparas inte
                       av Lectio. Endast de valda leverantörernas officiella

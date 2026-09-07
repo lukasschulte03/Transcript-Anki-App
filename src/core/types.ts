@@ -138,7 +138,7 @@ export interface AppSettings {
   customPalettes: ThemePalette[];
   userContext: string;
   aiMode: "clipboard" | "api";
-  aiProvider: "openai" | "anthropic" | "gemini" | "groq";
+  aiProvider: "openai" | "anthropic" | "gemini" | "groq" | "custom";
   aiModel: string;
   aiBaseUrl: string;
   transcriptionProvider: "local" | "manual" | "openai" | "groq";

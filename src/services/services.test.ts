@@ -9,6 +9,8 @@ import type { AppSettings } from "../core/types";
 import {
   createCardPrompt,
   duplicateExplanation,
+  generateCardsWithApi,
+  aiModelSuggestions,
   parseCardResponse,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
@@ -250,6 +252,32 @@ describe("slidekoppling", () => {
 });
 
 describe("kortformat", () => {
+  it("erbjuder modellförslag men lämnar utrymme för egna modell-ID:n", () => {
+    expect(aiModelSuggestions.openai).toContain("gpt-4.1-mini");
+    expect(aiModelSuggestions.custom).toEqual([]);
+  });
+
+  it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: '{"cards":[]}' } }],
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const settings = {
+      aiProvider: "custom",
+      aiModel: "min-lokala-modell",
+      aiBaseUrl: "http://localhost:1234/v1/",
+    } as AppSettings;
+
+    await generateCardsWithApi("Skapa kort", settings, "testnyckel");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://localhost:1234/v1/chat/completions",
+      expect.any(Object),
+    );
+    await expect(
+      generateCardsWithApi("Skapa kort", { ...settings, aiBaseUrl: "" }, "testnyckel"),
+    ).rejects.toThrow("bas-URL");
+  });
+
   it("skickar kortfattade befintliga kurskort som dubblettskydd till AI:n", () => {
     const prompt = createCardPrompt({
       lectureId: "lecture",
