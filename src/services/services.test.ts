@@ -42,6 +42,7 @@ import {
   estimateTranscriptionCost,
   formatTranscriptionCost,
 } from "./transcriptionCost";
+import { applySyncOperations, createSyncOperations } from "./syncV2";
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
@@ -290,6 +291,88 @@ describe("Google Drive-synk", () => {
     ).toContainEqual(
       expect.objectContaining({ collection: "föreläsningar", field: "notes" }),
     );
+  });
+});
+
+describe("Sync v2", () => {
+  const snapshot = (notes = "", markerNote = "") =>
+    ({
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes } },
+      segments: [],
+      markers: markerNote
+        ? [
+            {
+              id: "marker",
+              lectureId: "lecture",
+              time: 5,
+              note: markerNote,
+              createdAt: "",
+            },
+          ]
+        : [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    }) satisfies LibrarySyncSnapshot;
+
+  it("förenar olika fält i samma föreläsning utan konfliktfråga", () => {
+    const base = snapshot("Bas");
+    const local = {
+      ...base,
+      lectures: { lecture: { lectureId: "lecture", notes: "PC-anteckning" } },
+    };
+    const remote = {
+      ...base,
+      markers: [
+        {
+          id: "marker",
+          lectureId: "lecture",
+          time: 5,
+          note: "Laptop-markering",
+          createdAt: "",
+        },
+      ],
+    };
+    const left = createSyncOperations(base, local, {
+      libraryId: "library",
+      deviceId: "pc",
+      nextSequence: 1,
+      at: "2026-09-07T10:00:00Z",
+    });
+    const right = createSyncOperations(base, remote, {
+      libraryId: "library",
+      deviceId: "laptop",
+      nextSequence: 1,
+      at: "2026-09-07T10:01:00Z",
+    });
+    const merged = applySyncOperations(base, [
+      ...left.operations,
+      ...right.operations,
+    ]);
+    expect(merged.lectures.lecture.notes).toBe("PC-anteckning");
+    expect(merged.markers[0]?.note).toBe("Laptop-markering");
+  });
+
+  it("låter en tombstone vinna över en äldre uppdatering", () => {
+    const base = snapshot("Bas", "Viktig");
+    const edit = createSyncOperations(base, snapshot("Bas", "Ändrad"), {
+      libraryId: "library",
+      deviceId: "old",
+      nextSequence: 1,
+      at: "2026-09-07T10:00:00Z",
+    });
+    const deletion = createSyncOperations(base, snapshot("Bas"), {
+      libraryId: "library",
+      deviceId: "new",
+      nextSequence: 1,
+      at: "2026-09-07T11:00:00Z",
+    });
+    const merged = applySyncOperations(base, [
+      ...edit.operations,
+      ...deletion.operations,
+    ]);
+    expect(merged.markers).toEqual([]);
   });
 });
 

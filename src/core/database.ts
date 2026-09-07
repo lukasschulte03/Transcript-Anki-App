@@ -6,6 +6,7 @@ import type {
   StoredAsset,
 } from "./types";
 import type { LibrarySyncSnapshot } from "../services/libraryMerge";
+import type { SyncV2State } from "../services/syncV2";
 
 export type GoogleDriveSyncBase = {
   id: string;
@@ -21,6 +22,7 @@ export const db = new Dexie("lectio-assets") as Dexie & {
   recordingChunks: EntityTable<RecordingChunk, "id">;
   backups: EntityTable<LibraryBackup, "id">;
   syncBases: EntityTable<GoogleDriveSyncBase, "id">;
+  syncV2States: EntityTable<SyncV2State, "id">;
 };
 db.version(1).stores({ assets: "id, lectureId, kind, createdAt" });
 db.version(2).stores({
@@ -45,4 +47,12 @@ db.version(5).stores({
   recordingChunks: "id, sessionId, [sessionId+sequence]",
   backups: "id, createdAt, reason",
   syncBases: "id, createdAt",
+});
+db.version(6).stores({
+  assets: "id, lectureId, nodeId, kind, createdAt",
+  recordingSessions: "id, lectureId, status, createdAt",
+  recordingChunks: "id, sessionId, [sessionId+sequence]",
+  backups: "id, createdAt, reason",
+  syncBases: "id, createdAt",
+  syncV2States: "id, libraryId, updatedAt",
 });
