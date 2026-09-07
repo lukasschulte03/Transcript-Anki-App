@@ -5,7 +5,12 @@ import {
   flagTranscriptionQuality,
   parseTimestampedText,
 } from "./transcription";
-import type { AppSettings } from "../core/types";
+import type { AppSettings, LibraryNode } from "../core/types";
+import {
+  canMoveLibraryNode,
+  moveLibraryNode,
+  reorderLibraryNode,
+} from "../core/store";
 import {
   createCardPrompt,
   duplicateExplanation,
@@ -69,6 +74,35 @@ describe("Google Drive-synk", () => {
     } as never;
 
     expect(isLikelySameGoogleDriveLibrary(local, remote, [], [])).toBe(false);
+  });
+});
+
+describe("biblioteksträd", () => {
+  const node = (id: string, type: LibraryNode["type"], parentId: string | null, sortIndex: number): LibraryNode => ({
+    id, type, parentId, sortIndex, title: id, context: "", createdAt: "", settings: {},
+  });
+  const tree = [
+    node("workspace", "workspace", null, 0),
+    node("course-a", "course", "workspace", 0),
+    node("course-b", "course", "workspace", 1),
+    node("module-a", "module", "course-a", 0),
+    node("module-b", "module", "course-b", 0),
+  ];
+
+  it("flyttar bara till en ny giltig förälder", () => {
+    expect(canMoveLibraryNode(tree, "module-a", "course-a")).toBe(false);
+    expect(canMoveLibraryNode(tree, "module-a", "course-b")).toBe(true);
+    expect(canMoveLibraryNode(tree, "course-a", "module-a")).toBe(false);
+  });
+
+  it("håller syskons ordning konsekvent vid flytt och omordning", () => {
+    const moved = moveLibraryNode(tree, "module-a", "course-b");
+    expect(moved.filter((item) => item.parentId === "course-b").sort((a, b) => a.sortIndex! - b.sortIndex!).map((item) => [item.id, item.sortIndex]))
+      .toEqual([["module-b", 0], ["module-a", 1]]);
+
+    const reordered = reorderLibraryNode(tree, "course-b", "course-a");
+    expect(reordered.filter((item) => item.parentId === "workspace").sort((a, b) => a.sortIndex! - b.sortIndex!).map((item) => [item.id, item.sortIndex]))
+      .toEqual([["course-b", 0], ["course-a", 1]]);
   });
 });
 
