@@ -2,7 +2,7 @@
 
 Lectio är en local-first Windows-app för att samla föreläsningar, spela in ljud, arbeta med tidsstämplade transkript och skapa granskade Anki-kort. Gränssnittet är på svenska och byggt för att kräva så lite interaktion som möjligt under en föreläsning.
 
-## Funktioner i version 0.4.5
+## Funktioner i version 0.4.6
 
 - Tydlig akademisk struktur: kurs → modul → ämne eller föreläsning.
 - Ärftlig context från studieprofil till kurs, modul och föreläsning.
@@ -25,6 +25,10 @@ Lectio är en local-first Windows-app för att samla föreläsningar, spela in l
 - API-modellförslag och stöd för egna OpenAI-kompatibla endpoints.
 - Google Drive-inkorg för mobilinspelningar: lägg ljudfiler i `Lectio/Inbox`, välj en eller flera i Lectio och importera dem till en befintlig eller ny föreläsning. Filer som importerats flyttas till `Inbox/Importerade` så att de inte dubblas.
 - Förbättrade Windows-fönsterkontroller och korrekt inbäddade Tauri-behörigheter i nya desktopbyggen.
+- Stabil transkriptsökning: träffar markeras och ligger kvar medan ett segment redigeras.
+- Kortare, konsekvent Anki-prompt med valda korttyper och utan prefixet `Terminologi:` på nya kort.
+- Anki-generering beskriver källtäckning så att kompletta slides, anteckningar och context används även om transkriptet bara täcker delar av föreläsningen.
+- Uppskattad API-kostnad och ljudlängd före OpenAI- eller Groq-transkribering; lokal Whisper visar att ingen API-kostnad uppstår.
 
 API-nycklar sparas inte. De används bara i minnet för det aktuella anropet.
 

@@ -434,7 +434,6 @@ export function CardStudio() {
       lectureId,
       lecture?.notes,
       lecture?.slideText,
-      lecture?.audioDuration,
       segments,
       markers,
       density,
