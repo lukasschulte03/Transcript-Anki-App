@@ -32,7 +32,6 @@ import { suggestSlideMappings } from "./slideMatching";
 import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
 import { recommendLocalTranscription } from "./transcriptionRecommendation";
-import { isLikelySameGoogleDriveLibrary } from "./googleDriveSync";
 import {
   mergeLibrarySnapshots,
   mergeLibrarySnapshotsWithoutBase,
@@ -69,37 +68,6 @@ describe("diagnostik", () => {
 });
 
 describe("Google Drive-synk", () => {
-  it("känner igen ett återställt bibliotek med samma interna objekt-ID", () => {
-    const library = {
-      nodes: [
-        { id: "workspace", type: "workspace" },
-        { id: "course-1", type: "course" },
-      ],
-      lectures: { "lecture-1": { id: "lecture-1" } },
-    } as never;
-
-    expect(isLikelySameGoogleDriveLibrary(library, library, [], [])).toBe(true);
-  });
-
-  it("tar inte workspace-noden som bevis för att två bibliotek är samma", () => {
-    const local = {
-      nodes: [
-        { id: "workspace", type: "workspace" },
-        { id: "course-local", type: "course" },
-      ],
-      lectures: {},
-    } as never;
-    const remote = {
-      nodes: [
-        { id: "workspace", type: "workspace" },
-        { id: "course-remote", type: "course" },
-      ],
-      lectures: {},
-    } as never;
-
-    expect(isLikelySameGoogleDriveLibrary(local, remote, [], [])).toBe(false);
-  });
-
   it("förenar PC:ns nya transkript med laptopens nya föreläsning", () => {
     const base = {
       nodes: [

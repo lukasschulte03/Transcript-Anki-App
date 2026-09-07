@@ -4,13 +4,7 @@ import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
 import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
-import {
-  mergeLibrarySnapshots,
-  mergeLibrarySnapshotsWithoutBase,
-  type LibrarySyncSnapshot,
-  type MergeConflict,
-  type MergeResolution,
-} from "./libraryMerge";
+import type { LibrarySyncSnapshot } from "./libraryMerge";
 import {
   applySyncOperations,
   createSyncOperations,
@@ -26,14 +20,6 @@ export const FOLDER_MIME = "application/vnd.google-apps.folder";
 type RemoteAsset = SyncAsset;
 
 type LibrarySnapshot = LibrarySyncSnapshot;
-
-type RemoteManifest = {
-  format: "lectio-google-drive-v1";
-  updatedAt: string;
-  deviceId: string;
-  snapshot: LibrarySnapshot;
-  assets: RemoteAsset[];
-};
 
 type SyncV2Checkpoint = {
   protocol: 2;
@@ -61,15 +47,6 @@ export type DriveFile = {
   modifiedTime?: string;
   parents?: string[];
 };
-
-export class GoogleDriveMergeConflictError extends Error {
-  readonly code = "google-drive-merge-conflict";
-  readonly conflicts: MergeConflict[];
-  constructor(conflicts: MergeConflict[]) {
-    super("Samma information har ändrats på båda datorerna.");
-    this.conflicts = conflicts;
-  }
-}
 
 function syncJob(patch: Record<string, unknown>) {
   useAppStore.getState().upsertJob({
@@ -236,16 +213,6 @@ async function deleteFile(token: string, id: string) {
   });
 }
 
-async function readManifest(token: string, metadataFolder: string) {
-  const file = await findNamedFile("library.json", metadataFolder, token);
-  if (!file) return undefined;
-  const response = await googleDriveRequest(
-    `${DRIVE_API}/files/${file.id}?alt=media`,
-    token,
-  );
-  return { file, manifest: (await response.json()) as RemoteManifest };
-}
-
 async function readSyncV2Checkpoint(token: string, metadataFolder: string) {
   const folder = await findNamedFile("sync-v2", metadataFolder, token);
   if (!folder?.id) return undefined;
@@ -282,9 +249,6 @@ const localLibraryIsEmpty = (
   snapshot.nodes.length <= 1 &&
   !Object.keys(snapshot.lectures).length &&
   !assets.length;
-
-const syncBaseId = (rootPath: string) =>
-  `google-drive:${rootPath.toLocaleLowerCase()}`;
 
 function belongsToLibrary(
   asset: Pick<StoredAsset, "lectureId" | "nodeId">,
@@ -374,40 +338,6 @@ async function readSyncV2Operations(
   return operations;
 }
 
-/**
- * A restored local backup can legitimately be missing `lastSyncedAt`.  Do not
- * mistake it for a different library merely because that bookkeeping value was
- * lost: Lectio's object IDs are stable across backup/export restoration.
- *
- * The workspace node is deliberately excluded: every library has one, so it
- * cannot prove that two libraries are related.
- */
-export function isLikelySameGoogleDriveLibrary(
-  local: Pick<LibrarySnapshot, "nodes" | "lectures">,
-  remote: Pick<LibrarySnapshot, "nodes" | "lectures">,
-  localAssets: Array<Pick<StoredAsset, "id">>,
-  remoteAssets: Array<Pick<RemoteAsset, "id">>,
-) {
-  const remoteNodeIds = new Set(
-    remote.nodes
-      .filter((node) => node.type !== "workspace")
-      .map((node) => node.id),
-  );
-  if (
-    local.nodes.some(
-      (node) => node.type !== "workspace" && remoteNodeIds.has(node.id),
-    )
-  )
-    return true;
-
-  const remoteLectureIds = new Set(Object.keys(remote.lectures));
-  if (Object.keys(local.lectures).some((id) => remoteLectureIds.has(id)))
-    return true;
-
-  const remoteAssetIds = new Set(remoteAssets.map((asset) => asset.id));
-  return localAssets.some((asset) => remoteAssetIds.has(asset.id));
-}
-
 async function downloadRemoteLibrary(
   token: string,
   remote: Pick<SyncV2Checkpoint, "snapshot" | "assets">,
@@ -451,9 +381,9 @@ export function isGoogleDriveSyncActive() {
   return Boolean(activeGoogleDriveSync);
 }
 
-export function syncGoogleDrive(resolution?: MergeResolution) {
+export function syncGoogleDrive() {
   if (activeGoogleDriveSync) return activeGoogleDriveSync;
-  const task = syncGoogleDriveInternal(resolution);
+  const task = syncGoogleDriveInternal();
   activeGoogleDriveSync = task;
   void task.then(
     () => {
@@ -466,7 +396,7 @@ export function syncGoogleDrive(resolution?: MergeResolution) {
   return task;
 }
 
-async function syncGoogleDriveInternal(resolution?: MergeResolution) {
+async function syncGoogleDriveInternal() {
   const state = useAppStore.getState();
   const token = await getGoogleDriveAccessToken();
   const rootPath = state.settings.cloudSync.remotePath.trim() || "Lectio";
@@ -489,27 +419,15 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       pendingAnkiDeletions: state.pendingAnkiDeletions,
       settings: state.settings,
     };
-    const existing = await readManifest(token, metadataFolder);
+    const legacyManifestFile = await findNamedFile(
+      "library.json",
+      metadataFolder,
+      token,
+    );
     const checkpoint = await readSyncV2Checkpoint(token, metadataFolder);
     let v2State = await db.syncV2States.get(syncV2StateId(rootPath));
-    // Versions created before media was part of the v2 checkpoint are upgraded
-    // from the verified legacy index during this one final migration sync.
-    if (v2State && !Array.isArray(v2State.assets)) {
-      v2State = {
-        ...v2State,
-        assets: checkpoint?.checkpoint.assets ?? existing?.manifest.assets ?? [],
-      };
-    }
     let v2Folder: string | undefined;
     let v2Operations: SyncOperation[] = [];
-    const isRecoveredCopy =
-      existing &&
-      isLikelySameGoogleDriveLibrary(
-        snapshot,
-        existing.manifest.snapshot,
-        assets,
-        existing.manifest.assets,
-      );
     if (checkpoint && localLibraryIsEmpty(snapshot, assets)) {
       syncJob({
         phase: "downloading",
@@ -542,8 +460,23 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       });
       return;
     }
-    const syncBase = await db.syncBases.get(syncBaseId(rootPath));
-    if (v2State) {
+    if (!v2State) {
+      if (checkpoint) {
+        await seedSyncV2(
+          rootPath,
+          metadataFolder,
+          checkpoint.checkpoint.snapshot,
+          token,
+          checkpoint.checkpoint.assets,
+          checkpoint.checkpoint.knownOperationIds,
+        );
+      } else {
+        await seedSyncV2(rootPath, metadataFolder, snapshot, token);
+      }
+      v2State = await db.syncV2States.get(syncV2StateId(rootPath));
+    }
+    if (!v2State) throw new Error("Sync v2 kunde inte initieras.");
+    {
       v2Folder = await ensureFolder("sync-v2", metadataFolder, token);
       const remoteOperations = await readSyncV2Operations(
         v2Folder,
@@ -588,61 +521,6 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
         });
         return;
       }
-    } else if (existing && (syncBase || isRecoveredCopy)) {
-      const merged = syncBase
-        ? mergeLibrarySnapshots(
-            syncBase.snapshot,
-            snapshot,
-            existing.manifest.snapshot,
-            resolution,
-          )
-        : mergeLibrarySnapshotsWithoutBase(
-            snapshot,
-            existing.manifest.snapshot,
-            resolution,
-          );
-      if (merged.conflicts.length && !resolution)
-        throw new GoogleDriveMergeConflictError(merged.conflicts);
-      snapshot = merged.snapshot;
-      const localAssetIds = new Set(assets.map((asset) => asset.id));
-      const missingAssets = existing.manifest.assets.filter(
-        (asset) =>
-          belongsToLibrary(asset, snapshot) && !localAssetIds.has(asset.id),
-      );
-      for (const [index, asset] of missingAssets.entries()) {
-        syncJob({
-          phase: "downloading",
-          current: index + 1,
-          total: missingAssets.length,
-          detail: `Hämtar ändrad fil ${index + 1} av ${missingAssets.length}…`,
-        });
-        const response = await googleDriveRequest(
-          `${DRIVE_API}/files/${asset.remoteId}?alt=media`,
-          token,
-        );
-        const blob = await response.blob();
-        const { hash: _hash, remoteId: _remoteId, ...stored } = asset;
-        await db.assets.put({ ...stored, blob });
-      }
-      assets = await db.assets.toArray();
-    } else if (
-      existing &&
-      state.settings.cloudSync.lastSyncedAt &&
-      existing.manifest.updatedAt > state.settings.cloudSync.lastSyncedAt
-    ) {
-      throw new Error(
-        "Google Drive innehåller nyare ändringar, men denna installation saknar en synkbas för säker merge. Hämta biblioteket på en tom installation eller återställ en lokal backup först.",
-      );
-    }
-    if (
-      existing &&
-      !state.settings.cloudSync.lastSyncedAt &&
-      !localLibraryIsEmpty(snapshot, assets) &&
-      !isRecoveredCopy
-    ) {
-      throw new Error(
-        "Målmappen innehåller redan ett Lectio-bibliotek. Välj en tom mapp eller hämta biblioteket på en tom Lectio-installation först.",
-      );
     }
     const syncAssets = assets.filter((asset) =>
       belongsToLibrary(asset, snapshot),
@@ -711,8 +589,7 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
     );
     // The v2 checkpoint is complete before the legacy manifest is removed.
     // A failed deletion merely leaves a harmless old recovery file behind.
-    if (existing) await deleteFile(token, existing.file.id);
-    await db.syncBases.delete(syncBaseId(rootPath));
+    if (legacyManifestFile) await deleteFile(token, legacyManifestFile.id);
     const localCloud = useAppStore.getState().settings.cloudSync;
     useAppStore.getState().importLibrary({
       ...snapshot,
