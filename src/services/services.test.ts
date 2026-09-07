@@ -19,16 +19,29 @@ import {
   parseCardResponse,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
-import { hasClozeMarkup, lectureDeckName, needsAnkiSync, syncCard, testAnki, withoutStructuralTags } from "./anki";
+import {
+  hasClozeMarkup,
+  lectureDeckName,
+  needsAnkiSync,
+  syncCard,
+  testAnki,
+  withoutStructuralTags,
+} from "./anki";
 import { builtInPalettes, validateTheme } from "../core/theme";
 import { suggestSlideMappings } from "./slideMatching";
 import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
 import { recommendLocalTranscription } from "./transcriptionRecommendation";
 import { isLikelySameGoogleDriveLibrary } from "./googleDriveSync";
-import { mergeLibrarySnapshots, mergeLibrarySnapshotsWithoutBase } from "./libraryMerge";
+import {
+  mergeLibrarySnapshots,
+  mergeLibrarySnapshotsWithoutBase,
+} from "./libraryMerge";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
-import { estimateTranscriptionCost, formatTranscriptionCost } from "./transcriptionCost";
+import {
+  estimateTranscriptionCost,
+  formatTranscriptionCost,
+} from "./transcriptionCost";
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
@@ -42,8 +55,15 @@ describe("diagnostik", () => {
   });
 
   it("ger ett säkert, relevant felsökningsförslag", () => {
-    expect(diagnosticSuggestions([{ at: "now", area: "app", message: "Command plugin:opener|open_url not allowed by ACL" }])[0])
-      .toContain("senaste Lectio-versionen");
+    expect(
+      diagnosticSuggestions([
+        {
+          at: "now",
+          area: "app",
+          message: "Command plugin:opener|open_url not allowed by ACL",
+        },
+      ])[0],
+    ).toContain("senaste Lectio-versionen");
   });
 });
 
@@ -82,43 +102,166 @@ describe("Google Drive-synk", () => {
   it("förenar PC:ns nya transkript med laptopens nya föreläsning", () => {
     const base = {
       nodes: [
-        { id: "workspace", type: "workspace", parentId: null, title: "Studier", context: "", createdAt: "", settings: {} },
-        { id: "lecture-a", type: "lecture", parentId: "workspace", title: "A", context: "", createdAt: "", settings: {} },
+        {
+          id: "workspace",
+          type: "workspace",
+          parentId: null,
+          title: "Studier",
+          context: "",
+          createdAt: "",
+          settings: {},
+        },
+        {
+          id: "lecture-a",
+          type: "lecture",
+          parentId: "workspace",
+          title: "A",
+          context: "",
+          createdAt: "",
+          settings: {},
+        },
       ],
       lectures: { "lecture-a": { lectureId: "lecture-a", notes: "" } },
-      segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings,
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
     } satisfies LibrarySyncSnapshot;
-    const local = { ...base, segments: [{ id: "segment-a", lectureId: "lecture-a", start: 0, end: 2, text: "PC-transkript" }] };
+    const local = {
+      ...base,
+      segments: [
+        {
+          id: "segment-a",
+          lectureId: "lecture-a",
+          start: 0,
+          end: 2,
+          text: "PC-transkript",
+        },
+      ],
+    };
     const remote = {
       ...base,
-      nodes: [...base.nodes, { id: "lecture-b", type: "lecture" as const, parentId: "workspace", title: "B", context: "", createdAt: "", settings: {} }],
-      lectures: { ...base.lectures, "lecture-b": { lectureId: "lecture-b", notes: "Laptopens slides" } },
+      nodes: [
+        ...base.nodes,
+        {
+          id: "lecture-b",
+          type: "lecture" as const,
+          parentId: "workspace",
+          title: "B",
+          context: "",
+          createdAt: "",
+          settings: {},
+        },
+      ],
+      lectures: {
+        ...base.lectures,
+        "lecture-b": { lectureId: "lecture-b", notes: "Laptopens slides" },
+      },
     };
     const result = mergeLibrarySnapshots(base, local, remote);
     expect(result.conflicts).toEqual([]);
     expect(result.snapshot.segments[0]?.text).toBe("PC-transkript");
-    expect(result.snapshot.lectures["lecture-b"]?.notes).toBe("Laptopens slides");
+    expect(result.snapshot.lectures["lecture-b"]?.notes).toBe(
+      "Laptopens slides",
+    );
   });
 
   it("flaggar när samma fält ändrats olika på två datorer", () => {
-    const base = { nodes: [], lectures: { lecture: { lectureId: "lecture", notes: "Bas" } }, segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings } satisfies LibrarySyncSnapshot;
+    const base = {
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "Bas" } },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
     const result = mergeLibrarySnapshots(
       base,
       { ...base, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } },
-      { ...base, lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } } },
+      {
+        ...base,
+        lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } },
+      },
     );
-    expect(result.conflicts).toContainEqual(expect.objectContaining({ collection: "föreläsningar", field: "notes" }));
+    expect(result.conflicts).toContainEqual(
+      expect.objectContaining({ collection: "föreläsningar", field: "notes" }),
+    );
+  });
+
+  it("ignorerar enhetsinställningar när två datorer har synkat vid olika tidpunkter", () => {
+    const base = {
+      nodes: [],
+      lectures: {},
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {
+        cloudSync: {
+          provider: "google-drive",
+          remotePath: "Lectio",
+          autoSyncOnStartAndClose: true,
+          lastSyncedAt: "2026-09-07T08:00:00Z",
+        },
+      } as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const local = {
+      ...base,
+      settings: {
+        ...base.settings,
+        cloudSync: {
+          ...base.settings.cloudSync,
+          lastSyncedAt: "2026-09-07T09:00:00Z",
+        },
+      },
+    };
+    const remote = {
+      ...base,
+      settings: {
+        ...base.settings,
+        cloudSync: {
+          ...base.settings.cloudSync,
+          lastSyncedAt: "2026-09-07T10:00:00Z",
+        },
+      },
+    };
+    const result = mergeLibrarySnapshots(base, local, remote);
+    expect(result.conflicts).toEqual([]);
+    expect(result.snapshot.settings.cloudSync.lastSyncedAt).toBe(
+      "2026-09-07T09:00:00Z",
+    );
   });
 
   it("förenar säkert orelaterade ändringar när en igenkänd installation saknar synkbas", () => {
     const local = {
-      nodes: [{ id: "workspace", type: "workspace", parentId: null, title: "Studier", context: "", createdAt: "", settings: {} }],
-      lectures: { "lecture-local": { lectureId: "lecture-local", notes: "Laptop" } },
-      segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings,
+      nodes: [
+        {
+          id: "workspace",
+          type: "workspace",
+          parentId: null,
+          title: "Studier",
+          context: "",
+          createdAt: "",
+          settings: {},
+        },
+      ],
+      lectures: {
+        "lecture-local": { lectureId: "lecture-local", notes: "Laptop" },
+      },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
     } satisfies LibrarySyncSnapshot;
     const remote = {
       ...local,
-      lectures: { ...local.lectures, "lecture-remote": { lectureId: "lecture-remote", notes: "PC" } },
+      lectures: {
+        ...local.lectures,
+        "lecture-remote": { lectureId: "lecture-remote", notes: "PC" },
+      },
     };
     const result = mergeLibrarySnapshotsWithoutBase(local, remote);
     expect(result.conflicts).toEqual([]);
@@ -129,16 +272,42 @@ describe("Google Drive-synk", () => {
   });
 
   it("ber om ett val för ändrat delat innehåll utan synkbas", () => {
-    const local = { nodes: [], lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } }, segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings } satisfies LibrarySyncSnapshot;
-    const remote = { ...local, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } };
-    expect(mergeLibrarySnapshotsWithoutBase(local, remote).conflicts)
-      .toContainEqual(expect.objectContaining({ collection: "föreläsningar", field: "notes" }));
+    const local = {
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const remote = {
+      ...local,
+      lectures: { lecture: { lectureId: "lecture", notes: "PC" } },
+    };
+    expect(
+      mergeLibrarySnapshotsWithoutBase(local, remote).conflicts,
+    ).toContainEqual(
+      expect.objectContaining({ collection: "föreläsningar", field: "notes" }),
+    );
   });
 });
 
 describe("biblioteksträd", () => {
-  const node = (id: string, type: LibraryNode["type"], parentId: string | null, sortIndex: number): LibraryNode => ({
-    id, type, parentId, sortIndex, title: id, context: "", createdAt: "", settings: {},
+  const node = (
+    id: string,
+    type: LibraryNode["type"],
+    parentId: string | null,
+    sortIndex: number,
+  ): LibraryNode => ({
+    id,
+    type,
+    parentId,
+    sortIndex,
+    title: id,
+    context: "",
+    createdAt: "",
+    settings: {},
   });
   const tree = [
     node("workspace", "workspace", null, 0),
@@ -156,12 +325,26 @@ describe("biblioteksträd", () => {
 
   it("håller syskons ordning konsekvent vid flytt och omordning", () => {
     const moved = moveLibraryNode(tree, "module-a", "course-b");
-    expect(moved.filter((item) => item.parentId === "course-b").sort((a, b) => a.sortIndex! - b.sortIndex!).map((item) => [item.id, item.sortIndex]))
-      .toEqual([["module-b", 0], ["module-a", 1]]);
+    expect(
+      moved
+        .filter((item) => item.parentId === "course-b")
+        .sort((a, b) => a.sortIndex! - b.sortIndex!)
+        .map((item) => [item.id, item.sortIndex]),
+    ).toEqual([
+      ["module-b", 0],
+      ["module-a", 1],
+    ]);
 
     const reordered = reorderLibraryNode(tree, "course-b", "course-a");
-    expect(reordered.filter((item) => item.parentId === "workspace").sort((a, b) => a.sortIndex! - b.sortIndex!).map((item) => [item.id, item.sortIndex]))
-      .toEqual([["course-b", 0], ["course-a", 1]]);
+    expect(
+      reordered
+        .filter((item) => item.parentId === "workspace")
+        .sort((a, b) => a.sortIndex! - b.sortIndex!)
+        .map((item) => [item.id, item.sortIndex]),
+    ).toEqual([
+      ["course-b", 0],
+      ["course-a", 1],
+    ]);
   });
 });
 
@@ -175,10 +358,16 @@ describe("teman", () => {
 
 describe("transkriptimport", () => {
   it("tolkar en mockad API-transkribering utan nyckel eller extern provider", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      text: "Mockad transkription",
-      segments: [{ start: 0, end: 3, text: "Mockad transkription" }],
-    }), { status: 200 }));
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            text: "Mockad transkription",
+            segments: [{ start: 0, end: 3, text: "Mockad transkription" }],
+          }),
+          { status: 200 },
+        ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await cloudApiTranscription.transcribe(
@@ -236,7 +425,11 @@ describe("transkriptimport", () => {
   it("markerar tomma och upprepade fraser utan att filtrera bort text", () => {
     const result = flagTranscriptionQuality([
       { start: 0, end: 2, text: "" },
-      { start: 2, end: 8, text: "detta är en viktig fras detta är en viktig fras" },
+      {
+        start: 2,
+        end: 8,
+        text: "detta är en viktig fras detta är en viktig fras",
+      },
     ]);
     expect(result[0].qualityFlags).toContain("empty");
     expect(result[1].qualityFlags).toContain("repeated-phrase");
@@ -257,7 +450,9 @@ describe("transkriptionskostnad", () => {
   });
 
   it("visar ingen påhittad kostnad för okända modeller", () => {
-    expect(estimateTranscriptionCost("groq", "egen-modell", 600).usd).toBeUndefined();
+    expect(
+      estimateTranscriptionCost("groq", "egen-modell", 600).usd,
+    ).toBeUndefined();
   });
 });
 
@@ -299,11 +494,24 @@ describe("transkriptionsrekommendation", () => {
   it("använder ett matchande lokalt benchmark för tidsuppskattningen", () => {
     const result = recommendLocalTranscription({
       durationSeconds: 60 * 10,
-      engine: { cpuThreads: 8, nvidiaDetected: false, nvidiaName: null, nvidiaRuntimeInstalled: false, nvidiaRuntimeReady: false, nvidiaRuntimeSize: 0, nvidiaVramTotalMb: null },
+      engine: {
+        cpuThreads: 8,
+        nvidiaDetected: false,
+        nvidiaName: null,
+        nvidiaRuntimeInstalled: false,
+        nvidiaRuntimeReady: false,
+        nvidiaRuntimeSize: 0,
+        nvidiaVramTotalMb: null,
+      },
       benchmarks: {
         cpu: {
-          model: "base", acceleration: "cpu", realtimeFactor: 0.1,
-          durationSeconds: 20, elapsedSeconds: 2, gpuUsed: false, measuredAt: "now",
+          model: "base",
+          acceleration: "cpu",
+          realtimeFactor: 0.1,
+          durationSeconds: 20,
+          elapsedSeconds: 2,
+          gpuUsed: false,
+          measuredAt: "now",
         },
       },
     });
@@ -350,7 +558,15 @@ describe("slidekoppling", () => {
   it("lämnar osäkra matchningar omappade", () => {
     const result = suggestSlideMappings(
       ["Mekanisk ventilation, tidalvolym och PEEP"],
-      [{ id: "one", lectureId: "lecture", start: 0, end: 4, text: "patientens anamnes diskuterades" }],
+      [
+        {
+          id: "one",
+          lectureId: "lecture",
+          start: 0,
+          end: 4,
+          text: "patientens anamnes diskuterades",
+        },
+      ],
     );
     expect(result.one).toBeUndefined();
   });
@@ -363,9 +579,15 @@ describe("kortformat", () => {
   });
 
   it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
-      choices: [{ message: { content: '{"cards":[]}' } }],
-    }), { status: 200 }));
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"cards":[]}' } }],
+          }),
+          { status: 200 },
+        ),
+    );
     vi.stubGlobal("fetch", fetchMock);
     const settings = {
       aiProvider: "custom",
@@ -379,7 +601,11 @@ describe("kortformat", () => {
       expect.any(Object),
     );
     await expect(
-      generateCardsWithApi("Skapa kort", { ...settings, aiBaseUrl: "" }, "testnyckel"),
+      generateCardsWithApi(
+        "Skapa kort",
+        { ...settings, aiBaseUrl: "" },
+        "testnyckel",
+      ),
     ).rejects.toThrow("bas-URL");
   });
 
@@ -395,7 +621,9 @@ describe("kortformat", () => {
       count: 12,
       types: ["basic", "concept"],
       preferences: [],
-      existingCards: [{ front: "Vad är peritonit?", back: "Inflammation i peritoneum." }],
+      existingCards: [
+        { front: "Vad är peritonit?", back: "Inflammation i peritoneum." },
+      ],
     });
     expect(prompt).toContain("BEFINTLIGA KORT I KURSEN");
     expect(prompt).toContain("Vad är peritonit?");
@@ -407,15 +635,29 @@ describe("kortformat", () => {
     expect(prompt).not.toContain("cloze: front måste");
     expect(prompt).not.toContain("problem: testa en konkret");
     expect(prompt).not.toContain("Terminologi: Vad");
-    expect(duplicateExplanation("Vad är akut peritonit?", { front: "Vad är peritonit?" })).toContain("peritonit");
+    expect(
+      duplicateExplanation("Vad är akut peritonit?", {
+        front: "Vad är peritonit?",
+      }),
+    ).toContain("peritonit");
   });
 
   it("beskriver endast cloze-regler när cloze har valts", () => {
     const prompt = createCardPrompt({
-      lectureId: "lecture", title: "Akut buk", context: "", notes: "", transcript: [], markers: [], slideText: "",
-      count: 12, types: ["cloze"], preferences: [],
+      lectureId: "lecture",
+      title: "Akut buk",
+      context: "",
+      notes: "",
+      transcript: [],
+      markers: [],
+      slideText: "",
+      count: 12,
+      types: ["cloze"],
+      preferences: [],
     });
-    expect(prompt).toContain("cloze: front måste innehålla minst en giltig {{c1::...}}-markering");
+    expect(prompt).toContain(
+      "cloze: front måste innehålla minst en giltig {{c1::...}}-markering",
+    );
     expect(prompt).not.toContain("basic: en tydlig fråga");
   });
 
@@ -474,94 +716,189 @@ describe("kortformat", () => {
     };
     expect(needsAnkiSync(card, "Kirurgi - Lectio::Akut buk")).toBe(false);
     expect(needsAnkiSync(card, "Kirurgi - Lectio::Trauma")).toBe(true);
-    expect(needsAnkiSync({ ...card, status: "approved" }, card.ankiDeck)).toBe(true);
+    expect(needsAnkiSync({ ...card, status: "approved" }, card.ankiDeck)).toBe(
+      true,
+    );
   });
 
   it("skapar ett Basic-kort via en mockad AnkiConnect utan extern app", async () => {
-    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
-      requests.push(body);
-      const result = body.action === "modelFieldNames" ? ["Front", "Back"] : 123;
-      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
-    }));
+    const requests: Array<{ action: string; params: Record<string, unknown> }> =
+      [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          params: Record<string, unknown>;
+        };
+        requests.push(body);
+        const result =
+          body.action === "modelFieldNames" ? ["Front", "Back"] : 123;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
+      }),
+    );
     const noteId = await syncCard("http://127.0.0.1:8765", "Kirurgi - Lectio", {
-      id: "card", lectureId: "lecture", type: "basic", front: "Fråga", back: "Svar", tags: ["tentamen"], status: "approved",
+      id: "card",
+      lectureId: "lecture",
+      type: "basic",
+      front: "Fråga",
+      back: "Svar",
+      tags: ["tentamen"],
+      status: "approved",
     });
     expect(noteId).toBe(123);
-    expect(requests.map((request) => request.action)).toEqual(["modelFieldNames", "addNote"]);
-    expect(requests[1].params).toMatchObject({ note: { deckName: "Kirurgi - Lectio", fields: { Front: "Fråga", Back: "Svar" } } });
+    expect(requests.map((request) => request.action)).toEqual([
+      "modelFieldNames",
+      "addNote",
+    ]);
+    expect(requests[1].params).toMatchObject({
+      note: {
+        deckName: "Kirurgi - Lectio",
+        fields: { Front: "Fråga", Back: "Svar" },
+      },
+    });
   });
 
   it("skapar ett Cloze-kort med Ankis Text- och Extra-fält", async () => {
-    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
-      requests.push(body);
-      const result = body.action === "modelFieldNames" ? ["Text", "Extra"] : 321;
-      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
-    }));
+    const requests: Array<{ action: string; params: Record<string, unknown> }> =
+      [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          params: Record<string, unknown>;
+        };
+        requests.push(body);
+        const result =
+          body.action === "modelFieldNames" ? ["Text", "Extra"] : 321;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
+      }),
+    );
 
-    await expect(syncCard("http://127.0.0.1:8765", "Kirurgi - Lectio", {
-      id: "cloze", lectureId: "lecture", type: "cloze",
-      front: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.", back: "Viktig princip.",
-      tags: [], status: "approved",
-    })).resolves.toBe(321);
-    expect(requests.map((request) => request.action)).toEqual(["modelFieldNames", "addNote"]);
-    expect(requests[1].params).toMatchObject({ note: {
-      modelName: "Cloze",
-      fields: { Text: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.", Extra: "Viktig princip." },
-    } });
+    await expect(
+      syncCard("http://127.0.0.1:8765", "Kirurgi - Lectio", {
+        id: "cloze",
+        lectureId: "lecture",
+        type: "cloze",
+        front: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.",
+        back: "Viktig princip.",
+        tags: [],
+        status: "approved",
+      }),
+    ).resolves.toBe(321);
+    expect(requests.map((request) => request.action)).toEqual([
+      "modelFieldNames",
+      "addNote",
+    ]);
+    expect(requests[1].params).toMatchObject({
+      note: {
+        modelName: "Cloze",
+        fields: {
+          Text: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.",
+          Extra: "Viktig princip.",
+        },
+      },
+    });
   });
 
   it("stoppar ett Cloze-kort utan Anki-markering innan det skickas", async () => {
-    await expect(syncCard("http://127.0.0.1:8765", "Lectio", {
-      id: "invalid-cloze", lectureId: "lecture", type: "cloze",
-      front: "Vilket system stabiliserar blodets pH?", back: "Buffertsystem.",
-      tags: [], status: "approved",
-    })).rejects.toThrow("saknar Anki-markering");
+    await expect(
+      syncCard("http://127.0.0.1:8765", "Lectio", {
+        id: "invalid-cloze",
+        lectureId: "lecture",
+        type: "cloze",
+        front: "Vilket system stabiliserar blodets pH?",
+        back: "Buffertsystem.",
+        tags: [],
+        status: "approved",
+      }),
+    ).rejects.toThrow("saknar Anki-markering");
     expect(hasClozeMarkup("{{c1::buffertsystem}}")).toBe(true);
     expect(hasClozeMarkup("Buffertsystem")).toBe(false);
   });
 
   it("ersätter säkert en synkad Basic-not när kortet ändras till Cloze", async () => {
-    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
-      const body = JSON.parse(String(init.body)) as { action: string; params: Record<string, unknown> };
-      requests.push(body);
-      const result = body.action === "modelFieldNames" ? ["Text", "Extra"]
-        : body.action === "notesInfo" ? [{ modelName: "Basic", tags: ["lectio"] }]
-        : body.action === "addNote" ? 987
-        : null;
-      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
-    }));
+    const requests: Array<{ action: string; params: Record<string, unknown> }> =
+      [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          params: Record<string, unknown>;
+        };
+        requests.push(body);
+        const result =
+          body.action === "modelFieldNames"
+            ? ["Text", "Extra"]
+            : body.action === "notesInfo"
+              ? [{ modelName: "Basic", tags: ["lectio"] }]
+              : body.action === "addNote"
+                ? 987
+                : null;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
+      }),
+    );
 
-    await expect(syncCard("http://127.0.0.1:8765", "Lectio", {
-      id: "changed", lectureId: "lecture", type: "cloze", ankiId: 42,
-      front: "Detta är {{c1::ett cloze-kort}}.", back: "Förklaring.",
-      tags: [], status: "approved",
-    })).resolves.toBe(987);
+    await expect(
+      syncCard("http://127.0.0.1:8765", "Lectio", {
+        id: "changed",
+        lectureId: "lecture",
+        type: "cloze",
+        ankiId: 42,
+        front: "Detta är {{c1::ett cloze-kort}}.",
+        back: "Förklaring.",
+        tags: [],
+        status: "approved",
+      }),
+    ).resolves.toBe(987);
     expect(requests.map((request) => request.action)).toEqual([
-      "modelFieldNames", "notesInfo", "addNote", "deleteNotes",
+      "modelFieldNames",
+      "notesInfo",
+      "addNote",
+      "deleteNotes",
     ]);
   });
 
   it("kan försöka om en misslyckad Anki-synk mot samma lokala mock", async () => {
     let attempts = 0;
-    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
-      attempts++;
-      if (attempts === 1) return new Response("Tillfälligt fel", { status: 503 });
-      const body = JSON.parse(String(init.body)) as { action: string };
-      const result = body.action === "modelFieldNames" ? ["Front", "Back"] : 456;
-      return new Response(JSON.stringify({ result, error: null }), { status: 200 });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        attempts++;
+        if (attempts === 1)
+          return new Response("Tillfälligt fel", { status: 503 });
+        const body = JSON.parse(String(init.body)) as { action: string };
+        const result =
+          body.action === "modelFieldNames" ? ["Front", "Back"] : 456;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
+      }),
+    );
     const card = {
-      id: "retry-card", lectureId: "lecture", type: "basic" as const,
-      front: "Fråga", back: "Svar", tags: [], status: "approved" as const,
+      id: "retry-card",
+      lectureId: "lecture",
+      type: "basic" as const,
+      front: "Fråga",
+      back: "Svar",
+      tags: [],
+      status: "approved" as const,
     };
 
-    await expect(syncCard("http://127.0.0.1:8765", "Lectio", card)).rejects.toThrow("503");
-    await expect(syncCard("http://127.0.0.1:8765", "Lectio", card)).resolves.toBe(456);
+    await expect(
+      syncCard("http://127.0.0.1:8765", "Lectio", card),
+    ).rejects.toThrow("503");
+    await expect(
+      syncCard("http://127.0.0.1:8765", "Lectio", card),
+    ).resolves.toBe(456);
     expect(attempts).toBe(3);
   });
 
@@ -605,12 +942,21 @@ describe("kortformat", () => {
       lectureId: "lecture-1",
       title: "TCP",
       context: "Kursmål",
-      sourceStatus: "Transkript: delvis.\nSlides: komplett tillgänglig slide-text är vald.",
+      sourceStatus:
+        "Transkript: delvis.\nSlides: komplett tillgänglig slide-text är vald.",
       notes: "Egna noter",
       transcript: [
         { id: "s1", lectureId: "lecture-1", start: 1, end: 5, text: "Data" },
       ],
-      markers: [{ id: "m1", lectureId: "lecture-1", time: 32, note: "Särskilt viktigt", createdAt: "" }],
+      markers: [
+        {
+          id: "m1",
+          lectureId: "lecture-1",
+          time: 32,
+          note: "Särskilt viktigt",
+          createdAt: "",
+        },
+      ],
       slideText: "Slide 1: Flödeskontroll",
       count: 10,
       types: ["basic"],

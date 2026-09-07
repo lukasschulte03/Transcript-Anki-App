@@ -1,6 +1,6 @@
 import { db, type GoogleDriveSyncBase } from "../core/database";
 import { useAppStore } from "../core/store";
-import type { BackgroundJob, StoredAsset } from "../core/types";
+import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
 import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
@@ -30,6 +30,15 @@ type RemoteManifest = {
   snapshot: LibrarySnapshot;
   assets: RemoteAsset[];
 };
+
+/**
+ * Settings belong to a device, not to the shared study library. Keeping them
+ * out of the Drive payload prevents harmless values such as lastSyncedAt from
+ * turning into cross-device merge conflicts when new app features are added.
+ */
+function snapshotForCloud(snapshot: LibrarySnapshot): LibrarySnapshot {
+  return { ...snapshot, settings: {} as AppSettings };
+}
 
 export type DriveFile = {
   id: string;
@@ -477,13 +486,7 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       format: "lectio-google-drive-v1",
       updatedAt: new Date().toISOString(),
       deviceId: getDeviceId(),
-      snapshot: {
-        ...snapshot,
-        settings: {
-          ...snapshot.settings,
-          cloudSync: { ...snapshot.settings.cloudSync, remotePath: rootPath },
-        },
-      },
+      snapshot: snapshotForCloud(snapshot),
       assets: remoteAssets,
     };
     const bytes = new Blob([JSON.stringify(manifest)], {

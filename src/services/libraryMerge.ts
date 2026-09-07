@@ -31,7 +31,8 @@ export type MergeConflict = {
 };
 export type MergeResolution = "local" | "remote";
 
-const equal = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right);
+const equal = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right);
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -49,8 +50,19 @@ function mergeValue(
   if (isRecord(local) && isRecord(remote) && (!base || isRecord(base))) {
     const result: Record<string, unknown> = {};
     const baseRecord = isRecord(base) ? base : {};
-    for (const key of new Set([...Object.keys(baseRecord), ...Object.keys(local), ...Object.keys(remote)])) {
-      const value = mergeValue(baseRecord[key], local[key], remote[key], conflict, resolution, path ? `${path}.${key}` : key);
+    for (const key of new Set([
+      ...Object.keys(baseRecord),
+      ...Object.keys(local),
+      ...Object.keys(remote),
+    ])) {
+      const value = mergeValue(
+        baseRecord[key],
+        local[key],
+        remote[key],
+        conflict,
+        resolution,
+        path ? `${path}.${key}` : key,
+      );
       if (value !== undefined) result[key] = value;
     }
     return result;
@@ -72,26 +84,67 @@ function mergeCollection<T extends { id: string }>(
   const localById = byId(local);
   const remoteById = byId(remote);
   const merged: T[] = [];
-  for (const id of new Set([...baseById.keys(), ...localById.keys(), ...remoteById.keys()])) {
+  for (const id of new Set([
+    ...baseById.keys(),
+    ...localById.keys(),
+    ...remoteById.keys(),
+  ])) {
     const before = baseById.get(id);
     const here = localById.get(id);
     const there = remoteById.get(id);
     if (!before) {
-      if (!here) { if (there) merged.push(there); continue; }
-      if (!there) { merged.push(here); continue; }
-      merged.push(mergeValue(undefined, here, there, (field) => conflicts.push({ collection, id, field: field.replace(/^value\./, "") }), resolution) as T);
+      if (!here) {
+        if (there) merged.push(there);
+        continue;
+      }
+      if (!there) {
+        merged.push(here);
+        continue;
+      }
+      merged.push(
+        mergeValue(
+          undefined,
+          here,
+          there,
+          (field) =>
+            conflicts.push({
+              collection,
+              id,
+              field: field.replace(/^value\./, ""),
+            }),
+          resolution,
+        ) as T,
+      );
       continue;
     }
     if (!here || !there) {
       const changed = here ? !equal(here, before) : !equal(there, before);
       if (changed) {
         conflicts.push({ collection, id, field: "radering" });
-        const chosen = resolution === "remote" ? there : resolution === "local" ? here : undefined;
+        const chosen =
+          resolution === "remote"
+            ? there
+            : resolution === "local"
+              ? here
+              : undefined;
         if (chosen) merged.push(chosen);
       }
       continue;
     }
-    merged.push(mergeValue(before, here, there, (field) => conflicts.push({ collection, id, field: field.replace(/^value\./, "") }), resolution) as T);
+    merged.push(
+      mergeValue(
+        before,
+        here,
+        there,
+        (field) =>
+          conflicts.push({
+            collection,
+            id,
+            field: field.replace(/^value\./, ""),
+          }),
+        resolution,
+      ) as T,
+    );
   }
   return merged;
 }
@@ -115,30 +168,66 @@ export function mergeLibrarySnapshots(
     conflicts,
     resolution,
   );
-  const settings = mergeValue(
-    base.settings,
-    local.settings,
-    remote.settings,
-    (field) => conflicts.push({ collection: "inställningar", id: "inställningar", field }),
-    resolution,
-  ) as AppSettings;
   return {
     conflicts,
     snapshot: {
-      nodes: mergeCollection("bibliotek", base.nodes, local.nodes, remote.nodes, conflicts, resolution),
-      lectures: Object.fromEntries(lectureItems.map((item) => [item.id, item.value])) as Record<string, LectureData>,
-      segments: mergeCollection("transkript", base.segments, local.segments, remote.segments, conflicts, resolution),
-      markers: mergeCollection("markeringar", base.markers, local.markers, remote.markers, conflicts, resolution),
-      cards: mergeCollection("Anki-kort", base.cards, local.cards, remote.cards, conflicts, resolution),
+      nodes: mergeCollection(
+        "bibliotek",
+        base.nodes,
+        local.nodes,
+        remote.nodes,
+        conflicts,
+        resolution,
+      ),
+      lectures: Object.fromEntries(
+        lectureItems.map((item) => [item.id, item.value]),
+      ) as Record<string, LectureData>,
+      segments: mergeCollection(
+        "transkript",
+        base.segments,
+        local.segments,
+        remote.segments,
+        conflicts,
+        resolution,
+      ),
+      markers: mergeCollection(
+        "markeringar",
+        base.markers,
+        local.markers,
+        remote.markers,
+        conflicts,
+        resolution,
+      ),
+      cards: mergeCollection(
+        "Anki-kort",
+        base.cards,
+        local.cards,
+        remote.cards,
+        conflicts,
+        resolution,
+      ),
       pendingAnkiDeletions: mergeCollection(
         "Anki-raderingar",
-        base.pendingAnkiDeletions.map((item) => ({ ...item, id: String(item.ankiId) })),
-        local.pendingAnkiDeletions.map((item) => ({ ...item, id: String(item.ankiId) })),
-        remote.pendingAnkiDeletions.map((item) => ({ ...item, id: String(item.ankiId) })),
+        base.pendingAnkiDeletions.map((item) => ({
+          ...item,
+          id: String(item.ankiId),
+        })),
+        local.pendingAnkiDeletions.map((item) => ({
+          ...item,
+          id: String(item.ankiId),
+        })),
+        remote.pendingAnkiDeletions.map((item) => ({
+          ...item,
+          id: String(item.ankiId),
+        })),
         conflicts,
         resolution,
       ).map(({ id: _id, ...item }) => item),
-      settings: { ...settings, cloudSync: local.settings.cloudSync },
+      // Inställningar är enhetsspecifika: OAuth-koppling, synkmarkörer,
+      // tema och lokala modeller får aldrig skapa en molnkonflikt eller
+      // ersättas av en annan dator. Kursmaterialet ovan är det enda som
+      // tillhör det delade biblioteket.
+      settings: local.settings,
     } satisfies LibrarySyncSnapshot,
   };
 }
