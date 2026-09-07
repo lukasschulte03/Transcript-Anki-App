@@ -456,7 +456,7 @@ describe("kortformat", () => {
       transcript: [
         { id: "s1", lectureId: "lecture-1", start: 1, end: 5, text: "Data" },
       ],
-      markers: [],
+      markers: [{ id: "m1", lectureId: "lecture-1", time: 32, note: "Särskilt viktigt", createdAt: "" }],
       slideText: "Slide 1: Flödeskontroll",
       count: 10,
       types: ["basic"],
@@ -464,7 +464,10 @@ describe("kortformat", () => {
     });
     expect(prompt).toContain("Kursmål");
     expect(prompt).toContain("Egna noter");
-    expect(prompt).toContain("[1-5s] Data");
+    expect(prompt).toContain("Data");
+    expect(prompt).toContain("Särskilt viktigt");
+    expect(prompt).not.toContain("[1-5s]");
+    expect(prompt).not.toContain("32s");
     expect(prompt).toContain("Slide 1: Flödeskontroll");
   });
 });
