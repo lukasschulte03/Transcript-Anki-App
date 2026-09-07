@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { downloadText } from "../lib/utils";
 import { APP_VERSION } from "../lib/appVersion";
 import { useAppStore } from "../core/store";
+import { db } from "../core/database";
 import { isTauri } from "./platform";
 
 const MAX_EVENTS = 30;
@@ -35,6 +36,8 @@ export type DiagnosticSnapshot = {
     aiMode: string;
     ankiConfigured: boolean;
     cloudConnected: boolean;
+    syncProtocol: "legacy" | "v2";
+    syncV2KnownOperations: number;
     recentJobs: SafeJob[];
   };
   suggestedActions: string[];
@@ -47,24 +50,40 @@ export function redactDiagnosticText(value: unknown) {
   return String(value ?? "")
     .replace(/[A-Za-z]:[\\/][^\r\n]*/g, "[redacted-path]")
     .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, "C:\\Users\\[redacted]")
-    .replace(/(?:api[_ -]?key|client[_ -]?secret|refresh[_ -]?token|access[_ -]?token|token|authorization|bearer|password|secret)["']?\s*[:=]\s*["']?[^\s,;}"']+/gi, "$1=[redacted]")
+    .replace(
+      /(?:api[_ -]?key|client[_ -]?secret|refresh[_ -]?token|access[_ -]?token|token|authorization|bearer|password|secret)["']?\s*[:=]\s*["']?[^\s,;}"']+/gi,
+      "$1=[redacted]",
+    )
     .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
     .slice(0, 800);
 }
 
 export function diagnosticSuggestions(events: DiagnosticEvent[]) {
-  const text = events.map((event) => event.message).join("\n").toLocaleLowerCase();
+  const text = events
+    .map((event) => event.message)
+    .join("\n")
+    .toLocaleLowerCase();
   const suggestions: string[] = [];
   if (/acl|open_url|not allowed/.test(text))
-    suggestions.push("Installera den senaste Lectio-versionen och försök öppna länken igen.");
+    suggestions.push(
+      "Installera den senaste Lectio-versionen och försök öppna länken igen.",
+    );
   if (/google.*(session|inloggning)|oauth|access_denied/.test(text))
-    suggestions.push("Avbryt den aktuella Google-inloggningen och koppla kontot igen under Inställningar.");
+    suggestions.push(
+      "Avbryt den aktuella Google-inloggningen och koppla kontot igen under Inställningar.",
+    );
   if (/whisper.*json|lokala talverktyg|ffmpeg/.test(text))
-    suggestions.push("Kontrollera att ljudfilen och vald Whisper-modell finns kvar, och försök transkribera igen.");
+    suggestions.push(
+      "Kontrollera att ljudfilen och vald Whisper-modell finns kvar, och försök transkribera igen.",
+    );
   if (/anki/.test(text))
-    suggestions.push("Öppna Anki och kontrollera AnkiConnect-adressen under Inställningar.");
+    suggestions.push(
+      "Öppna Anki och kontrollera AnkiConnect-adressen under Inställningar.",
+    );
   if (!suggestions.length)
-    suggestions.push("Bifoga rapporten och beskriv stegen precis innan problemet uppstod.");
+    suggestions.push(
+      "Bifoga rapporten och beskriv stegen precis innan problemet uppstod.",
+    );
   return suggestions;
 }
 
@@ -72,7 +91,9 @@ export function recordDiagnostic(area: string, error: unknown) {
   events.unshift({
     at: new Date().toISOString(),
     area: redactDiagnosticText(area),
-    message: redactDiagnosticText(error instanceof Error ? error.message : error),
+    message: redactDiagnosticText(
+      error instanceof Error ? error.message : error,
+    ),
   });
   events.splice(MAX_EVENTS);
 }
@@ -94,7 +115,8 @@ export function initializeDiagnostics() {
   return true;
 }
 
-export const reportingEnabled = () => Boolean(import.meta.env.VITE_SENTRY_DSN?.trim());
+export const reportingEnabled = () =>
+  Boolean(import.meta.env.VITE_SENTRY_DSN?.trim());
 
 export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
   let device: Record<string, unknown> = {
@@ -110,6 +132,11 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
     }
   }
   const state = useAppStore.getState();
+  const syncV2State = await db.syncV2States
+    .get(
+      `google-drive-v2:${(state.settings.cloudSync.remotePath.trim() || "Lectio").toLocaleLowerCase()}`,
+    )
+    .catch(() => undefined);
   const safeJobs: SafeJob[] = state.jobs.slice(-8).map((job) => ({
     kind: job.kind,
     phase: job.phase,
@@ -132,6 +159,8 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
       aiMode: state.settings.aiMode,
       ankiConfigured: Boolean(state.settings.ankiUrl?.trim()),
       cloudConnected: Boolean(state.settings.cloudSync.connectedAt),
+      syncProtocol: syncV2State ? "v2" : "legacy",
+      syncV2KnownOperations: syncV2State?.knownOperationIds.length ?? 0,
       recentJobs: safeJobs,
     },
     suggestedActions: diagnosticSuggestions(snapshotEvents),
