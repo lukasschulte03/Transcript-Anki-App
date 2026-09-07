@@ -8,6 +8,15 @@ import type {
 } from "../core/types";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
 
+/** Immutable Drive object metadata; blobs remain in IndexedDB locally. */
+export type SyncAsset = Omit<
+  import("../core/types").StoredAsset,
+  "blob"
+> & {
+  hash: string;
+  remoteId: string;
+};
+
 /** Provider-neutral, immutable operation used by Sync v2 transports. */
 export type SyncOperation = {
   id: string;
@@ -36,6 +45,8 @@ export type SyncV2State = {
   nextSequence: number;
   /** Materialized shared state after the last successful sync. */
   base: LibrarySyncSnapshot;
+  /** Content-addressed media index used for incremental v2 transfers. */
+  assets: SyncAsset[];
   knownOperationIds: string[];
   createdAt: string;
   updatedAt: string;

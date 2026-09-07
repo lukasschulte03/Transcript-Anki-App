@@ -1,4 +1,4 @@
-import { db, type GoogleDriveSyncBase } from "../core/database";
+import { db } from "../core/database";
 import { useAppStore } from "../core/store";
 import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
@@ -14,6 +14,7 @@ import {
 import {
   applySyncOperations,
   createSyncOperations,
+  type SyncAsset,
   type SyncOperation,
   type SyncV2State,
 } from "./syncV2";
@@ -22,10 +23,7 @@ export const DRIVE_API = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
 export const FOLDER_MIME = "application/vnd.google-apps.folder";
 
-type RemoteAsset = Omit<StoredAsset, "blob"> & {
-  hash: string;
-  remoteId: string;
-};
+type RemoteAsset = SyncAsset;
 
 type LibrarySnapshot = LibrarySyncSnapshot;
 
@@ -35,6 +33,15 @@ type RemoteManifest = {
   deviceId: string;
   snapshot: LibrarySnapshot;
   assets: RemoteAsset[];
+};
+
+type SyncV2Checkpoint = {
+  protocol: 2;
+  libraryId: string;
+  createdAt: string;
+  snapshot: LibrarySnapshot;
+  assets: RemoteAsset[];
+  knownOperationIds: string[];
 };
 
 /**
@@ -223,6 +230,12 @@ async function updateFile(token: string, id: string, blob: Blob) {
   );
 }
 
+async function deleteFile(token: string, id: string) {
+  await googleDriveRequest(`${DRIVE_API}/files/${id}`, token, {
+    method: "DELETE",
+  });
+}
+
 async function readManifest(token: string, metadataFolder: string) {
   const file = await findNamedFile("library.json", metadataFolder, token);
   if (!file) return undefined;
@@ -231,6 +244,35 @@ async function readManifest(token: string, metadataFolder: string) {
     token,
   );
   return { file, manifest: (await response.json()) as RemoteManifest };
+}
+
+async function readSyncV2Checkpoint(token: string, metadataFolder: string) {
+  const folder = await findNamedFile("sync-v2", metadataFolder, token);
+  if (!folder?.id) return undefined;
+  const file = await findNamedFile("checkpoint.json", folder.id, token);
+  if (!file) return undefined;
+  const response = await googleDriveRequest(
+    `${DRIVE_API}/files/${file.id}?alt=media`,
+    token,
+  );
+  const checkpoint = (await response.json()) as Partial<SyncV2Checkpoint>;
+  if (
+    checkpoint.protocol !== 2 ||
+    !checkpoint.libraryId ||
+    !checkpoint.snapshot
+  )
+    throw new Error("Sync v2-checkpointen i Google Drive är ogiltig.");
+  return {
+    folderId: folder.id,
+    file,
+    checkpoint: {
+      ...(checkpoint as SyncV2Checkpoint),
+      assets: Array.isArray(checkpoint.assets) ? checkpoint.assets : [],
+      knownOperationIds: Array.isArray(checkpoint.knownOperationIds)
+        ? checkpoint.knownOperationIds
+        : [],
+    },
+  };
 }
 
 const localLibraryIsEmpty = (
@@ -254,20 +296,6 @@ function belongsToLibrary(
   );
 }
 
-async function saveSyncBase(rootPath: string, manifest: RemoteManifest) {
-  await db.syncBases.put({
-    id: syncBaseId(rootPath),
-    manifestUpdatedAt: manifest.updatedAt,
-    snapshot: manifest.snapshot,
-    assets: manifest.assets.map(({ id, hash, remoteId }) => ({
-      id,
-      hash,
-      remoteId,
-    })),
-    createdAt: new Date().toISOString(),
-  } satisfies GoogleDriveSyncBase);
-}
-
 const syncV2StateId = (rootPath: string) =>
   `google-drive-v2:${rootPath.toLocaleLowerCase()}`;
 
@@ -280,6 +308,8 @@ async function seedSyncV2(
   metadataFolder: string,
   snapshot: LibrarySnapshot,
   token: string,
+  assets: RemoteAsset[] = [],
+  knownOperationIds: string[] = [],
 ) {
   const stateId = syncV2StateId(rootPath);
   const existingState = await db.syncV2States.get(stateId);
@@ -290,20 +320,21 @@ async function seedSyncV2(
     throw new Error("Sync v2 kunde inte hitta bibliotekets rotobjekt.");
   const v2Folder = await ensureFolder("sync-v2", metadataFolder, token);
   const checkpoint = await findNamedFile("checkpoint.json", v2Folder, token);
-  if (!checkpoint) {
-    const payload = new Blob(
-      [
-        JSON.stringify({
-          protocol: 2,
-          libraryId,
-          createdAt: new Date().toISOString(),
-          snapshot: snapshotForCloud(snapshot),
-        }),
-      ],
-      { type: "application/json" },
-    );
-    await createResumableUpload(token, "checkpoint.json", v2Folder, payload);
-  }
+  const payload = new Blob(
+    [
+      JSON.stringify({
+        protocol: 2,
+        libraryId,
+        createdAt: new Date().toISOString(),
+        snapshot: snapshotForCloud(snapshot),
+        assets,
+        knownOperationIds,
+      } satisfies SyncV2Checkpoint),
+    ],
+    { type: "application/json" },
+  );
+  if (checkpoint) await updateFile(token, checkpoint.id, payload);
+  else await createResumableUpload(token, "checkpoint.json", v2Folder, payload);
   const now = new Date().toISOString();
   await db.syncV2States.put({
     id: stateId,
@@ -312,7 +343,8 @@ async function seedSyncV2(
     deviceId: getDeviceId(),
     nextSequence: existingState?.nextSequence ?? 1,
     base: snapshot,
-    knownOperationIds: existingState?.knownOperationIds ?? [],
+    assets,
+    knownOperationIds,
     createdAt: existingState?.createdAt ?? now,
     updatedAt: now,
   } satisfies SyncV2State);
@@ -378,8 +410,7 @@ export function isLikelySameGoogleDriveLibrary(
 
 async function downloadRemoteLibrary(
   token: string,
-  remote: RemoteManifest,
-  rootPath: string,
+  remote: Pick<SyncV2Checkpoint, "snapshot" | "assets">,
 ) {
   const existingIds = new Set(
     (await db.assets.toArray()).map((asset) => asset.id),
@@ -405,7 +436,6 @@ async function downloadRemoteLibrary(
     ...remote.snapshot,
     settings: { ...remote.snapshot.settings, cloudSync: localCloud },
   });
-  await saveSyncBase(rootPath, remote);
 }
 
 /**
@@ -460,7 +490,16 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       settings: state.settings,
     };
     const existing = await readManifest(token, metadataFolder);
-    const v2State = await db.syncV2States.get(syncV2StateId(rootPath));
+    const checkpoint = await readSyncV2Checkpoint(token, metadataFolder);
+    let v2State = await db.syncV2States.get(syncV2StateId(rootPath));
+    // Versions created before media was part of the v2 checkpoint are upgraded
+    // from the verified legacy index during this one final migration sync.
+    if (v2State && !Array.isArray(v2State.assets)) {
+      v2State = {
+        ...v2State,
+        assets: checkpoint?.checkpoint.assets ?? existing?.manifest.assets ?? [],
+      };
+    }
     let v2Folder: string | undefined;
     let v2Operations: SyncOperation[] = [];
     const isRecoveredCopy =
@@ -471,14 +510,22 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
         assets,
         existing.manifest.assets,
       );
-    if (existing && localLibraryIsEmpty(snapshot, assets)) {
+    if (checkpoint && localLibraryIsEmpty(snapshot, assets)) {
       syncJob({
         phase: "downloading",
         current: 0,
-        total: existing.manifest.assets.length,
+        total: checkpoint.checkpoint.assets.length,
         detail: "Hämtar bibliotek från Google Drive…",
       });
-      await downloadRemoteLibrary(token, existing.manifest, rootPath);
+      await downloadRemoteLibrary(token, checkpoint.checkpoint);
+      await seedSyncV2(
+        rootPath,
+        metadataFolder,
+        checkpoint.checkpoint.snapshot,
+        token,
+        checkpoint.checkpoint.assets,
+        checkpoint.checkpoint.knownOperationIds,
+      );
       useAppStore.getState().updateSettings({
         cloudSync: {
           ...useAppStore.getState().settings.cloudSync,
@@ -489,8 +536,8 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       syncJob({
         phase: "complete",
         status: "complete",
-        current: existing.manifest.assets.length,
-        total: existing.manifest.assets.length,
+        current: checkpoint.checkpoint.assets.length,
+        total: checkpoint.checkpoint.assets.length,
         detail: "Biblioteket hämtades från Google Drive.",
       });
       return;
@@ -508,10 +555,23 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
       v2Operations = [...remoteOperations, ...local.operations];
       snapshot = applySyncOperations(v2State.base, v2Operations);
       v2State.nextSequence = local.nextSequence;
+      const localAssetIds = new Set(
+        assets
+          .filter((asset) => belongsToLibrary(asset, snapshot))
+          .map((asset) => asset.id),
+      );
+      const indexedAssetIds = new Set(v2State.assets.map((asset) => asset.id));
+      const assetsChanged =
+        localAssetIds.size !== indexedAssetIds.size ||
+        [...localAssetIds].some((id) => !indexedAssetIds.has(id));
       // A routine startup/close sync with no local or remote changes must not
       // re-hash every recording or rewrite metadata. This keeps v2 fast even
       // for libraries with many large lectures.
-      if (!v2Operations.length) {
+      if (
+        !v2Operations.length &&
+        !assetsChanged &&
+        checkpoint?.checkpoint.assets.length === v2State.assets.length
+      ) {
         const completedAt = new Date().toISOString();
         useAppStore.getState().updateSettings({
           cloudSync: {
@@ -608,13 +668,8 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
         remoteId: uploaded.id,
       });
     }
-    const manifest: RemoteManifest = {
-      format: "lectio-google-drive-v1",
-      updatedAt: new Date().toISOString(),
-      deviceId: getDeviceId(),
-      snapshot: snapshotForCloud(snapshot),
-      assets: remoteAssets,
-    };
+    const completedAt = new Date().toISOString();
+    let knownOperationIds = v2State?.knownOperationIds ?? [];
     if (v2Folder) {
       for (const operation of v2Operations.filter(
         (item) => item.deviceId === getDeviceId(),
@@ -632,36 +687,42 @@ async function syncGoogleDriveInternal(resolution?: MergeResolution) {
             new Blob([JSON.stringify(operation)], { type: "application/json" }),
           );
       }
+      knownOperationIds = [
+        ...new Set([
+          ...v2State!.knownOperationIds,
+          ...v2Operations.map((item) => item.id),
+        ]),
+      ];
       await db.syncV2States.put({
         ...v2State!,
         base: snapshot,
-        knownOperationIds: [
-          ...new Set([
-            ...v2State!.knownOperationIds,
-            ...v2Operations.map((item) => item.id),
-          ]),
-        ],
-        updatedAt: new Date().toISOString(),
+        assets: remoteAssets,
+        knownOperationIds,
+        updatedAt: completedAt,
       });
     }
-    const bytes = new Blob([JSON.stringify(manifest)], {
-      type: "application/json",
-    });
-    if (existing) await updateFile(token, existing.file.id, bytes);
-    else
-      await createResumableUpload(token, "library.json", metadataFolder, bytes);
+    await seedSyncV2(
+      rootPath,
+      metadataFolder,
+      snapshot,
+      token,
+      remoteAssets,
+      knownOperationIds,
+    );
+    // The v2 checkpoint is complete before the legacy manifest is removed.
+    // A failed deletion merely leaves a harmless old recovery file behind.
+    if (existing) await deleteFile(token, existing.file.id);
+    await db.syncBases.delete(syncBaseId(rootPath));
     const localCloud = useAppStore.getState().settings.cloudSync;
     useAppStore.getState().importLibrary({
       ...snapshot,
       settings: { ...snapshot.settings, cloudSync: localCloud },
     });
-    await saveSyncBase(rootPath, manifest);
-    await seedSyncV2(rootPath, metadataFolder, snapshot, token);
     useAppStore.getState().updateSettings({
       cloudSync: {
         ...useAppStore.getState().settings.cloudSync,
         remotePath: rootPath,
-        lastSyncedAt: manifest.updatedAt,
+        lastSyncedAt: completedAt,
       },
     });
     syncJob({
