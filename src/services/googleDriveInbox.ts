@@ -9,10 +9,9 @@ import {
   type DriveFile,
 } from "./googleDriveSync";
 import { useAppStore } from "../core/store";
+import { db } from "../core/database";
 
-export type InboxAudioFile = Required<
-  Pick<DriveFile, "id" | "name">
-> &
+export type InboxAudioFile = Required<Pick<DriveFile, "id" | "name">> &
   Pick<DriveFile, "mimeType" | "modifiedTime"> & {
     size: number;
   };
@@ -20,11 +19,11 @@ export type InboxAudioFile = Required<
 const audioExtension = /\.(m4a|mp3|wav|aac|ogg|opus|flac|webm|mp4)$/i;
 
 async function inboxFolders(token: string) {
-  const rootPath = useAppStore.getState().settings.cloudSync.remotePath.trim() || "Lectio";
+  const rootPath =
+    useAppStore.getState().settings.cloudSync.remotePath.trim() || "Lectio";
   const root = await ensurePath(rootPath, token);
   const inbox = await ensureFolder("Inbox", root, token);
-  const imported = await ensureFolder("Importerade", inbox, token);
-  return { inbox, imported };
+  return { inbox };
 }
 
 /** Lists only the user-managed Lectio/Inbox folder, never the rest of Drive. */
@@ -39,12 +38,16 @@ export async function listGoogleDriveInbox(): Promise<InboxAudioFile[]> {
     token,
   );
   const result = (await response.json()) as { files?: DriveFile[] };
+  const imported = new Set(
+    (await db.inboxImports.toArray()).map((receipt) => receipt.id),
+  );
   return (result.files ?? [])
     .filter(
       (file) =>
         file.mimeType !== FOLDER_MIME &&
         (file.mimeType?.startsWith("audio/") || audioExtension.test(file.name)),
     )
+    .filter((file) => !imported.has(file.id))
     .map((file) => ({
       id: file.id,
       name: file.name,
@@ -52,9 +55,7 @@ export async function listGoogleDriveInbox(): Promise<InboxAudioFile[]> {
       modifiedTime: file.modifiedTime,
       size: Number(file.size ?? 0),
     }))
-    .sort((a, b) =>
-      (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""),
-    );
+    .sort((a, b) => (b.modifiedTime ?? "").localeCompare(a.modifiedTime ?? ""));
 }
 
 export async function downloadGoogleDriveInboxFile(file: InboxAudioFile) {
@@ -66,18 +67,16 @@ export async function downloadGoogleDriveInboxFile(file: InboxAudioFile) {
   return response.blob();
 }
 
-/** Moves successfully imported recordings out of Inbox so they are never imported twice. */
-export async function archiveGoogleDriveInboxFiles(fileIds: string[]) {
-  if (!fileIds.length) return;
-  const token = await getGoogleDriveAccessToken();
-  const { inbox, imported } = await inboxFolders(token);
-  await Promise.all(
-    fileIds.map((id) =>
-      googleDriveRequest(
-        `${DRIVE_API}/files/${id}?addParents=${encodeURIComponent(imported)}&removeParents=${encodeURIComponent(inbox)}&fields=id`,
-        token,
-        { method: "PATCH" },
-      ),
-    ),
+/** Locally records a completed import; Drive files stay in the simple Inbox folder. */
+export async function markGoogleDriveInboxFilesImported(
+  fileIds: string[],
+  lectureId: string,
+) {
+  await db.inboxImports.bulkPut(
+    fileIds.map((id) => ({
+      id,
+      lectureId,
+      importedAt: new Date().toISOString(),
+    })),
   );
 }

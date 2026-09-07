@@ -16,6 +16,12 @@ export type GoogleDriveSyncBase = {
   createdAt: string;
 };
 
+export type InboxImportReceipt = {
+  id: string;
+  importedAt: string;
+  lectureId: string;
+};
+
 export const db = new Dexie("lectio-assets") as Dexie & {
   assets: EntityTable<StoredAsset, "id">;
   recordingSessions: EntityTable<RecordingSession, "id">;
@@ -23,6 +29,7 @@ export const db = new Dexie("lectio-assets") as Dexie & {
   backups: EntityTable<LibraryBackup, "id">;
   syncBases: EntityTable<GoogleDriveSyncBase, "id">;
   syncV2States: EntityTable<SyncV2State, "id">;
+  inboxImports: EntityTable<InboxImportReceipt, "id">;
 };
 db.version(1).stores({ assets: "id, lectureId, kind, createdAt" });
 db.version(2).stores({
@@ -55,4 +62,13 @@ db.version(6).stores({
   backups: "id, createdAt, reason",
   syncBases: "id, createdAt",
   syncV2States: "id, libraryId, updatedAt",
+});
+db.version(7).stores({
+  assets: "id, lectureId, nodeId, kind, createdAt",
+  recordingSessions: "id, lectureId, status, createdAt",
+  recordingChunks: "id, sessionId, [sessionId+sequence]",
+  backups: "id, createdAt, reason",
+  syncBases: "id, createdAt",
+  syncV2States: "id, libraryId, updatedAt",
+  inboxImports: "id, importedAt, lectureId",
 });
