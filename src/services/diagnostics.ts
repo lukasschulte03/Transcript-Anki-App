@@ -1,11 +1,11 @@
 import * as Sentry from "@sentry/react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadText } from "../lib/utils";
+import { APP_VERSION } from "../lib/appVersion";
 import { useAppStore } from "../core/store";
 import { isTauri } from "./platform";
 
 const MAX_EVENTS = 30;
-const APP_VERSION = import.meta.env.VITE_APP_VERSION ?? "0.4.3";
 
 export type DiagnosticEvent = {
   at: string;

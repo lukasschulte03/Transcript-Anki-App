@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useAppStore } from "../core/store";
 import { cn } from "../lib/utils";
+import { APP_VERSION } from "../lib/appVersion";
 
 const navigation = [
   { id: "dashboard", label: "Översikt", icon: Home },
@@ -130,7 +131,7 @@ export function AppNavigation() {
         </button>
         {!collapsed && (
           <div className="mt-3 px-2 text-xs text-[var(--palette-text-subtle)]">
-            Lectio · v0.4.3
+            Lectio · v{APP_VERSION}
           </div>
         )}
       </div>
