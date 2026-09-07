@@ -2,9 +2,7 @@ import { Toaster } from "sonner";
 import {
   lazy,
   Suspense,
-  useCallback,
   useEffect,
-  useRef,
   useState,
 } from "react";
 import { useAppStore } from "./core/store";
@@ -15,10 +13,6 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { FeedbackDialog } from "./components/FeedbackDialog";
-import { syncGoogleDrive } from "./services/googleDriveSync";
-import { syncErrorMessage } from "./services/sync";
-import { isTauri } from "./services/platform";
-import { toast } from "./services/feedbackToast";
 
 const LibrarySidebar = lazy(() =>
   import("./features/library/LibrarySidebar").then((module) => ({
@@ -76,57 +70,6 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
-  const allowWindowClose = useRef(false);
-  const closeAttemptStarted = useRef(false);
-
-  const closeWindow = useCallback(async () => {
-    allowWindowClose.current = true;
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().close();
-  }, []);
-
-  useEffect(() => {
-    if (!isTauri()) return;
-    let unlisten: (() => void) | undefined;
-    void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) =>
-        getCurrentWindow().onCloseRequested((event) => {
-          if (allowWindowClose.current) return;
-          const cloudSync = useAppStore.getState().settings.cloudSync;
-          if (!cloudSync.connectedAt || !cloudSync.autoSyncOnStartAndClose)
-            return;
-          event.preventDefault();
-          if (closeAttemptStarted.current) return;
-          closeAttemptStarted.current = true;
-          // Closing a desktop window must always remain possible. Give the
-          // incremental sync a short opportunity, then preserve local data and
-          // close even if Drive is offline or a request is stalled.
-          const timeout = window.setTimeout(() => {
-            toast.message("Synken fortsätter nästa gång du öppnar Lectio.");
-            void closeWindow();
-          }, 8_000);
-          void syncGoogleDrive()
-            .catch((error: unknown) => {
-              toast.error(
-                `Kunde inte synka innan stängning: ${syncErrorMessage(error, "okänt fel")}`,
-              );
-            })
-            .finally(() => {
-              window.clearTimeout(timeout);
-              void closeWindow();
-            });
-        }),
-      )
-      .then((stopListening) => {
-        unlisten = stopListening;
-      })
-      .catch((error: unknown) => {
-        toast.error(
-          `Kunde inte aktivera säker stängning: ${syncErrorMessage(error, "okänt fel")}`,
-        );
-      });
-    return () => unlisten?.();
-  }, [closeWindow]);
   useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
