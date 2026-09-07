@@ -1,5 +1,12 @@
 import { Toaster } from "sonner";
-import { lazy, Suspense, useEffect, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useAppStore } from "./core/store";
 import { AppNavigation } from "./components/AppNavigation";
 import { ProgressCenter } from "./components/ProgressCenter";
@@ -8,6 +15,12 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { FeedbackDialog } from "./components/FeedbackDialog";
+import { Button } from "./components/ui/Button";
+import { Dialog } from "./components/ui/Dialog";
+import { syncGoogleDrive } from "./services/googleDriveSync";
+import { syncErrorMessage } from "./services/sync";
+import { isTauri } from "./services/platform";
+import { toast } from "./services/feedbackToast";
 
 const LibrarySidebar = lazy(() =>
   import("./features/library/LibrarySidebar").then((module) => ({
@@ -47,7 +60,10 @@ const DriveInbox = lazy(() =>
 
 function ViewLoader() {
   return (
-    <main className="ui-app-bg grid min-w-0 flex-1 place-items-center" aria-busy="true">
+    <main
+      className="ui-app-bg grid min-w-0 flex-1 place-items-center"
+      aria-busy="true"
+    >
       <p className="text-sm text-[var(--palette-text-muted)]">Öppnar vy…</p>
     </main>
   );
@@ -62,6 +78,89 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
+  const [closeSyncState, setCloseSyncState] = useState<
+    "syncing" | { error: string } | undefined
+  >();
+  const allowWindowClose = useRef(false);
+  const closeSyncPromise = useRef<Promise<void> | undefined>(undefined);
+  const startupSyncStarted = useRef(false);
+
+  const closeWindow = useCallback(async () => {
+    allowWindowClose.current = true;
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    await getCurrentWindow().close();
+  }, []);
+
+  const syncBeforeClose = useCallback(() => {
+    if (closeSyncPromise.current) return closeSyncPromise.current;
+    setCloseSyncState("syncing");
+    const task = syncGoogleDrive()
+      .then(async () => {
+        setCloseSyncState(undefined);
+        await closeWindow();
+      })
+      .catch((error: unknown) => {
+        setCloseSyncState({
+          error: syncErrorMessage(
+            error,
+            "Google Drive-synken kunde inte slutföras.",
+          ),
+        });
+      })
+      .finally(() => {
+        closeSyncPromise.current = undefined;
+      });
+    closeSyncPromise.current = task;
+    return task;
+  }, [closeWindow]);
+
+  useEffect(() => {
+    if (
+      startupSyncStarted.current ||
+      !isTauri() ||
+      !settings.cloudSync.connectedAt ||
+      !settings.cloudSync.autoSyncOnStartAndClose
+    ) {
+      return;
+    }
+    startupSyncStarted.current = true;
+    const timer = window.setTimeout(() => {
+      void syncGoogleDrive().catch((error: unknown) => {
+        toast.error(
+          `Automatisk Google Drive-synk kunde inte starta: ${syncErrorMessage(error, "okänt fel")}`,
+        );
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [
+    settings.cloudSync.autoSyncOnStartAndClose,
+    settings.cloudSync.connectedAt,
+  ]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onCloseRequested((event) => {
+          if (allowWindowClose.current) return;
+          const cloudSync = useAppStore.getState().settings.cloudSync;
+          if (!cloudSync.connectedAt || !cloudSync.autoSyncOnStartAndClose)
+            return;
+          event.preventDefault();
+          void syncBeforeClose();
+        }),
+      )
+      .then((stopListening) => {
+        unlisten = stopListening;
+      })
+      .catch((error: unknown) => {
+        toast.error(
+          `Kunde inte aktivera säker stängning: ${syncErrorMessage(error, "okänt fel")}`,
+        );
+      });
+    return () => unlisten?.();
+  }, [syncBeforeClose]);
   useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
@@ -150,7 +249,12 @@ export default function App() {
   return (
     <TooltipProvider>
       <div className="ui-app-bg flex h-full min-h-0 w-full flex-col overflow-hidden text-slate-900">
-        <WindowTitleBar onReportProblem={() => { setFeedbackError(undefined); setFeedbackOpen(true); }} />
+        <WindowTitleBar
+          onReportProblem={() => {
+            setFeedbackError(undefined);
+            setFeedbackOpen(true);
+          }}
+        />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <AppNavigation />
           <Suspense fallback={<ViewLoader />}>
@@ -178,7 +282,8 @@ export default function App() {
                 {libraryOperation.label}
               </p>
               <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
-                {libraryOperation.detail ?? "Biblioteket är tillfälligt låst för att skydda din data."}
+                {libraryOperation.detail ??
+                  "Biblioteket är tillfälligt låst för att skydda din data."}
               </p>
             </div>
           </div>
@@ -188,7 +293,65 @@ export default function App() {
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}
         />
-        <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} initialError={feedbackError} />
+        <FeedbackDialog
+          open={feedbackOpen}
+          onOpenChange={setFeedbackOpen}
+          initialError={feedbackError}
+        />
+        <Dialog
+          open={Boolean(closeSyncState)}
+          onOpenChange={(open) => {
+            if (!open && closeSyncState !== "syncing")
+              setCloseSyncState(undefined);
+          }}
+          title={
+            closeSyncState === "syncing"
+              ? "Synkar innan Lectio stängs"
+              : "Synken kunde inte slutföras"
+          }
+          description={
+            closeSyncState === "syncing"
+              ? (libraryOperation?.detail ??
+                "Väntar på att Google Drive-synken ska bli klar.")
+              : "Dina lokala ändringar är kvar på datorn. Välj om du vill försöka igen eller stänga utan att synka."
+          }
+        >
+          {closeSyncState === "syncing" ? (
+            <div className="flex items-center gap-3 text-sm text-[var(--palette-text-muted)]">
+              <span
+                className="size-4 animate-spin rounded-full border-2 border-[var(--palette-primary-muted)] border-t-[var(--palette-primary)]"
+                aria-hidden="true"
+              />
+              Stäng inte appen förrän synken är klar.
+            </div>
+          ) : closeSyncState ? (
+            <div className="space-y-4">
+              <p className="rounded-md bg-[var(--palette-danger-muted)] p-3 text-sm leading-5 text-[var(--palette-danger)]">
+                {closeSyncState.error}
+              </p>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="secondary"
+                  onClick={() => setCloseSyncState(undefined)}
+                >
+                  Avbryt stängning
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => void syncBeforeClose()}
+                >
+                  Försök igen
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => void closeWindow()}
+                >
+                  Stäng ändå
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </Dialog>
       </div>
     </TooltipProvider>
   );

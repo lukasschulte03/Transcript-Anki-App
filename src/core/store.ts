@@ -65,10 +65,10 @@ export function canReorderLibraryNode(
   const isLeaf = (type: NodeType) => type === "topic" || type === "lecture";
   return Boolean(
     node &&
-      target &&
-      node.id !== target.id &&
-      node.parentId === target.parentId &&
-      (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
+    target &&
+    node.id !== target.id &&
+    node.parentId === target.parentId &&
+    (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
   );
 }
 
@@ -78,18 +78,29 @@ function orderedSiblings(nodes: LibraryNode[], parentId: string | null) {
     .sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
 }
 
-function normalizeSiblingOrder(nodes: LibraryNode[], parentIds: Array<string | null>) {
+function normalizeSiblingOrder(
+  nodes: LibraryNode[],
+  parentIds: Array<string | null>,
+) {
   const positions = new Map<string, number>();
   [...new Set(parentIds)].forEach((parentId) => {
-    orderedSiblings(nodes, parentId).forEach((node, index) => positions.set(node.id, index));
+    orderedSiblings(nodes, parentId).forEach((node, index) =>
+      positions.set(node.id, index),
+    );
   });
   return nodes.map((node) =>
-    positions.has(node.id) ? { ...node, sortIndex: positions.get(node.id) } : node,
+    positions.has(node.id)
+      ? { ...node, sortIndex: positions.get(node.id) }
+      : node,
   );
 }
 
 /** Moves a node to the end of a valid new parent and keeps both sibling lists stable. */
-export function moveLibraryNode(nodes: LibraryNode[], nodeId: string, parentId: string) {
+export function moveLibraryNode(
+  nodes: LibraryNode[],
+  nodeId: string,
+  parentId: string,
+) {
   if (!canMoveLibraryNode(nodes, nodeId, parentId)) return nodes;
   const node = nodes.find((item) => item.id === nodeId)!;
   const appendIndex = orderedSiblings(nodes, parentId).length;
@@ -100,14 +111,26 @@ export function moveLibraryNode(nodes: LibraryNode[], nodeId: string, parentId: 
 }
 
 /** Inserts a sibling immediately before the target while preserving all other order. */
-export function reorderLibraryNode(nodes: LibraryNode[], nodeId: string, targetId: string) {
+export function reorderLibraryNode(
+  nodes: LibraryNode[],
+  nodeId: string,
+  targetId: string,
+) {
   if (!canReorderLibraryNode(nodes, nodeId, targetId)) return nodes;
   const node = nodes.find((item) => item.id === nodeId)!;
-  const siblings = orderedSiblings(nodes, node.parentId).filter((item) => item.id !== nodeId);
-  siblings.splice(siblings.findIndex((item) => item.id === targetId), 0, node);
+  const siblings = orderedSiblings(nodes, node.parentId).filter(
+    (item) => item.id !== nodeId,
+  );
+  siblings.splice(
+    siblings.findIndex((item) => item.id === targetId),
+    0,
+    node,
+  );
   const positions = new Map(siblings.map((item, index) => [item.id, index]));
   return nodes.map((item) =>
-    positions.has(item.id) ? { ...item, sortIndex: positions.get(item.id) } : item,
+    positions.has(item.id)
+      ? { ...item, sortIndex: positions.get(item.id) }
+      : item,
   );
 }
 const initialPaletteId =
@@ -218,6 +241,7 @@ export const useAppStore = create<AppState>()(
         cloudSync: {
           provider: "google-drive",
           remotePath: "Lectio",
+          autoSyncOnStartAndClose: true,
         },
         backupLimit: 10,
       },
@@ -239,8 +263,9 @@ export const useAppStore = create<AppState>()(
           parentId: resolvedParentId,
           type,
           title,
-          sortIndex: get().nodes.filter((item) => item.parentId === resolvedParentId)
-            .length,
+          sortIndex: get().nodes.filter(
+            (item) => item.parentId === resolvedParentId,
+          ).length,
           context: "",
           createdAt: now(),
           settings: {},
@@ -342,7 +367,8 @@ export const useAppStore = create<AppState>()(
                   ...s.cards
                     .filter(
                       (card) =>
-                        descendants.has(card.lectureId) && card.ankiId !== undefined,
+                        descendants.has(card.lectureId) &&
+                        card.ankiId !== undefined,
                     )
                     .map((card) => ({
                       ankiId: card.ankiId as number,
@@ -379,7 +405,9 @@ export const useAppStore = create<AppState>()(
           segments: s.segments.map((x) => (x.id === id ? { ...x, text } : x)),
         })),
       removeSegment: (id) =>
-        set((s) => ({ segments: s.segments.filter((segment) => segment.id !== id) })),
+        set((s) => ({
+          segments: s.segments.filter((segment) => segment.id !== id),
+        })),
       setSegmentQualityFlag: (id, suspicious) =>
         set((s) => ({
           segments: s.segments.map((segment) =>
@@ -411,7 +439,10 @@ export const useAppStore = create<AppState>()(
       addCards: (cards) => {
         const ids = cards.map(() => uid());
         set((s) => ({
-          cards: [...s.cards, ...cards.map((card, index) => ({ ...card, id: ids[index] }))],
+          cards: [
+            ...s.cards,
+            ...cards.map((card, index) => ({ ...card, id: ids[index] })),
+          ],
         }));
         return ids;
       },
@@ -517,7 +548,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "lectio-state-v1",
-      version: 13,
+      version: 14,
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
         const legacySettings = previous.settings as AppSettings & {
@@ -533,9 +564,13 @@ export const useAppStore = create<AppState>()(
             ...legacySettings,
             aiMode:
               legacySettings.aiMode === "api" ? "api" : ("clipboard" as const),
-            aiProvider: ["openai", "anthropic", "gemini", "groq", "custom"].includes(
-              legacySettings.aiProvider ?? "",
-            )
+            aiProvider: [
+              "openai",
+              "anthropic",
+              "gemini",
+              "groq",
+              "custom",
+            ].includes(legacySettings.aiProvider ?? "")
               ? (legacySettings.aiProvider as AppSettings["aiProvider"])
               : "openai",
             transcriptionProvider: [
@@ -549,9 +584,11 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
-              cloudSync: (() => {
-                const legacyCloud = legacySettings.cloudSync as Partial<AppSettings["cloudSync"]>;
-                return {
+            cloudSync: (() => {
+              const legacyCloud = legacySettings.cloudSync as Partial<
+                AppSettings["cloudSync"]
+              >;
+              return {
                 // Google Drive is the only active direct-sync provider for
                 // now. Older placeholder selections must not leave the
                 // connection UI disabled after upgrading.
@@ -560,6 +597,8 @@ export const useAppStore = create<AppState>()(
                 connectedAt: legacyCloud?.connectedAt,
                 accountLabel: legacyCloud?.accountLabel,
                 lastSyncedAt: legacyCloud?.lastSyncedAt,
+                autoSyncOnStartAndClose:
+                  legacyCloud?.autoSyncOnStartAndClose ?? true,
               };
             })(),
             backupLimit: legacySettings.backupLimit ?? 10,

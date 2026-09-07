@@ -30,7 +30,11 @@ import { toast } from "../../services/feedbackToast";
 import { strFromU8, strToU8, unzip, zip } from "fflate";
 import { db } from "../../core/database";
 import { confirmStorageForImport, downloadBlob } from "../../lib/utils";
-import type { LibraryBackup, StoredAsset, ThemePalette } from "../../core/types";
+import type {
+  LibraryBackup,
+  StoredAsset,
+  ThemePalette,
+} from "../../core/types";
 import {
   connectGoogleDrive,
   cancelGoogleDriveConnection,
@@ -38,8 +42,14 @@ import {
   syncErrorMessage,
   syncProviderOptions,
 } from "../../services/sync";
-import { GoogleDriveMergeConflictError, syncGoogleDrive } from "../../services/googleDriveSync";
-import type { MergeConflict, MergeResolution } from "../../services/libraryMerge";
+import {
+  GoogleDriveMergeConflictError,
+  syncGoogleDrive,
+} from "../../services/googleDriveSync";
+import type {
+  MergeConflict,
+  MergeResolution,
+} from "../../services/libraryMerge";
 import { isTauri } from "../../services/platform";
 import {
   builtInPalettes,
@@ -130,7 +140,9 @@ function validateAssetManifest(
   archive: Record<string, Uint8Array>,
 ) {
   if (manifest.length > MAX_LIBRARY_ASSETS)
-    throw new Error(`Exporten innehåller fler än ${MAX_LIBRARY_ASSETS} mediafiler`);
+    throw new Error(
+      `Exporten innehåller fler än ${MAX_LIBRARY_ASSETS} mediafiler`,
+    );
   for (const item of manifest) {
     if (
       !item.id ||
@@ -158,7 +170,14 @@ const unzipAsync = (data: Uint8Array) =>
 
 export function SettingsView() {
   const store = useAppStore();
-  const { settings, nodes, updateSettings, importLibrary, restoreLibraryBackup, upsertJob } = store;
+  const {
+    settings,
+    nodes,
+    updateSettings,
+    importLibrary,
+    restoreLibraryBackup,
+    upsertJob,
+  } = store;
   const [tab, setTab] = useState("profile");
   const [ankiOk, setAnkiOk] = useState(false);
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
@@ -167,7 +186,9 @@ export function SettingsView() {
     useState<ThemePalette>(defaultCustomPalette);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [cloudConnectBusy, setCloudConnectBusy] = useState(false);
-  const [syncConflicts, setSyncConflicts] = useState<MergeConflict[] | null>(null);
+  const [syncConflicts, setSyncConflicts] = useState<MergeConflict[] | null>(
+    null,
+  );
   const storageSummary = useLiveQuery(async () => {
     const [assets, sessions, chunks] = await Promise.all([
       db.assets.toArray(),
@@ -226,15 +247,22 @@ export function SettingsView() {
       assetCount,
     });
     const all = await db.backups.orderBy("createdAt").toArray();
-    const limit = Math.max(3, Math.min(50, snapshot.settings.backupLimit ?? 10));
+    const limit = Math.max(
+      3,
+      Math.min(50, snapshot.settings.backupLimit ?? 10),
+    );
     if (all.length > limit)
-      await db.backups.bulkDelete(all.slice(0, -limit).map((backup) => backup.id));
+      await db.backups.bulkDelete(
+        all.slice(0, -limit).map((backup) => backup.id),
+      );
   };
   const setBackupLimit = async (backupLimit: number) => {
     updateSettings({ backupLimit });
     const all = await db.backups.orderBy("createdAt").toArray();
     if (all.length > backupLimit)
-      await db.backups.bulkDelete(all.slice(0, -backupLimit).map((backup) => backup.id));
+      await db.backups.bulkDelete(
+        all.slice(0, -backupLimit).map((backup) => backup.id),
+      );
   };
   const restoreBackup = async (backup: LibraryBackup) => {
     const current = useAppStore.getState();
@@ -278,7 +306,9 @@ export function SettingsView() {
   };
   const connectCloudAccount = async () => {
     if (settings.cloudSync.provider !== "google-drive") {
-      toast.error("Google Drive är den enda tillgängliga direktanslutningen just nu.");
+      toast.error(
+        "Google Drive är den enda tillgängliga direktanslutningen just nu.",
+      );
       return;
     }
     setCloudConnectBusy(true);
@@ -293,7 +323,10 @@ export function SettingsView() {
       });
       toast.success(`Google Drive anslöts: ${connection.accountLabel}`);
     } catch (error) {
-      const message = syncErrorMessage(error, "Kunde inte ansluta Google Drive.");
+      const message = syncErrorMessage(
+        error,
+        "Kunde inte ansluta Google Drive.",
+      );
       if (message.includes("avbröts")) toast.message(message);
       else toast.error(message);
     } finally {
@@ -321,14 +354,21 @@ export function SettingsView() {
         setSyncConflicts(error.conflicts);
         return;
       }
-      toast.error(syncErrorMessage(error, "Google Drive-synken kunde inte slutföras."));
+      toast.error(
+        syncErrorMessage(error, "Google Drive-synken kunde inte slutföras."),
+      );
     } finally {
       setCloudConnectBusy(false);
     }
   };
   const disconnectCloudAccount = async () => {
     if (settings.cloudSync.provider !== "google-drive") return;
-    if (!confirm("Koppla bort Google Drive från Lectio? Den lokala informationen behålls.")) return;
+    if (
+      !confirm(
+        "Koppla bort Google Drive från Lectio? Den lokala informationen behålls.",
+      )
+    )
+      return;
     setCloudConnectBusy(true);
     try {
       await disconnectGoogleDrive();
@@ -342,7 +382,9 @@ export function SettingsView() {
       });
       toast.success("Google Drive kopplades bort från Lectio.");
     } catch (error) {
-      toast.error(syncErrorMessage(error, "Kunde inte koppla bort Google Drive."));
+      toast.error(
+        syncErrorMessage(error, "Kunde inte koppla bort Google Drive."),
+      );
     } finally {
       setCloudConnectBusy(false);
     }
@@ -429,9 +471,8 @@ export function SettingsView() {
           "Lectio-export. Strukturerad metadata finns i library.json och originalfiler i media/.",
         ),
       };
-      const assetManifest: Array<
-        Omit<StoredAsset, "blob"> & { path: string }
-      > = [];
+      const assetManifest: Array<Omit<StoredAsset, "blob"> & { path: string }> =
+        [];
       for (const [index, asset] of assets.entries()) {
         const safeName = asset.name.replace(/[<>:"/\\|?*]/g, "_");
         const path = `media/${asset.lectureId}/${asset.id}-${asset.kind}-${safeName}`;
@@ -490,7 +531,9 @@ export function SettingsView() {
         current: 0,
         detail: "Exporten kunde inte slutföras.",
       });
-      toast.error(error instanceof Error ? error.message : "Exporten misslyckades");
+      toast.error(
+        error instanceof Error ? error.message : "Exporten misslyckades",
+      );
     } finally {
       setLibraryBusy(false);
     }
@@ -498,7 +541,9 @@ export function SettingsView() {
   const importAll = async (file?: File) => {
     if (!file || libraryBusy) return;
     if (file.size > MAX_LIBRARY_IMPORT_BYTES) {
-      toast.error("Importfilen är större än 1,5 GB. Dela upp biblioteket eller importera i mindre delar.");
+      toast.error(
+        "Importfilen är större än 1,5 GB. Dela upp biblioteket eller importera i mindre delar.",
+      );
       return;
     }
     if (!(await confirmStorageForImport(file, "biblioteksimporten"))) return;
@@ -526,7 +571,9 @@ export function SettingsView() {
           current: 0,
           detail: "Packar upp arkivet…",
         });
-        const archive = await unzipAsync(new Uint8Array(await file.arrayBuffer()));
+        const archive = await unzipAsync(
+          new Uint8Array(await file.arrayBuffer()),
+        );
         if (!archive["library.json"]) throw new Error("library.json saknas");
         data = JSON.parse(strFromU8(archive["library.json"]));
         validateLibraryPayload(data);
@@ -741,7 +788,9 @@ export function SettingsView() {
                         ZIP med JSON, ljud, slides och andra originalfiler.
                       </div>
                     </button>
-                    <label className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 ${libraryBusy ? "pointer-events-none opacity-60" : ""}`}>
+                    <label
+                      className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 ${libraryBusy ? "pointer-events-none opacity-60" : ""}`}
+                    >
                       <FileUp className="size-5 text-violet-600" />
                       <div className="mt-3 text-sm font-semibold">
                         Importera bibliotek
@@ -819,30 +868,57 @@ export function SettingsView() {
               >
                 <div className="space-y-6">
                   <div>
-                    <p className="text-sm font-medium text-[var(--palette-text)]">Google Drive</p>
+                    <p className="text-sm font-medium text-[var(--palette-text)]">
+                      Google Drive
+                    </p>
                     <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
                       {syncProviderOptions[0]?.description}
                     </p>
                   </div>
 
                   <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
-                    <p className="text-sm font-medium text-[var(--palette-text)]">Kontokoppling</p>
+                    <p className="text-sm font-medium text-[var(--palette-text)]">
+                      Kontokoppling
+                    </p>
                     <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
-                      Du loggar in i tjänstens säkra webbfönster och kan när som helst koppla bort kontot. Åtkomsttoken sparas endast i Windows Credential Manager.
+                      Du loggar in i tjänstens säkra webbfönster och kan när som
+                      helst koppla bort kontot. Åtkomsttoken sparas endast i
+                      Windows Credential Manager.
                     </p>
                     <div className="mt-4 flex flex-wrap items-center gap-2">
-                      {settings.cloudSync.provider === "google-drive" && settings.cloudSync.connectedAt ? (
+                      {settings.cloudSync.provider === "google-drive" &&
+                      settings.cloudSync.connectedAt ? (
                         <>
                           <span className="inline-flex items-center gap-1.5 rounded-md bg-[var(--palette-success-muted)] px-2 py-1 text-xs font-medium text-[var(--palette-success)]">
                             <CheckCircle2 className="size-3.5" />
-                            Ansluten{settings.cloudSync.accountLabel ? ` · ${settings.cloudSync.accountLabel}` : ""}
+                            Ansluten
+                            {settings.cloudSync.accountLabel
+                              ? ` · ${settings.cloudSync.accountLabel}`
+                              : ""}
                           </span>
-                          <Button variant="secondary" size="sm" disabled={cloudConnectBusy} onClick={() => void disconnectCloudAccount()}>
-                            {cloudConnectBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <Unplug className="size-3.5" />}
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={cloudConnectBusy}
+                            onClick={() => void disconnectCloudAccount()}
+                          >
+                            {cloudConnectBusy ? (
+                              <LoaderCircle className="size-3.5 animate-spin" />
+                            ) : (
+                              <Unplug className="size-3.5" />
+                            )}
                             Koppla bort
                           </Button>
-                          <Button size="sm" disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary()}>
-                            {cloudConnectBusy ? <LoaderCircle className="size-3.5 animate-spin" /> : <HardDrive className="size-3.5" />}
+                          <Button
+                            size="sm"
+                            disabled={cloudConnectBusy}
+                            onClick={() => void syncCloudLibrary()}
+                          >
+                            {cloudConnectBusy ? (
+                              <LoaderCircle className="size-3.5 animate-spin" />
+                            ) : (
+                              <HardDrive className="size-3.5" />
+                            )}
                             Synka nu
                           </Button>
                         </>
@@ -854,11 +930,17 @@ export function SettingsView() {
                             disabled={cloudConnectBusy || !isTauri()}
                             onClick={() => void connectCloudAccount()}
                           >
-                            {cloudConnectBusy && <LoaderCircle className="size-3.5 animate-spin" />}
+                            {cloudConnectBusy && (
+                              <LoaderCircle className="size-3.5 animate-spin" />
+                            )}
                             Koppla Google Drive
                           </Button>
                           {cloudConnectBusy && (
-                            <Button variant="ghost" size="sm" onClick={() => void cancelCloudConnection()}>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => void cancelCloudConnection()}
+                            >
                               Avbryt inloggning
                             </Button>
                           )}
@@ -873,16 +955,88 @@ export function SettingsView() {
                   </div>
                   <div className="mt-4 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
                     <div className="flex items-start justify-between gap-4">
-                      <div><div className="text-sm font-semibold text-[var(--palette-text)]">Lokala säkerhetskopior</div><p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">Metadata sparas före import och radering. Ljud och PDF-filer dupliceras inte.</p></div>
-                      <Button variant="outline" size="sm" onClick={() => void createBackup("manual").then(() => toast.success("Säkerhetskopia skapades"))}>Skapa nu</Button>
+                      <div>
+                        <div className="text-sm font-semibold text-[var(--palette-text)]">
+                          Lokala säkerhetskopior
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
+                          Metadata sparas före import och radering. Ljud och
+                          PDF-filer dupliceras inte.
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() =>
+                          void createBackup("manual").then(() =>
+                            toast.success("Säkerhetskopia skapades"),
+                          )
+                        }
+                      >
+                        Skapa nu
+                      </Button>
                     </div>
                     <div className="mt-3 flex items-center justify-between gap-3 border-t border-[var(--palette-border)] pt-3 text-xs">
-                      <span className="text-[var(--palette-text-muted)]">Behåll de senaste säkerhetskopiorna</span>
-                      <Select className="h-8 w-20 py-1 text-xs" value={settings.backupLimit ?? 10} onChange={(event) => void setBackupLimit(Number(event.target.value))}>
-                        {[3, 5, 10, 20, 50].map((limit) => <option key={limit} value={limit}>{limit}</option>)}
+                      <span className="text-[var(--palette-text-muted)]">
+                        Behåll de senaste säkerhetskopiorna
+                      </span>
+                      <Select
+                        className="h-8 w-20 py-1 text-xs"
+                        value={settings.backupLimit ?? 10}
+                        onChange={(event) =>
+                          void setBackupLimit(Number(event.target.value))
+                        }
+                      >
+                        {[3, 5, 10, 20, 50].map((limit) => (
+                          <option key={limit} value={limit}>
+                            {limit}
+                          </option>
+                        ))}
                       </Select>
                     </div>
-                    {backups?.length ? <div className="mt-3 space-y-2 border-t border-[var(--palette-border)] pt-3">{backups.slice(0, settings.backupLimit ?? 10).map((backup) => <div key={backup.id} className="flex items-center justify-between gap-3 text-xs"><span className="min-w-0 text-[var(--palette-text-muted)]">{new Date(backup.createdAt).toLocaleString("sv-SE")} · {backup.reason === "import" ? "före import" : backup.reason === "deletion" ? "före radering" : "manuell"} · ≈{Math.max(1, Math.ceil(JSON.stringify(backup).length / 1024))} kB metadata</span><Button variant="ghost" size="xs" onClick={() => void restoreBackup(backup)}>Förhandsgranska och återställ</Button></div>)}</div> : <p className="mt-3 text-xs text-[var(--palette-text-subtle)]">Inga säkerhetskopior ännu.</p>}
+                    {backups?.length ? (
+                      <div className="mt-3 space-y-2 border-t border-[var(--palette-border)] pt-3">
+                        {backups
+                          .slice(0, settings.backupLimit ?? 10)
+                          .map((backup) => (
+                            <div
+                              key={backup.id}
+                              className="flex items-center justify-between gap-3 text-xs"
+                            >
+                              <span className="min-w-0 text-[var(--palette-text-muted)]">
+                                {new Date(backup.createdAt).toLocaleString(
+                                  "sv-SE",
+                                )}{" "}
+                                ·{" "}
+                                {backup.reason === "import"
+                                  ? "före import"
+                                  : backup.reason === "deletion"
+                                    ? "före radering"
+                                    : "manuell"}{" "}
+                                · ≈
+                                {Math.max(
+                                  1,
+                                  Math.ceil(
+                                    JSON.stringify(backup).length / 1024,
+                                  ),
+                                )}{" "}
+                                kB metadata
+                              </span>
+                              <Button
+                                variant="ghost"
+                                size="xs"
+                                onClick={() => void restoreBackup(backup)}
+                              >
+                                Förhandsgranska och återställ
+                              </Button>
+                            </div>
+                          ))}
+                      </div>
+                    ) : (
+                      <p className="mt-3 text-xs text-[var(--palette-text-subtle)]">
+                        Inga säkerhetskopior ännu.
+                      </p>
+                    )}
                   </div>
 
                   <Field label="Mapp i Google Drive">
@@ -890,20 +1044,70 @@ export function SettingsView() {
                       value={settings.cloudSync.remotePath}
                       onChange={(event) =>
                         updateSettings({
-                          cloudSync: { ...settings.cloudSync, remotePath: event.target.value },
+                          cloudSync: {
+                            ...settings.cloudSync,
+                            remotePath: event.target.value,
+                          },
                         })
                       }
                       placeholder="Lectio"
                     />
                   </Field>
                   <p className="-mt-4 text-xs leading-5 text-[var(--palette-text-muted)]">
-                    Standard är <span className="font-medium text-[var(--palette-text)]">Lectio</span> i Google Drive-roten. Du kan ange en egen sökväg, exempelvis <span className="font-medium text-[var(--palette-text)]">Studier/Lectio</span>. Lämna tomt för standardmappen.
+                    Standard är{" "}
+                    <span className="font-medium text-[var(--palette-text)]">
+                      Lectio
+                    </span>{" "}
+                    i Google Drive-roten. Du kan ange en egen sökväg, exempelvis{" "}
+                    <span className="font-medium text-[var(--palette-text)]">
+                      Studier/Lectio
+                    </span>
+                    . Lämna tomt för standardmappen.
                   </p>
 
+                  <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)] p-4 transition-colors hover:bg-[var(--palette-surface-hover)]">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 size-4 accent-[var(--palette-primary)]"
+                      checked={settings.cloudSync.autoSyncOnStartAndClose}
+                      onChange={(event) =>
+                        updateSettings({
+                          cloudSync: {
+                            ...settings.cloudSync,
+                            autoSyncOnStartAndClose: event.target.checked,
+                          },
+                        })
+                      }
+                    />
+                    <span>
+                      <span className="block text-sm font-medium text-[var(--palette-text)]">
+                        Synka automatiskt vid start och stängning
+                      </span>
+                      <span className="mt-1 block text-xs leading-5 text-[var(--palette-text-muted)]">
+                        Synken startar i bakgrunden när Lectio öppnas. När du
+                        stänger appen väntar Lectio tills pågående ändringar har
+                        synkats, så att biblioteket inte lämnas osynkat.
+                      </span>
+                    </span>
+                  </label>
+
                   <div className="border-t border-[var(--palette-border)] pt-5">
-                    <p className="text-sm font-medium text-[var(--palette-text)]">Så fungerar synken</p>
+                    <p className="text-sm font-medium text-[var(--palette-text)]">
+                      Så fungerar synken
+                    </p>
                     <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
-                      Lectio skapar mapparna <span className="font-medium text-[var(--palette-text)]">metadata</span> och <span className="font-medium text-[var(--palette-text)]">media</span> under din valda Lectio-mapp. Oförändrade ljud och PDF:er laddas inte upp igen. Orelaterade ändringar på olika datorer förenas automatiskt; bara samma fält kräver ett val.
+                      Lectio skapar mapparna{" "}
+                      <span className="font-medium text-[var(--palette-text)]">
+                        metadata
+                      </span>{" "}
+                      och{" "}
+                      <span className="font-medium text-[var(--palette-text)]">
+                        media
+                      </span>{" "}
+                      under din valda Lectio-mapp. Oförändrade ljud och PDF:er
+                      laddas inte upp igen. Orelaterade ändringar på olika
+                      datorer förenas automatiskt; bara samma fält kräver ett
+                      val.
                     </p>
                   </div>
                   <Dialog
@@ -915,22 +1119,36 @@ export function SettingsView() {
                     <div className="space-y-4">
                       <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-3 text-xs text-[var(--palette-text-muted)]">
                         {syncConflicts?.map((conflict, index) => (
-                          <p key={`${conflict.collection}-${conflict.id}-${conflict.field}-${index}`}>
+                          <p
+                            key={`${conflict.collection}-${conflict.id}-${conflict.field}-${index}`}
+                          >
                             {conflict.collection} · {conflict.field}
                           </p>
                         ))}
                       </div>
                       <p className="text-xs leading-5 text-[var(--palette-text-muted)]">
-                        Välj vilken dators version som ska användas för just konflikterna. En lokal säkerhetskopia skapades innan synken startade.
+                        Välj vilken dators version som ska användas för just
+                        konflikterna. En lokal säkerhetskopia skapades innan
+                        synken startade.
                       </p>
                       <div className="flex flex-wrap justify-end gap-2">
-                        <Button variant="secondary" onClick={() => setSyncConflicts(null)}>
+                        <Button
+                          variant="secondary"
+                          onClick={() => setSyncConflicts(null)}
+                        >
                           Avbryt
                         </Button>
-                        <Button variant="outline" disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary("remote")}>
+                        <Button
+                          variant="outline"
+                          disabled={cloudConnectBusy}
+                          onClick={() => void syncCloudLibrary("remote")}
+                        >
                           Behåll Google Drive
                         </Button>
-                        <Button disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary("local")}>
+                        <Button
+                          disabled={cloudConnectBusy}
+                          onClick={() => void syncCloudLibrary("local")}
+                        >
                           Behåll denna dator
                         </Button>
                       </div>
@@ -983,7 +1201,8 @@ export function SettingsView() {
                           onChange={(event) => {
                             const provider = event.target
                               .value as typeof settings.aiProvider;
-                            const suggestedModel = aiModelSuggestions[provider][0];
+                            const suggestedModel =
+                              aiModelSuggestions[provider][0];
                             updateSettings({
                               aiProvider: provider,
                               aiBaseUrl: aiBaseUrls[provider],
@@ -1014,11 +1233,16 @@ export function SettingsView() {
                             aria-describedby="ai-model-help"
                           />
                           <datalist id="lectio-ai-model-suggestions">
-                            {aiModelSuggestions[settings.aiProvider].map((model) => (
-                              <option key={model} value={model} />
-                            ))}
+                            {aiModelSuggestions[settings.aiProvider].map(
+                              (model) => (
+                                <option key={model} value={model} />
+                              ),
+                            )}
                           </datalist>
-                          <p id="ai-model-help" className="mt-2 text-xs leading-5 text-slate-500">
+                          <p
+                            id="ai-model-help"
+                            className="mt-2 text-xs leading-5 text-slate-500"
+                          >
                             {aiModelSuggestions[settings.aiProvider].length
                               ? `Förslag för ${settings.aiProvider}: ${aiModelSuggestions[settings.aiProvider].join(", ")}. Du kan alltid skriva ett eget modell-ID.`
                               : "Skriv modell-ID:t från din tjänst. Egna modellnamn bevaras."}
@@ -1037,8 +1261,12 @@ export function SettingsView() {
                           placeholder="https://api.exempel.se/v1"
                           aria-describedby="ai-base-url-help"
                         />
-                        <p id="ai-base-url-help" className="mt-2 text-xs leading-5 text-slate-500">
-                          Använd en endpoint som stöder OpenAI-formatet för chat completions.
+                        <p
+                          id="ai-base-url-help"
+                          className="mt-2 text-xs leading-5 text-slate-500"
+                        >
+                          Använd en endpoint som stöder OpenAI-formatet för chat
+                          completions.
                         </p>
                       </Field>
                     )}
@@ -1682,7 +1910,9 @@ function LocalModelManager() {
       if (status.nvidiaRuntimeReady) {
         toast.success("NVIDIA-acceleration installerades");
       } else {
-        toast.error("NVIDIA-stödet kunde inte startas. Lectio använder CPU tills det är åtgärdat.");
+        toast.error(
+          "NVIDIA-stödet kunde inte startas. Lectio använder CPU tills det är åtgärdat.",
+        );
       }
     } catch (error) {
       toast.error(String(error));
@@ -1722,7 +1952,10 @@ function LocalModelManager() {
     }
     setBenchmarking(true);
     try {
-      const result = await benchmarkLocalEngine(selected, benchmarkAcceleration);
+      const result = await benchmarkLocalEngine(
+        selected,
+        benchmarkAcceleration,
+      );
       updateSettings({
         localTranscriptionBenchmarks: {
           ...settings.localTranscriptionBenchmarks,
@@ -1821,15 +2054,37 @@ function LocalModelManager() {
         </div>
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
           <span>
-            Testa {localModels.find((model) => model.id === selected)?.name ?? selected} på {benchmarkAcceleration === "nvidia" ? "NVIDIA" : "CPU"}. Testet använder 20 sekunders syntetiskt ljud och sparas bara lokalt.
+            Testa{" "}
+            {localModels.find((model) => model.id === selected)?.name ??
+              selected}{" "}
+            på {benchmarkAcceleration === "nvidia" ? "NVIDIA" : "CPU"}. Testet
+            använder 20 sekunders syntetiskt ljud och sparas bara lokalt.
           </span>
-          <Button size="sm" variant="secondary" onClick={() => void runBenchmark()} disabled={benchmarking || !statuses[selected]?.installed}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => void runBenchmark()}
+            disabled={benchmarking || !statuses[selected]?.installed}
+          >
             {benchmarking ? "Testar…" : "Kör prestandatest"}
           </Button>
           {settings.localTranscriptionBenchmarks[benchmarkAcceleration] && (
             <span className="w-full text-slate-500">
-              Senaste test: {Math.max(1, Math.round(1 / settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.realtimeFactor))}× snabbare än realtid · används för tidsuppskattningar.
-              {settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.gpuUsed && settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb
+              Senaste test:{" "}
+              {Math.max(
+                1,
+                Math.round(
+                  1 /
+                    settings.localTranscriptionBenchmarks[
+                      benchmarkAcceleration
+                    ]!.realtimeFactor,
+                ),
+              )}
+              × snabbare än realtid · används för tidsuppskattningar.
+              {settings.localTranscriptionBenchmarks[benchmarkAcceleration]!
+                .gpuUsed &&
+              settings.localTranscriptionBenchmarks[benchmarkAcceleration]!
+                .vramTotalMb
                 ? ` NVIDIA bekräftad · ${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramUsedMb ?? "?"}/${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb} MB VRAM vid avläsning.`
                 : ""}
             </span>

@@ -26,7 +26,9 @@ export interface TranscriptSegment {
   confidence?: number;
   suspicious?: boolean;
   /** Local-only quality hints. Text is never removed automatically. */
-  qualityFlags?: Array<"empty" | "very-short" | "duplicate" | "repeated-phrase">;
+  qualityFlags?: Array<
+    "empty" | "very-short" | "duplicate" | "repeated-phrase"
+  >;
 }
 
 export interface Marker {
@@ -182,6 +184,8 @@ export interface CloudSyncConfiguration {
   connectedAt?: string;
   accountLabel?: string;
   lastSyncedAt?: string;
+  /** Sync in the background on app start and protect data by syncing before close. */
+  autoSyncOnStartAndClose: boolean;
 }
 
 export interface LibraryBackup {
@@ -229,7 +233,8 @@ export interface RecordingChunk {
 }
 
 export type BackgroundJobKind = "download" | "transcription" | "library";
-export type BackgroundJobStatus = "queued" | "active" | "complete" | "error" | "cancelled";
+export type BackgroundJobStatus =
+  "queued" | "active" | "complete" | "error" | "cancelled";
 
 export interface BackgroundJob {
   id: string;
