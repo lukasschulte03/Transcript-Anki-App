@@ -7,6 +7,7 @@ import {
   PanelLeftOpen,
   Settings,
   Sparkles,
+  Wand2,
 } from "lucide-react";
 import { useAppStore } from "../core/store";
 import { cn } from "../lib/utils";
@@ -17,6 +18,7 @@ const navigation = [
   { id: "workspace", label: "Bibliotek", icon: BookOpen },
   { id: "cards", label: "Anki-kort", icon: Sparkles },
   { id: "inbox", label: "Inkorg", icon: Inbox },
+  { id: "super-actions", label: "Super Actions", icon: Wand2 },
   { id: "settings", label: "Inställningar", icon: Settings },
 ] as const;
 
@@ -48,7 +50,7 @@ export function AppNavigation() {
             Arbetsyta
           </p>
         )}
-        {navigation.slice(0, 4).map(({ id, label, icon: Icon }) => (
+        {navigation.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => setActiveView(id)}

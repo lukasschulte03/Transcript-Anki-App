@@ -164,7 +164,7 @@ interface AppState {
     updatedAt?: string;
   }[];
   selectedId: string;
-  activeView: "dashboard" | "workspace" | "cards" | "inbox" | "settings";
+  activeView: "dashboard" | "workspace" | "cards" | "inbox" | "super-actions" | "settings";
   settings: AppSettings;
   jobs: BackgroundJob[];
   addNode: (parentId: string | null, type: NodeType, title: string) => string;

@@ -49,6 +49,11 @@ const DriveInbox = lazy(() =>
     default: module.DriveInbox,
   })),
 );
+const SuperActions = lazy(() =>
+  import("./features/superActions/SuperActions").then((module) => ({
+    default: module.SuperActions,
+  })),
+);
 
 function ViewLoader() {
   return (
@@ -174,6 +179,8 @@ export default function App() {
               <CardStudio />
             ) : activeView === "inbox" ? (
               <DriveInbox />
+            ) : activeView === "super-actions" ? (
+              <SuperActions />
             ) : activeView === "settings" ? (
               <SettingsView />
             ) : selected?.type === "lecture" ? (
