@@ -26,7 +26,7 @@ import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
 import { recommendLocalTranscription } from "./transcriptionRecommendation";
 import { isLikelySameGoogleDriveLibrary } from "./googleDriveSync";
-import { mergeLibrarySnapshots } from "./libraryMerge";
+import { mergeLibrarySnapshots, mergeLibrarySnapshotsWithoutBase } from "./libraryMerge";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
 import { estimateTranscriptionCost, formatTranscriptionCost } from "./transcriptionCost";
 
@@ -108,6 +108,31 @@ describe("Google Drive-synk", () => {
       { ...base, lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } } },
     );
     expect(result.conflicts).toContainEqual(expect.objectContaining({ collection: "föreläsningar", field: "notes" }));
+  });
+
+  it("förenar säkert orelaterade ändringar när en igenkänd installation saknar synkbas", () => {
+    const local = {
+      nodes: [{ id: "workspace", type: "workspace", parentId: null, title: "Studier", context: "", createdAt: "", settings: {} }],
+      lectures: { "lecture-local": { lectureId: "lecture-local", notes: "Laptop" } },
+      segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const remote = {
+      ...local,
+      lectures: { ...local.lectures, "lecture-remote": { lectureId: "lecture-remote", notes: "PC" } },
+    };
+    const result = mergeLibrarySnapshotsWithoutBase(local, remote);
+    expect(result.conflicts).toEqual([]);
+    expect(result.snapshot.lectures).toMatchObject({
+      "lecture-local": { notes: "Laptop" },
+      "lecture-remote": { notes: "PC" },
+    });
+  });
+
+  it("ber om ett val för ändrat delat innehåll utan synkbas", () => {
+    const local = { nodes: [], lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } }, segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings } satisfies LibrarySyncSnapshot;
+    const remote = { ...local, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } };
+    expect(mergeLibrarySnapshotsWithoutBase(local, remote).conflicts)
+      .toContainEqual(expect.objectContaining({ collection: "föreläsningar", field: "notes" }));
   });
 });
 

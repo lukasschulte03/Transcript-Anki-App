@@ -6,6 +6,7 @@ import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
 import {
   mergeLibrarySnapshots,
+  mergeLibrarySnapshotsWithoutBase,
   type LibrarySyncSnapshot,
   type MergeConflict,
   type MergeResolution,
@@ -274,8 +275,10 @@ export async function syncGoogleDrive(resolution?: MergeResolution) {
       return;
     }
     const syncBase = await db.syncBases.get(syncBaseId(rootPath));
-    if (existing && syncBase) {
-      const merged = mergeLibrarySnapshots(syncBase.snapshot, snapshot, existing.manifest.snapshot, resolution);
+    if (existing && (syncBase || isRecoveredCopy)) {
+      const merged = syncBase
+        ? mergeLibrarySnapshots(syncBase.snapshot, snapshot, existing.manifest.snapshot, resolution)
+        : mergeLibrarySnapshotsWithoutBase(snapshot, existing.manifest.snapshot, resolution);
       if (merged.conflicts.length && !resolution) throw new GoogleDriveMergeConflictError(merged.conflicts);
       snapshot = merged.snapshot;
       const localAssetIds = new Set(assets.map((asset) => asset.id));

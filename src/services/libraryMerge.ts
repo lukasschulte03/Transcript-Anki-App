@@ -142,3 +142,28 @@ export function mergeLibrarySnapshots(
     } satisfies LibrarySyncSnapshot,
   };
 }
+
+/**
+ * Recovery path for an installation that recognizes the same library but has
+ * lost its local three-way-sync base (for example after an app-data restore).
+ * It never infers deletions: unique objects from either side survive, while a
+ * changed shared field is reported for an explicit user choice.
+ */
+export function mergeLibrarySnapshotsWithoutBase(
+  local: LibrarySyncSnapshot,
+  remote: LibrarySyncSnapshot,
+  resolution?: MergeResolution,
+) {
+  const emptyBase: LibrarySyncSnapshot = {
+    nodes: [],
+    lectures: {},
+    segments: [],
+    markers: [],
+    cards: [],
+    pendingAnkiDeletions: [],
+    // Settings are device-local. Keeping the local settings avoids unrelated
+    // provider and credential configuration becoming a merge conflict.
+    settings: local.settings,
+  };
+  return mergeLibrarySnapshots(emptyBase, local, remote, resolution);
+}
