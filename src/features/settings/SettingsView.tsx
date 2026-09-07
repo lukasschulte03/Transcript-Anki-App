@@ -38,7 +38,8 @@ import {
   syncErrorMessage,
   syncProviderOptions,
 } from "../../services/sync";
-import { syncGoogleDrive } from "../../services/googleDriveSync";
+import { GoogleDriveMergeConflictError, syncGoogleDrive } from "../../services/googleDriveSync";
+import type { MergeConflict, MergeResolution } from "../../services/libraryMerge";
 import { isTauri } from "../../services/platform";
 import {
   builtInPalettes,
@@ -166,6 +167,7 @@ export function SettingsView() {
     useState<ThemePalette>(defaultCustomPalette);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [cloudConnectBusy, setCloudConnectBusy] = useState(false);
+  const [syncConflicts, setSyncConflicts] = useState<MergeConflict[] | null>(null);
   const storageSummary = useLiveQuery(async () => {
     const [assets, sessions, chunks] = await Promise.all([
       db.assets.toArray(),
@@ -303,7 +305,7 @@ export function SettingsView() {
     setCloudConnectBusy(false);
     toast.message("Google-inloggningen avbröts. Du kan försöka igen direkt.");
   };
-  const syncCloudLibrary = async () => {
+  const syncCloudLibrary = async (resolution?: MergeResolution) => {
     if (!settings.cloudSync.connectedAt) {
       toast.error("Koppla Google Drive innan du synkar.");
       return;
@@ -311,9 +313,14 @@ export function SettingsView() {
     setCloudConnectBusy(true);
     try {
       await createBackup("manual");
-      await syncGoogleDrive();
+      await syncGoogleDrive(resolution);
+      setSyncConflicts(null);
       toast.success("Google Drive-synken är klar.");
     } catch (error) {
+      if (error instanceof GoogleDriveMergeConflictError) {
+        setSyncConflicts(error.conflicts);
+        return;
+      }
       toast.error(syncErrorMessage(error, "Google Drive-synken kunde inte slutföras."));
     } finally {
       setCloudConnectBusy(false);
@@ -896,9 +903,39 @@ export function SettingsView() {
                   <div className="border-t border-[var(--palette-border)] pt-5">
                     <p className="text-sm font-medium text-[var(--palette-text)]">Så fungerar synken</p>
                     <p className="mt-1 max-w-2xl text-xs leading-5 text-[var(--palette-text-muted)]">
-                      Lectio skapar mapparna <span className="font-medium text-[var(--palette-text)]">metadata</span> och <span className="font-medium text-[var(--palette-text)]">media</span> under din valda Lectio-mapp. Oförändrade ljud och PDF:er laddas inte upp igen. På en ny dator hämtas biblioteket när den lokala installationen är tom.
+                      Lectio skapar mapparna <span className="font-medium text-[var(--palette-text)]">metadata</span> och <span className="font-medium text-[var(--palette-text)]">media</span> under din valda Lectio-mapp. Oförändrade ljud och PDF:er laddas inte upp igen. Orelaterade ändringar på olika datorer förenas automatiskt; bara samma fält kräver ett val.
                     </p>
                   </div>
+                  <Dialog
+                    open={!!syncConflicts}
+                    onOpenChange={(open) => !open && setSyncConflicts(null)}
+                    title="Välj version för synkkonflikt"
+                    description="Samma uppgift ändrades på båda datorerna. Övriga, orelaterade ändringar kommer fortfarande att förenas."
+                  >
+                    <div className="space-y-4">
+                      <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-3 text-xs text-[var(--palette-text-muted)]">
+                        {syncConflicts?.map((conflict, index) => (
+                          <p key={`${conflict.collection}-${conflict.id}-${conflict.field}-${index}`}>
+                            {conflict.collection} · {conflict.field}
+                          </p>
+                        ))}
+                      </div>
+                      <p className="text-xs leading-5 text-[var(--palette-text-muted)]">
+                        Välj vilken dators version som ska användas för just konflikterna. En lokal säkerhetskopia skapades innan synken startade.
+                      </p>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <Button variant="secondary" onClick={() => setSyncConflicts(null)}>
+                          Avbryt
+                        </Button>
+                        <Button variant="outline" disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary("remote")}>
+                          Behåll Google Drive
+                        </Button>
+                        <Button disabled={cloudConnectBusy} onClick={() => void syncCloudLibrary("local")}>
+                          Behåll denna dator
+                        </Button>
+                      </div>
+                    </div>
+                  </Dialog>
                 </div>
               </Section>
             )}

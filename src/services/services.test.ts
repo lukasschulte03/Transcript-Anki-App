@@ -26,6 +26,8 @@ import { diagnosticSuggestions, redactDiagnosticText } from "./diagnostics";
 import { canRecoverRecording } from "./recordingRecovery";
 import { recommendLocalTranscription } from "./transcriptionRecommendation";
 import { isLikelySameGoogleDriveLibrary } from "./googleDriveSync";
+import { mergeLibrarySnapshots } from "./libraryMerge";
+import type { LibrarySyncSnapshot } from "./libraryMerge";
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
@@ -74,6 +76,37 @@ describe("Google Drive-synk", () => {
     } as never;
 
     expect(isLikelySameGoogleDriveLibrary(local, remote, [], [])).toBe(false);
+  });
+
+  it("förenar PC:ns nya transkript med laptopens nya föreläsning", () => {
+    const base = {
+      nodes: [
+        { id: "workspace", type: "workspace", parentId: null, title: "Studier", context: "", createdAt: "", settings: {} },
+        { id: "lecture-a", type: "lecture", parentId: "workspace", title: "A", context: "", createdAt: "", settings: {} },
+      ],
+      lectures: { "lecture-a": { lectureId: "lecture-a", notes: "" } },
+      segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const local = { ...base, segments: [{ id: "segment-a", lectureId: "lecture-a", start: 0, end: 2, text: "PC-transkript" }] };
+    const remote = {
+      ...base,
+      nodes: [...base.nodes, { id: "lecture-b", type: "lecture" as const, parentId: "workspace", title: "B", context: "", createdAt: "", settings: {} }],
+      lectures: { ...base.lectures, "lecture-b": { lectureId: "lecture-b", notes: "Laptopens slides" } },
+    };
+    const result = mergeLibrarySnapshots(base, local, remote);
+    expect(result.conflicts).toEqual([]);
+    expect(result.snapshot.segments[0]?.text).toBe("PC-transkript");
+    expect(result.snapshot.lectures["lecture-b"]?.notes).toBe("Laptopens slides");
+  });
+
+  it("flaggar när samma fält ändrats olika på två datorer", () => {
+    const base = { nodes: [], lectures: { lecture: { lectureId: "lecture", notes: "Bas" } }, segments: [], markers: [], cards: [], pendingAnkiDeletions: [], settings: {} as AppSettings } satisfies LibrarySyncSnapshot;
+    const result = mergeLibrarySnapshots(
+      base,
+      { ...base, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } },
+      { ...base, lectures: { lecture: { lectureId: "lecture", notes: "Laptop" } } },
+    );
+    expect(result.conflicts).toContainEqual(expect.objectContaining({ collection: "föreläsningar", field: "notes" }));
   });
 });
 

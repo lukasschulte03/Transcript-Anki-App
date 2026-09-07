@@ -1,9 +1,15 @@
-import { db } from "../core/database";
+import { db, type GoogleDriveSyncBase } from "../core/database";
 import { useAppStore } from "../core/store";
-import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
+import type { BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
 import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
+import {
+  mergeLibrarySnapshots,
+  type LibrarySyncSnapshot,
+  type MergeConflict,
+  type MergeResolution,
+} from "./libraryMerge";
 
 export const DRIVE_API = "https://www.googleapis.com/drive/v3";
 export const DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3";
@@ -14,10 +20,7 @@ type RemoteAsset = Omit<StoredAsset, "blob"> & {
   remoteId: string;
 };
 
-type LibrarySnapshot = Pick<
-  ReturnType<typeof useAppStore.getState>,
-  "nodes" | "lectures" | "segments" | "markers" | "cards" | "pendingAnkiDeletions"
-> & { settings: AppSettings };
+type LibrarySnapshot = LibrarySyncSnapshot;
 
 type RemoteManifest = {
   format: "lectio-google-drive-v1";
@@ -28,6 +31,15 @@ type RemoteManifest = {
 };
 
 export type DriveFile = { id: string; name: string; mimeType?: string; size?: string; modifiedTime?: string; parents?: string[] };
+
+export class GoogleDriveMergeConflictError extends Error {
+  readonly code = "google-drive-merge-conflict";
+  readonly conflicts: MergeConflict[];
+  constructor(conflicts: MergeConflict[]) {
+    super("Samma information har ändrats på båda datorerna.");
+    this.conflicts = conflicts;
+  }
+}
 
 function syncJob(patch: Record<string, unknown>) {
   useAppStore.getState().upsertJob({
@@ -152,6 +164,25 @@ async function readManifest(token: string, metadataFolder: string) {
 const localLibraryIsEmpty = (snapshot: LibrarySnapshot, assets: StoredAsset[]) =>
   snapshot.nodes.length <= 1 && !Object.keys(snapshot.lectures).length && !assets.length;
 
+const syncBaseId = (rootPath: string) => `google-drive:${rootPath.toLocaleLowerCase()}`;
+
+function belongsToLibrary(asset: Pick<StoredAsset, "lectureId" | "nodeId">, snapshot: LibrarySnapshot) {
+  return Boolean(
+    (asset.nodeId && snapshot.nodes.some((node) => node.id === asset.nodeId)) ||
+      (!asset.nodeId && snapshot.lectures[asset.lectureId]),
+  );
+}
+
+async function saveSyncBase(rootPath: string, manifest: RemoteManifest) {
+  await db.syncBases.put({
+    id: syncBaseId(rootPath),
+    manifestUpdatedAt: manifest.updatedAt,
+    snapshot: manifest.snapshot,
+    assets: manifest.assets.map(({ id, hash, remoteId }) => ({ id, hash, remoteId })),
+    createdAt: new Date().toISOString(),
+  } satisfies GoogleDriveSyncBase);
+}
+
 /**
  * A restored local backup can legitimately be missing `lastSyncedAt`.  Do not
  * mistake it for a different library merely because that bookkeeping value was
@@ -178,7 +209,7 @@ export function isLikelySameGoogleDriveLibrary(
   return localAssets.some((asset) => remoteAssetIds.has(asset.id));
 }
 
-async function downloadRemoteLibrary(token: string, remote: RemoteManifest) {
+async function downloadRemoteLibrary(token: string, remote: RemoteManifest, rootPath: string) {
   const existingIds = new Set((await db.assets.toArray()).map((asset) => asset.id));
   for (const [index, asset] of remote.assets.entries()) {
     if (existingIds.has(asset.id)) continue;
@@ -198,6 +229,7 @@ async function downloadRemoteLibrary(token: string, remote: RemoteManifest) {
     ...remote.snapshot,
     settings: { ...remote.snapshot.settings, cloudSync: localCloud },
   });
+  await saveSyncBase(rootPath, remote);
 }
 
 /**
@@ -206,7 +238,7 @@ async function downloadRemoteLibrary(token: string, remote: RemoteManifest) {
  * A non-empty local library and newer remote manifest are treated as a conflict
  * rather than silently overwriting study material.
  */
-export async function syncGoogleDrive() {
+export async function syncGoogleDrive(resolution?: MergeResolution) {
   const state = useAppStore.getState();
   const token = await getGoogleDriveAccessToken();
   const rootPath = state.settings.cloudSync.remotePath.trim() || "Lectio";
@@ -215,8 +247,8 @@ export async function syncGoogleDrive() {
     const root = await ensurePath(rootPath, token);
     const metadataFolder = await ensureFolder("metadata", root, token);
     const mediaFolder = await ensureFolder("media", root, token);
-    const assets = await db.assets.toArray();
-    const snapshot: LibrarySnapshot = {
+    let assets = await db.assets.toArray();
+    let snapshot: LibrarySnapshot = {
       nodes: state.nodes,
       lectures: state.lectures,
       segments: state.segments,
@@ -234,22 +266,40 @@ export async function syncGoogleDrive() {
     );
     if (existing && localLibraryIsEmpty(snapshot, assets)) {
       syncJob({ phase: "downloading", current: 0, total: existing.manifest.assets.length, detail: "Hämtar bibliotek från Google Drive…" });
-      await downloadRemoteLibrary(token, existing.manifest);
+      await downloadRemoteLibrary(token, existing.manifest, rootPath);
       useAppStore.getState().updateSettings({
         cloudSync: { ...useAppStore.getState().settings.cloudSync, remotePath: rootPath, lastSyncedAt: new Date().toISOString() },
       });
       syncJob({ phase: "complete", status: "complete", current: existing.manifest.assets.length, total: existing.manifest.assets.length, detail: "Biblioteket hämtades från Google Drive." });
       return;
     }
-    if (existing && state.settings.cloudSync.lastSyncedAt && existing.manifest.updatedAt > state.settings.cloudSync.lastSyncedAt) {
-      throw new Error("Google Drive innehåller nyare ändringar från en annan dator. Konflikthantering krävs innan lokala ändringar kan skrivas över.");
+    const syncBase = await db.syncBases.get(syncBaseId(rootPath));
+    if (existing && syncBase) {
+      const merged = mergeLibrarySnapshots(syncBase.snapshot, snapshot, existing.manifest.snapshot, resolution);
+      if (merged.conflicts.length && !resolution) throw new GoogleDriveMergeConflictError(merged.conflicts);
+      snapshot = merged.snapshot;
+      const localAssetIds = new Set(assets.map((asset) => asset.id));
+      const missingAssets = existing.manifest.assets.filter(
+        (asset) => belongsToLibrary(asset, snapshot) && !localAssetIds.has(asset.id),
+      );
+      for (const [index, asset] of missingAssets.entries()) {
+        syncJob({ phase: "downloading", current: index + 1, total: missingAssets.length, detail: `Hämtar ändrad fil ${index + 1} av ${missingAssets.length}…` });
+        const response = await googleDriveRequest(`${DRIVE_API}/files/${asset.remoteId}?alt=media`, token);
+        const blob = await response.blob();
+        const { hash: _hash, remoteId: _remoteId, ...stored } = asset;
+        await db.assets.put({ ...stored, blob });
+      }
+      assets = await db.assets.toArray();
+    } else if (existing && state.settings.cloudSync.lastSyncedAt && existing.manifest.updatedAt > state.settings.cloudSync.lastSyncedAt) {
+      throw new Error("Google Drive innehåller nyare ändringar, men denna installation saknar en synkbas för säker merge. Hämta biblioteket på en tom installation eller återställ en lokal backup först.");
     }
     if (existing && !state.settings.cloudSync.lastSyncedAt && !localLibraryIsEmpty(snapshot, assets) && !isRecoveredCopy) {
       throw new Error("Målmappen innehåller redan ett Lectio-bibliotek. Välj en tom mapp eller hämta biblioteket på en tom Lectio-installation först.");
     }
+    const syncAssets = assets.filter((asset) => belongsToLibrary(asset, snapshot));
     const remoteAssets: RemoteAsset[] = [];
-    for (const [index, asset] of assets.entries()) {
-      syncJob({ phase: "uploading", current: index, total: assets.length + 1, detail: `Synkar fil ${index + 1} av ${assets.length}…` });
+    for (const [index, asset] of syncAssets.entries()) {
+      syncJob({ phase: "uploading", current: index, total: syncAssets.length + 1, detail: `Synkar fil ${index + 1} av ${syncAssets.length}…` });
       const contentHash = await hash(asset.blob);
       const name = contentHash;
       const remote = await findNamedFile(name, mediaFolder, token);
@@ -273,10 +323,16 @@ export async function syncGoogleDrive() {
     const bytes = new Blob([JSON.stringify(manifest)], { type: "application/json" });
     if (existing) await updateFile(token, existing.file.id, bytes);
     else await createResumableUpload(token, "library.json", metadataFolder, bytes);
+    const localCloud = useAppStore.getState().settings.cloudSync;
+    useAppStore.getState().importLibrary({
+      ...snapshot,
+      settings: { ...snapshot.settings, cloudSync: localCloud },
+    });
+    await saveSyncBase(rootPath, manifest);
     useAppStore.getState().updateSettings({
       cloudSync: { ...useAppStore.getState().settings.cloudSync, remotePath: rootPath, lastSyncedAt: manifest.updatedAt },
     });
-    syncJob({ phase: "complete", status: "complete", current: assets.length + 1, total: assets.length + 1, detail: `Synkade ${assets.length} mediefiler och bibliotekets metadata.` });
+    syncJob({ phase: "complete", status: "complete", current: syncAssets.length + 1, total: syncAssets.length + 1, detail: `Synkade ${syncAssets.length} mediefiler och bibliotekets metadata.` });
   } catch (error) {
     syncJob({ phase: "error", status: "error", current: 0, detail: "Google Drive-synken misslyckades." });
     throw error;
