@@ -1081,12 +1081,12 @@ export function SettingsView() {
                     />
                     <span>
                       <span className="block text-sm font-medium text-[var(--palette-text)]">
-                        Synka automatiskt vid start och stängning
+                        Synka automatiskt vid stängning
                       </span>
                       <span className="mt-1 block text-xs leading-5 text-[var(--palette-text-muted)]">
-                        Synken startar i bakgrunden när Lectio öppnas. När du
-                        stänger appen väntar Lectio tills pågående ändringar har
-                        synkats, så att biblioteket inte lämnas osynkat.
+                        När du stänger appen väntar Lectio tills pågående
+                        ändringar har synkats, så att biblioteket inte lämnas
+                        osynkat. Vid start väljer du själv när synken körs.
                       </span>
                     </span>
                   </label>

@@ -83,7 +83,6 @@ export default function App() {
   >();
   const allowWindowClose = useRef(false);
   const closeSyncPromise = useRef<Promise<void> | undefined>(undefined);
-  const startupSyncStarted = useRef(false);
 
   const closeWindow = useCallback(async () => {
     allowWindowClose.current = true;
@@ -113,32 +112,6 @@ export default function App() {
     closeSyncPromise.current = task;
     return task;
   }, [closeWindow]);
-
-  useEffect(() => {
-    if (
-      startupSyncStarted.current ||
-      !isTauri() ||
-      !settings.cloudSync.connectedAt ||
-      !settings.cloudSync.autoSyncOnStartAndClose ||
-      // Do not let an automatic retry block startup after this device has
-      // already completed a cloud sync. Manual/close sync remains available.
-      Boolean(settings.cloudSync.lastSyncedAt)
-    ) {
-      return;
-    }
-    startupSyncStarted.current = true;
-    const timer = window.setTimeout(() => {
-      void syncGoogleDrive().catch((error: unknown) => {
-        toast.error(
-          `Automatisk Google Drive-synk kunde inte starta: ${syncErrorMessage(error, "okänt fel")}`,
-        );
-      });
-    }, 800);
-    return () => window.clearTimeout(timer);
-  }, [
-    settings.cloudSync.autoSyncOnStartAndClose,
-    settings.cloudSync.connectedAt,
-  ]);
 
   useEffect(() => {
     if (!isTauri()) return;
