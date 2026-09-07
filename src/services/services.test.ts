@@ -28,6 +28,7 @@ import { recommendLocalTranscription } from "./transcriptionRecommendation";
 import { isLikelySameGoogleDriveLibrary } from "./googleDriveSync";
 import { mergeLibrarySnapshots } from "./libraryMerge";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
+import { estimateTranscriptionCost, formatTranscriptionCost } from "./transcriptionCost";
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {
@@ -220,6 +221,18 @@ describe("transkriptimport", () => {
       '{"transcription":[{"offsets":{"from":0,"to":4000},"text":"Det här viktiga begreppet kommer på tentamen."},{"offsets":{"from":4000,"to":8000},"text":"Det här viktiga begreppet kommer på tentamen."}]}',
     );
     expect(result.segments[1].suspicious).toBe(true);
+  });
+});
+
+describe("transkriptionskostnad", () => {
+  it("uppskattar kända modellpriser lokalt från ljudlängd", () => {
+    const estimate = estimateTranscriptionCost("openai", "whisper-1", 600);
+    expect(estimate.usd).toBeCloseTo(0.06);
+    expect(formatTranscriptionCost(estimate)).toContain("0,06");
+  });
+
+  it("visar ingen påhittad kostnad för okända modeller", () => {
+    expect(estimateTranscriptionCost("groq", "egen-modell", 600).usd).toBeUndefined();
   });
 });
 

@@ -49,6 +49,10 @@ import {
 } from "../../services/transcriptionQueue";
 import { recommendLocalTranscription } from "../../services/transcriptionRecommendation";
 import {
+  estimateTranscriptionCost,
+  formatTranscriptionCost,
+} from "../../services/transcriptionCost";
+import {
   deleteCredential,
   readCredential,
   writeCredential,
@@ -848,6 +852,19 @@ export function AudioPanel({
       }),
     [knownDuration, localEngine, settings.localTranscriptionBenchmarks],
   );
+  const transcriptionCostEstimate = useMemo(
+    () => settings.transcriptionProvider === "local"
+      ? undefined
+      : estimateTranscriptionCost(
+          settings.transcriptionProvider,
+          settings.transcriptionModel,
+          knownDuration,
+        ),
+    [knownDuration, settings.transcriptionModel, settings.transcriptionProvider],
+  );
+  const formattedTranscriptionCost = transcriptionCostEstimate
+    ? formatTranscriptionCost(transcriptionCostEstimate)
+    : undefined;
   const current = audioUrl ? partOffset + playbackTime : elapsed;
   const registerDuration = useCallback(
     (element: HTMLAudioElement) => {
@@ -1367,7 +1384,7 @@ export function AudioPanel({
               </div>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
                 <div className="font-semibold">
-                  Whisper {settings.localTranscriptionModel ?? "base"}
+                  Ingen API-kostnad · Whisper {settings.localTranscriptionModel ?? "base"}
                 </div>
                 <div className="mt-1">
                   Ljudet lämnar aldrig datorn. Motorn använder
@@ -1378,6 +1395,7 @@ export function AudioPanel({
                       : " NVIDIA när stödet är installerat, annars CPU"}
                   .
                 </div>
+                {knownDuration > 0 && <div className="mt-1">Ljudlängd: {formatTime(knownDuration)}</div>}
                 {localInstalled === false && (
                   <Button
                     className="mt-3"
@@ -1401,6 +1419,24 @@ export function AudioPanel({
                 Ljudet skickas till providern som valts under Inställningar.
                 Nyckeln sparas bara om du väljer det nedan, i Windows Credential
                 Manager.
+              </div>
+              <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-3 text-xs leading-5 text-[var(--palette-text-muted)]">
+                <div className="font-semibold text-[var(--palette-text)]">Uppskattad API-kostnad</div>
+                {knownDuration > 0 ? (
+                  formattedTranscriptionCost ? (
+                    <p className="mt-1">
+                      Ljudlängd: {formatTime(knownDuration)} · ungefär {formattedTranscriptionCost}.
+                      Beloppet är en uppskattning och kan skilja från leverantörens fakturering.
+                    </p>
+                  ) : (
+                    <p className="mt-1">
+                      Ljudlängd: {formatTime(knownDuration)}. Lectio saknar prisuppgift för
+                      {" "}{settings.transcriptionProvider} / {settings.transcriptionModel}.
+                    </p>
+                  )
+                ) : (
+                  <p className="mt-1">Ljudlängden fastställs när ljudfilens metadata har lästs.</p>
+                )}
               </div>
               <div>
                 <Label>API-nyckel</Label>
