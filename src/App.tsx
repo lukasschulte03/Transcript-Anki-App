@@ -149,7 +149,7 @@ export default function App() {
   }, [selected?.type]);
   return (
     <TooltipProvider>
-      <div className="ui-app-bg flex h-screen min-h-[640px] w-screen flex-col overflow-hidden text-slate-900">
+      <div className="ui-app-bg flex h-full min-h-0 w-full flex-col overflow-hidden text-slate-900">
         <WindowTitleBar onReportProblem={() => { setFeedbackError(undefined); setFeedbackOpen(true); }} />
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <AppNavigation />
