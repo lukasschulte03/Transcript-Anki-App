@@ -19,6 +19,7 @@ import {
   downloadGoogleDriveInboxFile,
   listGoogleDriveInbox,
   markGoogleDriveInboxFilesImported,
+  moveGoogleDriveInboxFilesToMedia,
   type InboxAudioFile,
 } from "../../services/googleDriveInbox";
 
@@ -28,6 +29,16 @@ const formatSize = (bytes: number) => {
     ? `${(bytes / 1024 ** 3).toFixed(1)} GB`
     : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
 };
+
+async function contentHash(blob: Blob) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await blob.arrayBuffer(),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 function lecturePath(
   id: string,
@@ -135,6 +146,12 @@ export function DriveInbox() {
             ]
           : [];
       const parts: { assetId: string; name: string }[] = [];
+      const movedFiles: Array<{
+        id: string;
+        assetId: string;
+        contentHash: string;
+        originalName: string;
+      }> = [];
       for (const file of chosen) {
         const blob = await downloadGoogleDriveInboxFile(file);
         if (!(await confirmStorageForImport(blob, "ljudfilen")))
@@ -150,6 +167,12 @@ export function DriveInbox() {
           createdAt: new Date().toISOString(),
         });
         parts.push({ assetId, name: file.name });
+        movedFiles.push({
+          id: file.id,
+          assetId,
+          contentHash: await contentHash(blob),
+          originalName: file.name,
+        });
       }
       const audioParts = [...existingParts, ...parts];
       updateLecture(lectureId, {
@@ -157,6 +180,13 @@ export function DriveInbox() {
         audioName: audioParts[0]?.name,
         audioParts,
       });
+      try {
+        await moveGoogleDriveInboxFilesToMedia(movedFiles, lectureId);
+      } catch {
+        toast.warning(
+          "Ljudet importerades, men kunde inte flyttas till Lectio/media. Det kan synkas normalt senare.",
+        );
+      }
       await markGoogleDriveInboxFilesImported(
         chosen.map((file) => file.id),
         lectureId,
@@ -381,10 +411,9 @@ export function DriveInbox() {
             </div>
             <div className="mt-4 border-t border-[var(--palette-border)] pt-3 text-xs leading-5 text-[var(--palette-text-subtle)]">
               <FolderPlus className="mr-1 inline size-3.5" /> Efter import
-              kopplas ljudet direkt till föreläsningen. Originalfilen ligger
-              kvar i{" "}
+              kopplas ljudet direkt till föreläsningen och flyttas till{" "}
               <span className="font-medium text-[var(--palette-text-muted)]">
-                Inbox
+                Lectio/media
               </span>
               , men visas inte igen i Lectio.
             </div>

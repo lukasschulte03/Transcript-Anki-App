@@ -23,7 +23,8 @@ async function inboxFolders(token: string) {
     useAppStore.getState().settings.cloudSync.remotePath.trim() || "Lectio";
   const root = await ensurePath(rootPath, token);
   const inbox = await ensureFolder("Inbox", root, token);
-  return { inbox };
+  const media = await ensureFolder("media", root, token);
+  return { inbox, media };
 }
 
 /** Lists only the user-managed Lectio/Inbox folder, never the rest of Drive. */
@@ -67,7 +68,7 @@ export async function downloadGoogleDriveInboxFile(file: InboxAudioFile) {
   return response.blob();
 }
 
-/** Locally records a completed import; Drive files stay in the simple Inbox folder. */
+/** Locally records a completed import so retries never create duplicate assets. */
 export async function markGoogleDriveInboxFilesImported(
   fileIds: string[],
   lectureId: string,
@@ -78,5 +79,41 @@ export async function markGoogleDriveInboxFilesImported(
       lectureId,
       importedAt: new Date().toISOString(),
     })),
+  );
+}
+
+/** Move a source recording to the canonical, content-addressed media folder. */
+export async function moveGoogleDriveInboxFilesToMedia(
+  files: Array<{
+    id: string;
+    assetId: string;
+    contentHash: string;
+    originalName: string;
+  }>,
+  lectureId: string,
+) {
+  if (!files.length) return;
+  const token = await getGoogleDriveAccessToken();
+  const { inbox, media } = await inboxFolders(token);
+  await Promise.all(
+    files.map(({ id, assetId, contentHash, originalName }) =>
+      googleDriveRequest(
+        `${DRIVE_API}/files/${id}?addParents=${encodeURIComponent(media)}&removeParents=${encodeURIComponent(inbox)}&fields=id,name`,
+        token,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            name: contentHash,
+            appProperties: {
+              lectioAssetId: assetId,
+              lectioLectureId: lectureId,
+              lectioKind: "audio",
+              lectioOriginalName: originalName,
+            },
+          }),
+        },
+      ),
+    ),
   );
 }
