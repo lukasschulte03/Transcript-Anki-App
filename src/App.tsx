@@ -76,6 +76,11 @@ export default function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
   useEffect(() => {
+    void import("./services/batchActions").then(({ resumeBatchQueue }) =>
+      resumeBatchQueue(),
+    );
+  }, []);
+  useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
     );
