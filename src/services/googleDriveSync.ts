@@ -152,6 +152,32 @@ async function readManifest(token: string, metadataFolder: string) {
 const localLibraryIsEmpty = (snapshot: LibrarySnapshot, assets: StoredAsset[]) =>
   snapshot.nodes.length <= 1 && !Object.keys(snapshot.lectures).length && !assets.length;
 
+/**
+ * A restored local backup can legitimately be missing `lastSyncedAt`.  Do not
+ * mistake it for a different library merely because that bookkeeping value was
+ * lost: Lectio's object IDs are stable across backup/export restoration.
+ *
+ * The workspace node is deliberately excluded: every library has one, so it
+ * cannot prove that two libraries are related.
+ */
+export function isLikelySameGoogleDriveLibrary(
+  local: Pick<LibrarySnapshot, "nodes" | "lectures">,
+  remote: Pick<LibrarySnapshot, "nodes" | "lectures">,
+  localAssets: Array<Pick<StoredAsset, "id">>,
+  remoteAssets: Array<Pick<RemoteAsset, "id">>,
+) {
+  const remoteNodeIds = new Set(
+    remote.nodes.filter((node) => node.type !== "workspace").map((node) => node.id),
+  );
+  if (local.nodes.some((node) => node.type !== "workspace" && remoteNodeIds.has(node.id))) return true;
+
+  const remoteLectureIds = new Set(Object.keys(remote.lectures));
+  if (Object.keys(local.lectures).some((id) => remoteLectureIds.has(id))) return true;
+
+  const remoteAssetIds = new Set(remoteAssets.map((asset) => asset.id));
+  return localAssets.some((asset) => remoteAssetIds.has(asset.id));
+}
+
 async function downloadRemoteLibrary(token: string, remote: RemoteManifest) {
   const existingIds = new Set((await db.assets.toArray()).map((asset) => asset.id));
   for (const [index, asset] of remote.assets.entries()) {
@@ -200,6 +226,12 @@ export async function syncGoogleDrive() {
       settings: state.settings,
     };
     const existing = await readManifest(token, metadataFolder);
+    const isRecoveredCopy = existing && isLikelySameGoogleDriveLibrary(
+      snapshot,
+      existing.manifest.snapshot,
+      assets,
+      existing.manifest.assets,
+    );
     if (existing && localLibraryIsEmpty(snapshot, assets)) {
       syncJob({ phase: "downloading", current: 0, total: existing.manifest.assets.length, detail: "Hämtar bibliotek från Google Drive…" });
       await downloadRemoteLibrary(token, existing.manifest);
@@ -212,7 +244,7 @@ export async function syncGoogleDrive() {
     if (existing && state.settings.cloudSync.lastSyncedAt && existing.manifest.updatedAt > state.settings.cloudSync.lastSyncedAt) {
       throw new Error("Google Drive innehåller nyare ändringar från en annan dator. Konflikthantering krävs innan lokala ändringar kan skrivas över.");
     }
-    if (existing && !state.settings.cloudSync.lastSyncedAt && !localLibraryIsEmpty(snapshot, assets)) {
+    if (existing && !state.settings.cloudSync.lastSyncedAt && !localLibraryIsEmpty(snapshot, assets) && !isRecoveredCopy) {
       throw new Error("Målmappen innehåller redan ett Lectio-bibliotek. Välj en tom mapp eller hämta biblioteket på en tom Lectio-installation först.");
     }
     const remoteAssets: RemoteAsset[] = [];
