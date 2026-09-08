@@ -616,6 +616,74 @@ struct LocalModelStatus {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+struct LocalVisionStatus {
+    ollama_installed: bool,
+    model_installed: bool,
+}
+
+async fn local_vision_status_inner() -> LocalVisionStatus {
+    let output = Command::new("ollama").arg("list").output().await;
+    let Ok(output) = output else {
+        return LocalVisionStatus { ollama_installed: false, model_installed: false };
+    };
+    if !output.status.success() {
+        return LocalVisionStatus { ollama_installed: false, model_installed: false };
+    }
+    let installed = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_whitespace().next())
+        .any(|name| name.eq_ignore_ascii_case("moondream") || name.to_ascii_lowercase().starts_with("moondream:"));
+    LocalVisionStatus { ollama_installed: true, model_installed: installed }
+}
+
+#[tauri::command]
+async fn local_vision_status() -> Result<LocalVisionStatus, String> {
+    Ok(local_vision_status_inner().await)
+}
+
+/// Pulls only the selected local model through an already installed Ollama.
+/// No lecture files or credentials are included in this operation.
+#[tauri::command]
+async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus, String> {
+    let before = local_vision_status_inner().await;
+    if !before.ollama_installed {
+        return Err("Ollama är inte installerat. Installera Ollama först och försök igen.".into());
+    }
+    if before.model_installed {
+        return Ok(before);
+    }
+    let job_id = "download:local-vision:moondream";
+    emit_progress(
+        &app, job_id, "download", "Lokal bildbeskrivning", "downloading", "active", 0, None,
+        Some("Hämtar Moondream lokalt via Ollama…".into()),
+    );
+    let output = Command::new("ollama")
+        .args(["pull", "moondream"])
+        .output()
+        .await
+        .map_err(|error| format!("Kunde inte starta Ollama: {error}"))?;
+    if !output.status.success() {
+        let detail = process_output_excerpt(&output.stderr);
+        emit_progress(
+            &app, job_id, "download", "Lokal bildbeskrivning", "error", "error", 0, None,
+            Some(detail.clone()),
+        );
+        return Err(format!("Moondream kunde inte laddas ner: {detail}"));
+    }
+    let status = local_vision_status_inner().await;
+    if !status.model_installed {
+        return Err("Ollama slutförde hämtningen men modellen kunde inte verifieras.".into());
+    }
+    emit_progress(
+        &app, job_id, "download", "Lokal bildbeskrivning", "complete", "complete", 1, Some(1),
+        Some("Moondream är redo lokalt.".into()),
+    );
+    Ok(status)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalEngineStatus {
     cpu_threads: usize,
     nvidia_detected: bool,
@@ -1910,6 +1978,8 @@ pub fn run() {
             local_model_status,
             download_local_model,
             remove_local_model,
+            local_vision_status,
+            install_local_vision_model,
             open_anki_desktop,
             transcribe_local,
             prepare_api_audio,

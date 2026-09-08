@@ -17,6 +17,12 @@ const words = (value: string) =>
     .match(/[\p{L}\p{N}]{3,}/gu)
     ?.filter((word) => !stopWords.has(word)) ?? [];
 
+export const visualCandidateDescription = (candidate: VisualCandidate) =>
+  candidate.localVision?.description || candidate.description;
+
+export const visualCandidateKeywords = (candidate: VisualCandidate) =>
+  [...new Set([...candidate.keywords, ...(candidate.localVision?.keywords ?? [])])];
+
 const contentFingerprint = (value: string) => {
   let hash = 2166136261;
   for (const character of value) {
@@ -101,7 +107,7 @@ export function selectVisualCandidates(
   const matches = candidates
     .map((candidate) => ({
       candidate,
-      score: candidate.keywords.filter((keyword) => queryWords.has(keyword)).length,
+      score: visualCandidateKeywords(candidate).filter((keyword) => queryWords.has(keyword)).length,
     }))
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score || left.candidate.slidePage - right.candidate.slidePage)
@@ -114,7 +120,7 @@ export function visualPromptLines(candidates: VisualCandidate[]) {
   return candidates
     .map(
       (candidate) =>
-        `${candidate.id} | ${candidate.description.replace(/\s+/g, " ").slice(0, 150)}`,
+        `${candidate.id} | ${visualCandidateDescription(candidate).replace(/\s+/g, " ").slice(0, 150)}`,
     )
     .join("\n");
 }
@@ -220,6 +226,15 @@ async function renderVisualPng(
   } finally {
     await task.destroy();
   }
+}
+
+/** Returns a moderate local rendering suitable for a local vision runtime. */
+export async function resolveVisualDescriptionImage(
+  candidate: VisualCandidate,
+  lecture: LectureData | undefined,
+) {
+  if (!lecture) return undefined;
+  return renderVisualPng(lecture, candidate, 0.9);
 }
 
 /** Persisted local thumbnails keep module libraries responsive without syncing previews. */

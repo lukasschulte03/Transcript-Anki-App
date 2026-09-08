@@ -237,6 +237,7 @@ export const useAppStore = create<AppState>()(
         transcriptionModel: "whisper-1",
         transcriptionBaseUrl: "https://api.openai.com/v1",
         transcriptionPrompt: "",
+        localVisualDescriptions: "off",
         ankiUrl: "http://127.0.0.1:8765",
         defaultDeck: "Lectio",
         cloudSync: {
@@ -567,7 +568,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "lectio-state-v1",
-      version: 14,
+      version: 15,
       // Native operations cannot survive a process restart. In particular, an
       // interrupted Drive sync used to be rehydrated as an active job and
       // locked the entire UI even though no sync worker was running.
@@ -611,6 +612,8 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
+            localVisualDescriptions:
+              legacySettings.localVisualDescriptions === "local" ? "local" : "off",
             cloudSync: (() => {
               const legacyCloud = legacySettings.cloudSync as Partial<
                 AppSettings["cloudSync"]

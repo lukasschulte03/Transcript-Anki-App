@@ -76,6 +76,14 @@ export interface VisualCandidate {
   contentHash?: string;
   /** Separate local image extracted from a PPTX, when present. */
   assetId?: string;
+  /** Optional local vision result. The original text-derived description remains intact. */
+  localVision?: {
+    description: string;
+    keywords: string[];
+    model: string;
+    generatedAt: string;
+    sourceHash: string;
+  };
 }
 
 export interface LectureData {
@@ -183,6 +191,8 @@ export interface AppSettings {
   transcriptionModel: string;
   transcriptionBaseUrl: string;
   transcriptionPrompt: string;
+  /** Never enables network AI: this controls an optional local Ollama vision model. */
+  localVisualDescriptions: "off" | "local";
   ankiUrl: string;
   defaultDeck: string;
   cloudSync: CloudSyncConfiguration;
@@ -273,7 +283,7 @@ export interface RecordingChunk {
   blob: Blob;
 }
 
-export type BackgroundJobKind = "download" | "transcription" | "library";
+export type BackgroundJobKind = "download" | "transcription" | "library" | "vision";
 export type BackgroundJobStatus =
   "queued" | "active" | "complete" | "error" | "cancelled";
 

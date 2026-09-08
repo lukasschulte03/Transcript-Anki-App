@@ -65,6 +65,7 @@ import {
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import {
   moduleVisualCandidates,
+  visualCandidateDescription,
   selectVisualCandidates,
   visualPromptLines,
 } from "./visualIndex";
@@ -178,6 +179,25 @@ describe("PowerPoint-bilder", () => {
     expect(images[0]?.blob.type).toBe("image/png");
     expect(images[0]?.slidePage).toBe(1);
     expect(images[0]?.nearbyText).toContain("ST-höjning");
+  });
+});
+
+describe("lokal bildbeskrivning", () => {
+  it("föredrar cachead lokal vision utan att ändra kandidatens källa", () => {
+    expect(visualCandidateDescription({
+      id: "visual-1",
+      slidePage: 2,
+      description: "Slide 2: ursprunglig slide-text",
+      keywords: ["slide"],
+      sourceHash: "source",
+      localVision: {
+        description: "EKG med ST-höjning i främre avledningar",
+        keywords: ["ekg", "st-höjning"],
+        model: "moondream",
+        generatedAt: "2026-09-08T00:00:00.000Z",
+        sourceHash: "source",
+      },
+    })).toBe("EKG med ST-höjning i främre avledningar");
   });
 });
 

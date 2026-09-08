@@ -74,6 +74,7 @@ import {
   type LocalModelStatus,
 } from "../../services/localStt";
 import { aiModelSuggestions } from "../../services/ai";
+import { LocalVisionSettings } from "./LocalVisionSettings";
 
 const aiBaseUrls = {
   openai: "https://api.openai.com/v1",
@@ -842,6 +843,7 @@ export function SettingsView() {
                       </Button>
                     )}
                     <LocalAiStorageSummary />
+                    <LocalVisionSettings />
                   </div>
                 </div>
               </Section>

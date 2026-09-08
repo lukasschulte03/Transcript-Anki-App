@@ -10,6 +10,7 @@ import type {
 import { cancelDownload, cancelLocalTranscription } from "../services/localStt";
 import { isTauri } from "../services/platform";
 import { cancelActiveTranscription, cancelQueuedTranscription } from "../services/transcriptionQueue";
+import { cancelActiveVision, cancelQueuedVision } from "../services/visualDescriptionQueue";
 
 interface NativeProgressEvent {
   id: string;
@@ -67,6 +68,13 @@ function JobRow({ job }: { job: BackgroundJob }) {
         cancelActiveTranscription(job.id);
         await cancelLocalTranscription(job.id);
         upsertJob({ ...job, detail: "Avbryter transkriberingen…" });
+      } else if (job.kind === "vision" && queued) {
+        if (cancelQueuedVision(job.id)) {
+          upsertJob({ ...job, phase: "cancelled", status: "cancelled", detail: "Togs bort från kön." });
+        }
+      } else if (job.kind === "vision" && active) {
+        cancelActiveVision(job.id);
+        upsertJob({ ...job, detail: "Avbryter lokal bildbeskrivning…" });
       } else if (job.kind === "download") {
         await cancelDownload(job.id);
       }
@@ -112,12 +120,12 @@ function JobRow({ job }: { job: BackgroundJob }) {
           </div>
           <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">{detail}</p>
         </div>
-        {job.kind === "transcription" && (queued || active) || (active && job.kind === "download") ? (
+        {((job.kind === "transcription" || job.kind === "vision") && (queued || active)) || (active && job.kind === "download") ? (
           <button
             className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
             onClick={() => void cancel()}
-            aria-label={queued ? "Ta bort från transkriptionskön" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
-            title={queued ? "Ta bort från kön" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
+            aria-label={queued ? "Ta bort från kön" : job.kind === "vision" ? "Avbryt bildbeskrivning" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
+            title={queued ? "Ta bort från kön" : job.kind === "vision" ? "Avbryt bildbeskrivning" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
           >
             <X className="size-3.5" />
           </button>
