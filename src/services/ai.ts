@@ -161,28 +161,28 @@ export function cardPromptSummary(r: CardRequest) {
     sourceText,
   );
   const maximum = budgetTokens * 4;
-  const notes = withinBudget(r.notes, Math.floor(maximum * 0.11));
-  const slides = withinBudget(r.slideText, Math.floor(maximum * 0.23));
+  const notes = withinBudget(r.notes, Math.floor(maximum * 0.09));
+  const slides = withinBudget(r.slideText, Math.floor(maximum * 0.2));
   const transcript = withinBudget(
     transcriptTextForCardGeneration(r.transcript),
-    Math.floor(maximum * 0.34),
+    Math.floor(maximum * 0.3),
   );
-  const context = withinBudget(r.context, Math.floor(maximum * 0.16));
+  const context = withinBudget(r.context, Math.floor(maximum * 0.14));
   const markers = withinBudget(
     r.markers
       .map((marker) => marker.note.trim() || "Viktigt moment")
       .join("\n"),
-    Math.floor(maximum * 0.04),
+    Math.floor(maximum * 0.035),
   );
   const existing = withinBudget(
     relevantCards.map((card) => card.front).join("\n"),
-    Math.floor(maximum * 0.05),
+    Math.floor(maximum * 0.045),
   );
   // Visual candidates are only compact local descriptions. Still reserve a
   // bounded part of the prompt so the displayed token/cost estimate is honest.
   const visuals = withinBudget(
     visualPromptLines(r.visualCandidates ?? []),
-    Math.floor(maximum * 0.14),
+    Math.floor(maximum * 0.1),
   );
   const omitted = [
     notes,
