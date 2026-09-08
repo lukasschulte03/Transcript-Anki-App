@@ -14,18 +14,11 @@ import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import { LectureImportAssistant } from "../library/LectureImportAssistant";
 
 export function Dashboard() {
   const [importOpen, setImportOpen] = useState(false);
-  const { nodes, cards, lectures, selectNode, setActiveView } = useAppStore(useShallow((state) => ({
-    nodes: state.nodes,
-    cards: state.cards,
-    lectures: state.lectures,
-    selectNode: state.selectNode,
-    setActiveView: state.setActiveView,
-  })));
+  const { nodes, cards, lectures, selectNode, setActiveView } = useAppStore();
   const courseNodes = nodes.filter((node) => node.type === "course");
   const lectureNodes = nodes.filter((node) => node.type === "lecture");
   const recent = [...lectureNodes]

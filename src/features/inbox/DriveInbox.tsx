@@ -13,7 +13,6 @@ import { Button } from "../../components/ui/Button";
 import { Input, Label, Select } from "../../components/ui/Form";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import { confirmStorageForImport, cn, uid } from "../../lib/utils";
 import { toast } from "../../services/feedbackToast";
 import {
@@ -67,15 +66,7 @@ export function DriveInbox() {
     updateLecture,
     selectNode,
     setActiveView,
-  } = useAppStore(useShallow((state) => ({
-    nodes: state.nodes,
-    lectures: state.lectures,
-    settings: state.settings,
-    addNode: state.addNode,
-    updateLecture: state.updateLecture,
-    selectNode: state.selectNode,
-    setActiveView: state.setActiveView,
-  })));
+  } = useAppStore();
   const [files, setFiles] = useState<InboxAudioFile[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);

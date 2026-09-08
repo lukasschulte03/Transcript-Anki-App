@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock3, LoaderCircle, RotateCcw, Trash2, Wand2, X } from "lucide-react";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import type { LibraryNode } from "../../core/types";
 import { Button } from "../../components/ui/Button";
 import { cn } from "../../lib/utils";
@@ -33,16 +32,7 @@ function StatusIcon({ job }: { job: BatchJob }) {
 }
 
 export function SuperActions() {
-  const store = useAppStore(useShallow((state) => ({
-    nodes: state.nodes,
-    lectures: state.lectures,
-    segments: state.segments,
-    cards: state.cards,
-    pendingAnkiDeletions: state.pendingAnkiDeletions,
-    settings: state.settings,
-    selectNode: state.selectNode,
-    setActiveView: state.setActiveView,
-  })));
+  const store = useAppStore();
   const { nodes, lectures, segments, cards, pendingAnkiDeletions, settings, selectNode, setActiveView } = store;
   const jobs = useSyncExternalStore(subscribeBatchJobs, getBatchJobs, getBatchJobs);
   const [action, setAction] = useState<BatchAction>("transcribe");

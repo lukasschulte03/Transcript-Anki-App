@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { EyeOff, Image, RotateCcw, Trash2, WandSparkles } from "lucide-react";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/ui/Button";
 import {
   moduleVisualCandidates,
@@ -15,13 +14,7 @@ import { uid } from "../../lib/utils";
 import { toast } from "../../services/feedbackToast";
 
 export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
-  const { nodes, lectures, cards, settings, updateLecture } = useAppStore(useShallow((state) => ({
-    nodes: state.nodes,
-    lectures: state.lectures,
-    cards: state.cards,
-    settings: state.settings,
-    updateLecture: state.updateLecture,
-  })));
+  const { nodes, lectures, cards, settings, updateLecture } = useAppStore();
   const [showHidden, setShowHidden] = useState(false);
   const candidates = useMemo(
     () => moduleVisualCandidates(nodes, lectures, moduleId, { includeHidden: showHidden }),

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import { DownloadCloud, Image, LoaderCircle, Sparkles } from "lucide-react";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/ui/Button";
 import { toast } from "../../services/feedbackToast";
 import { openExternal } from "../../services/platform";
@@ -13,10 +12,7 @@ import {
 
 /** A deliberately small control surface: local is opt-in; cloud is only a roadmap cue. */
 export function LocalVisionSettings() {
-  const { settings, updateSettings } = useAppStore(useShallow((state) => ({
-    settings: state.settings,
-    updateSettings: state.updateSettings,
-  })));
+  const { settings, updateSettings } = useAppStore();
   const [status, setStatus] = useState<LocalVisionStatus>();
   const [working, setWorking] = useState(false);
   const refresh = () => void getLocalVisionStatus().then(setStatus).catch(() => setStatus(undefined));

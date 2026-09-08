@@ -14,7 +14,6 @@ import { Button } from "../../components/ui/Button";
 import { Input, Label, Select } from "../../components/ui/Form";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
-import { useShallow } from "zustand/react/shallow";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { buildPptxVisualIndex, buildVisualIndex } from "../../services/visualIndex";
@@ -42,15 +41,7 @@ export function LectureImportAssistant({
   onOpenChange: (open: boolean) => void;
 }) {
   const { nodes, lectures, addNode, updateLecture, selectNode, setActiveView, upsertJob } =
-    useAppStore(useShallow((state) => ({
-      nodes: state.nodes,
-      lectures: state.lectures,
-      addNode: state.addNode,
-      updateLecture: state.updateLecture,
-      selectNode: state.selectNode,
-      setActiveView: state.setActiveView,
-      upsertJob: state.upsertJob,
-    })));
+    useAppStore();
   const lectureNodes = nodes.filter((node) => node.type === "lecture");
   const modules = nodes.filter((node) => node.type === "module");
   const [targetId, setTargetId] = useState(lectureNodes[0]?.id ?? "new");
