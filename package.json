@@ -9,6 +9,7 @@
     "lint": "oxlint",
     "test": "vitest run src",
     "test:e2e": "playwright test",
+    "graph:refresh": "graphify . --update --code-only --no-viz",
     "check": "pnpm lint && pnpm test && pnpm build",
     "preview": "vite preview",
     "tauri": "tauri",
