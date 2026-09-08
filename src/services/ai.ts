@@ -8,7 +8,10 @@ import type {
 } from "../core/types";
 import { netFetch } from "./platform";
 
-export const aiModelSuggestions: Record<AppSettings["aiProvider"], readonly string[]> = {
+export const aiModelSuggestions: Record<
+  AppSettings["aiProvider"],
+  readonly string[]
+> = {
   openai: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
   anthropic: ["claude-sonnet-4-5", "claude-haiku-4-5"],
   gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
@@ -33,9 +36,11 @@ async function providerError(response: Response) {
 
 function apiBaseUrl(settings: AppSettings) {
   const configured = settings.aiBaseUrl.trim().replace(/\/+$/, "");
-  if (!settings.aiModel.trim()) throw new Error("Välj eller skriv ett modellnamn innan du genererar.");
+  if (!settings.aiModel.trim())
+    throw new Error("Välj eller skriv ett modellnamn innan du genererar.");
   if (settings.aiProvider === "custom") {
-    if (!configured) throw new Error("Ange en bas-URL för den OpenAI-kompatibla tjänsten.");
+    if (!configured)
+      throw new Error("Ange en bas-URL för den OpenAI-kompatibla tjänsten.");
     try {
       new URL(configured);
     } catch {
@@ -69,6 +74,8 @@ export interface CardRequest {
   cardStyle?: string;
   /** Compact course-level reference to prevent near-duplicate cards. */
   existingCards?: Array<Pick<Flashcard, "front" | "back">>;
+  /** A hard, approximate input ceiling. The default fits inexpensive models. */
+  contextBudget?: number;
 }
 
 /** Audio positions remain in Lectio for playback, but do not help AI card generation. */
@@ -83,32 +90,135 @@ export function transcriptTextForCardGeneration(segments: TranscriptSegment[]) {
 const CARD_PROMPT_VERSION = "1";
 const cardTypeInstructions: Record<CardType, string> = {
   basic: "basic: en tydlig fråga och ett kort, exakt svar.",
-  cloze: "cloze: front måste innehålla minst en giltig {{c1::...}}-markering; back förklarar kort.",
-  concept: "concept: testa ett samband, en mekanism eller orsak–verkan med kort förklaring.",
-  definition: "definition: testa en terms betydelse med tillräckligt sammanhang.",
-  problem: "problem: testa en konkret tillämpning, beräkning eller ett beslut från underlaget.",
+  cloze:
+    "cloze: front måste innehålla minst en giltig {{c1::...}}-markering; back förklarar kort.",
+  concept:
+    "concept: testa ett samband, en mekanism eller orsak–verkan med kort förklaring.",
+  definition:
+    "definition: testa en terms betydelse med tillräckligt sammanhang.",
+  problem:
+    "problem: testa en konkret tillämpning, beräkning eller ett beslut från underlaget.",
 };
+
+const terms = (value: string) =>
+  new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+
+/** Pick only locally relevant cards. Full course history does not belong in every prompt. */
+export function selectRelevantExistingCards(
+  cards: Array<Pick<Flashcard, "front" | "back">>,
+  query: string,
+  limit = 12,
+) {
+  const queryTerms = terms(query);
+  return cards
+    .map((card) => {
+      const cardTerms = terms(`${card.front}\n${card.back}`);
+      const overlap = [...queryTerms].filter((term) =>
+        cardTerms.has(term),
+      ).length;
+      return {
+        card,
+        score: overlap / Math.max(cardTerms.size, 1) + overlap * 0.1,
+      };
+    })
+    .filter(({ score }) => score > 0)
+    .sort(
+      (left, right) =>
+        right.score - left.score ||
+        left.card.front.localeCompare(right.card.front, "sv"),
+    )
+    .slice(0, limit)
+    .map(({ card }) => card);
+}
+
+function withinBudget(value: string, maxCharacters: number) {
+  const normalized = value.trim();
+  if (normalized.length <= maxCharacters)
+    return { text: normalized, omitted: false };
+  const boundary = normalized.lastIndexOf(" ", Math.max(0, maxCharacters - 1));
+  return {
+    text: `${normalized.slice(0, boundary > 0 ? boundary : maxCharacters).trim()}\n[Förkortat för att hålla prompten inom budget]`,
+    omitted: true,
+  };
+}
+
+export function cardPromptSummary(r: CardRequest) {
+  const budgetTokens = r.contextBudget ?? 24_000;
+  const sourceText = [
+    r.title,
+    r.notes,
+    r.slideText,
+    transcriptTextForCardGeneration(r.transcript),
+    r.context,
+  ].join("\n");
+  const relevantCards = selectRelevantExistingCards(
+    r.existingCards ?? [],
+    sourceText,
+  );
+  const maximum = budgetTokens * 4;
+  const notes = withinBudget(r.notes, Math.floor(maximum * 0.11));
+  const slides = withinBudget(r.slideText, Math.floor(maximum * 0.23));
+  const transcript = withinBudget(
+    transcriptTextForCardGeneration(r.transcript),
+    Math.floor(maximum * 0.34),
+  );
+  const context = withinBudget(r.context, Math.floor(maximum * 0.16));
+  const markers = withinBudget(
+    r.markers
+      .map((marker) => marker.note.trim() || "Viktigt moment")
+      .join("\n"),
+    Math.floor(maximum * 0.04),
+  );
+  const existing = withinBudget(
+    relevantCards.map((card) => card.front).join("\n"),
+    Math.floor(maximum * 0.05),
+  );
+  const omitted = [
+    notes,
+    slides,
+    transcript,
+    context,
+    markers,
+    existing,
+  ].filter((item) => item.omitted).length;
+  return {
+    budgetTokens,
+    notes: notes.text,
+    slides: slides.text,
+    transcript: transcript.text,
+    context: context.text,
+    markers: markers.text,
+    existing: existing.text,
+    relevantCardCount: relevantCards.length,
+    omitted,
+    estimatedTokens: Math.ceil(
+      (notes.text.length +
+        slides.text.length +
+        transcript.text.length +
+        context.text.length +
+        markers.text.length +
+        existing.text.length) /
+        4,
+    ),
+  };
+}
 
 export function createCardPrompt(r: CardRequest) {
   const extraRules = [
     ...r.preferences.map((preference) => `- ${preference}`),
     ...(r.cardStyle ? [`- Följ denna lokala kortstil: ${r.cardStyle}`] : []),
   ].join("\n");
-  const existingCards = (r.existingCards ?? [])
-    .slice(0, 80)
-    .map((card, index) => `${index + 1}. Fråga: ${card.front}\n   Svar: ${card.back}`)
-    .join("\n");
+  const summary = cardPromptSummary(r);
   const densityInstruction = {
     few: "Var mycket selektiv och välj endast de mest centrala, examinationsrelevanta koncepten.",
-    balanced: "Täck de tydliga, separata koncept som behöver repeteras utan att överlappa.",
+    balanced:
+      "Täck de tydliga, separata koncept som behöver repeteras utan att överlappa.",
     many: "Täck materialet brett när det finns många tydliga koncept, men undvik ändå variationer av samma kort.",
   }[r.density ?? "balanced"];
-  const markerText = r.markers
-    .map((marker) => marker.note.trim() || "Viktigt moment")
-    .join("\n");
-  const transcriptText = transcriptTextForCardGeneration(r.transcript);
-  const allowedTypes = r.types.map((type) => cardTypeInstructions[type]).join("\n- ");
-  return `Skapa Anki-kort på svenska. Promptversion: ${CARD_PROMPT_VERSION}.
+  const allowedTypes = r.types
+    .map((type) => cardTypeInstructions[type])
+    .join("\n- ");
+  const prompt = `Skapa Anki-kort på svenska. Promptversion: ${CARD_PROMPT_VERSION}.
 
 UPPDRAG
 - Repetitionsnivå: ${r.density === "few" ? "Få" : r.density === "many" ? "Många" : "Lagom"}. ${densityInstruction}
@@ -132,23 +242,24 @@ FÖRELÄSNING: ${r.title}
 KÄLLTÄCKNING:
 ${r.sourceStatus || "Använd endast de källor som har inkluderats nedan."}
 
-BEFINTLIGA KORT I KURSEN (undvik att upprepa dem):
-${existingCards || "(inga)"}
+NÄRLIGGANDE BEFINTLIGA KORT (undvik att upprepa dem):
+${summary.existing || "(inga relevanta)"}
 
 ÄRVD KONTEXT:
-${r.context || "(ingen)"}
+${summary.context || "(ingen)"}
 
 ANTECKNINGAR:
-${r.notes || "(inga)"}
+${summary.notes || "(inga)"}
 
 MARKERADE MOMENT:
-${markerText || "(inga)"}
+${summary.markers || "(inga)"}
 
 TEXT FRÅN SLIDES:
-${r.slideText || "(ingen slide-text)"}
+${summary.slides || "(ingen slide-text)"}
 
 TRANSKRIPT:
-${transcriptText || "(inget transcript)"}`;
+${summary.transcript || "(inget transcript)"}`;
+  return withinBudget(prompt, (r.contextBudget ?? 24_000) * 4).text;
 }
 
 export function parseCardResponse(
@@ -176,20 +287,31 @@ export function parseCardResponse(
   }));
 }
 
-export function likelyDuplicate(front: string, candidates: Array<{ id?: string; front: string }>) {
-  const terms = (value: string) => new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
+export function likelyDuplicate(
+  front: string,
+  candidates: Array<{ id?: string; front: string }>,
+) {
+  const terms = (value: string) =>
+    new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
   const query = terms(front);
   return candidates.find((candidate) => {
     const other = terms(candidate.front);
     const overlap = [...query].filter((term) => other.has(term)).length;
-    return overlap >= 3 && overlap / Math.max(query.size, other.size, 1) >= 0.55;
+    return (
+      overlap >= 3 && overlap / Math.max(query.size, other.size, 1) >= 0.55
+    );
   });
 }
 
-export function duplicateExplanation(front: string, candidate: { front: string }) {
+export function duplicateExplanation(
+  front: string,
+  candidate: { front: string },
+) {
   const terms = (value: string) =>
     new Set(value.toLocaleLowerCase("sv").match(/[\p{L}\p{N}]{3,}/gu) ?? []);
-  const matching = [...terms(front)].filter((term) => terms(candidate.front).has(term));
+  const matching = [...terms(front)].filter((term) =>
+    terms(candidate.front).has(term),
+  );
   return matching.slice(0, 4).join(", ");
 }
 

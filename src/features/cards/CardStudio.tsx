@@ -24,6 +24,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import {
   createCardPrompt,
+  cardPromptSummary,
   duplicateExplanation,
   generateCardsWithApi,
   parseCardResponse,
@@ -133,7 +134,9 @@ export function CardStudio() {
     selectedNode?.type === "lecture" && scopedLectureIds.has(selectedNode.id)
       ? selectedNode.id
       : (scopedLectures[0]?.id ?? "");
-  const [density, setDensity] = useState<"few" | "balanced" | "many">("balanced");
+  const [density, setDensity] = useState<"few" | "balanced" | "many">(
+    "balanced",
+  );
   const [types, setTypes] = useState<CardType[]>(["basic", "concept"]);
   const [sources, setSources] = useState({
     transcript: true,
@@ -183,29 +186,35 @@ export function CardStudio() {
   );
   const courseCards = useMemo(
     () =>
-      cards.filter(
-        (card) =>
-          courseId
-            ? courseIdForLecture(nodes, card.lectureId) === courseId
-            : card.lectureId === lectureId,
+      cards.filter((card) =>
+        courseId
+          ? courseIdForLecture(nodes, card.lectureId) === courseId
+          : card.lectureId === lectureId,
       ),
     [cards, courseId, lectureId, nodes],
   );
   const currentDeck = lectureDeckName(nodes, lectureId, settings.defaultDeck);
-  const pendingSyncCount = cards.filter(
-    (card) =>
-      card.lectureId === lectureId &&
-      (card.ankiSyncError ||
-        ((card.status === "approved" || card.status === "synced") &&
-          needsAnkiSync(card, currentDeck))),
-  ).length +
+  const pendingSyncCount =
+    cards.filter(
+      (card) =>
+        card.lectureId === lectureId &&
+        (card.ankiSyncError ||
+          ((card.status === "approved" || card.status === "synced") &&
+            needsAnkiSync(card, currentDeck))),
+    ).length +
     pendingAnkiDeletions.filter((pending) => pending.lectureId === lectureId)
       .length;
   const syncStatuses = useMemo(
     () =>
       scopedLectures.map((lectureNode) => {
-        const deck = lectureDeckName(nodes, lectureNode.id, settings.defaultDeck);
-        const lectureCards = cards.filter((card) => card.lectureId === lectureNode.id);
+        const deck = lectureDeckName(
+          nodes,
+          lectureNode.id,
+          settings.defaultDeck,
+        );
+        const lectureCards = cards.filter(
+          (card) => card.lectureId === lectureNode.id,
+        );
         const pendingCards = lectureCards.filter(
           (card) =>
             card.ankiSyncError ||
@@ -224,7 +233,10 @@ export function CardStudio() {
             })),
           ...pendingDeletions
             .filter((deletion) => deletion.error)
-            .map((deletion) => ({ message: deletion.error!, at: deletion.updatedAt ?? "" })),
+            .map((deletion) => ({
+              message: deletion.error!,
+              at: deletion.updatedAt ?? "",
+            })),
         ].sort((left, right) => right.at.localeCompare(left.at));
         return {
           lecture: lectureNode,
@@ -233,7 +245,14 @@ export function CardStudio() {
           lastError: errors[0],
         };
       }),
-    [cards, lectures, nodes, pendingAnkiDeletions, scopedLectures, settings.defaultDeck],
+    [
+      cards,
+      lectures,
+      nodes,
+      pendingAnkiDeletions,
+      scopedLectures,
+      settings.defaultDeck,
+    ],
   );
   const contextNodeIds = useMemo(() => {
     const chain: string[] = [];
@@ -254,6 +273,15 @@ export function CardStudio() {
   const [excludedContextFileIds, setExcludedContextFileIds] = useState<
     string[]
   >([]);
+  const [contextLevels, setContextLevels] = useState<
+    Record<"global" | "course" | "module" | "topic" | "lecture", boolean>
+  >({
+    global: true,
+    course: true,
+    module: true,
+    topic: true,
+    lecture: true,
+  });
   const inheritedSettings = useMemo(() => {
     const chain = [];
     let current = nodes.find((item) => item.id === lectureId);
@@ -276,12 +304,14 @@ export function CardStudio() {
     (card) => card.lectureId === lectureId && card.status === "generated",
   );
   const scopedGeneratedCards = cards.filter(
-    (card) => scopedLectureIds.has(card.lectureId) && card.status === "generated",
+    (card) =>
+      scopedLectureIds.has(card.lectureId) && card.status === "generated",
   );
   const approvedCards = cards.filter(
     (card) => card.lectureId === lectureId && card.status === "approved",
   );
-  const isBulkScope = selectedNode?.type === "course" || selectedNode?.type === "module";
+  const isBulkScope =
+    selectedNode?.type === "course" || selectedNode?.type === "module";
   const approveAllGenerated = () => {
     if (!generatedCards.length) return;
     generatedCards.forEach((card) =>
@@ -292,9 +322,18 @@ export function CardStudio() {
   const approveAllScopedGenerated = () => {
     if (!scopedGeneratedCards.length) return;
     const scopeLabel = selectedNode?.type === "course" ? "kursen" : "modulen";
-    if (!confirm(`Godkänn ${scopedGeneratedCards.length} nya kort i ${scopeLabel}?`)) return;
-    scopedGeneratedCards.forEach((card) => updateCard(card.id, { status: "approved" }));
-    toast.success(`${scopedGeneratedCards.length} kort godkändes i ${scopeLabel}`);
+    if (
+      !confirm(
+        `Godkänn ${scopedGeneratedCards.length} nya kort i ${scopeLabel}?`,
+      )
+    )
+      return;
+    scopedGeneratedCards.forEach((card) =>
+      updateCard(card.id, { status: "approved" }),
+    );
+    toast.success(
+      `${scopedGeneratedCards.length} kort godkändes i ${scopeLabel}`,
+    );
   };
   const syncScopedWithPreview = () => {
     const scopeLabel = selectedNode?.type === "course" ? "kursen" : "modulen";
@@ -347,15 +386,23 @@ export function CardStudio() {
   const contextPreview = useMemo(
     () => [
       ...(settings.userContext.trim()
-        ? [{ title: "Global Anki-context", context: settings.userContext }]
+        ? [
+            {
+              title: "Global Anki-context",
+              context: settings.userContext,
+              type: "global" as const,
+            },
+          ]
         : []),
-      ...inheritedContext(lectureId).map(({ title, context }) => ({
+      ...inheritedContext(lectureId).map(({ title, context, type }) => ({
         title,
         context,
+        type,
       })),
       ...includedContextFiles.map((file) => ({
         title: `${nodes.find((item) => item.id === file.nodeId)?.title ?? "Context"} · ${file.name}`,
         context: file.extractedText?.trim() ?? "",
+        type: nodes.find((item) => item.id === file.nodeId)?.type ?? "lecture",
       })),
     ],
     [
@@ -369,9 +416,14 @@ export function CardStudio() {
   const contextTokenEstimate = Math.ceil(
     contextPreview.reduce((total, item) => total + item.context.length, 0) / 4,
   );
+  const selectedContextPreview = contextPreview.filter(
+    (item) => contextLevels[item.type as keyof typeof contextLevels],
+  );
   const cardLimit = density === "few" ? 16 : density === "balanced" ? 36 : 64;
   const sourceStatus = useMemo(() => {
-    const lectureTranscript = segments.filter((segment) => segment.lectureId === lectureId);
+    const lectureTranscript = segments.filter(
+      (segment) => segment.lectureId === lectureId,
+    );
     const transcriptEnd = lectureTranscript.reduce(
       (latest, segment) => Math.max(latest, segment.end),
       0,
@@ -383,7 +435,7 @@ export function CardStudio() {
         ? "Transkript: inget tillgängligt; använd övriga valda källor självständigt."
         : audioDuration > 0 && transcriptEnd < audioDuration * 0.98
           ? `Transkript: delvis, täcker ungefär ${Math.floor(transcriptEnd / 60)} av ${Math.ceil(audioDuration / 60)} minuter.`
-          : "Transkript: valt underlag."
+          : "Transkript: valt underlag.";
     return [
       transcriptCoverage,
       sources.slides
@@ -396,11 +448,16 @@ export function CardStudio() {
           ? "Anteckningar: valt underlag."
           : "Anteckningar: valda, men tomma."
         : "Anteckningar: inte valda.",
-      sources.context
-        ? "Context: valt underlag."
-        : "Context: inte valt.",
+      sources.context ? "Context: valt underlag." : "Context: inte valt.",
     ].join("\n");
-  }, [lecture?.audioDuration, lecture?.notes, lecture?.slideText, lectureId, segments, sources]);
+  }, [
+    lecture?.audioDuration,
+    lecture?.notes,
+    lecture?.slideText,
+    lectureId,
+    segments,
+    sources,
+  ]);
   const prompt = useMemo(
     () =>
       node
@@ -408,7 +465,7 @@ export function CardStudio() {
             lectureId,
             title: node.title,
             context: sources.context
-              ? contextPreview
+              ? selectedContextPreview
                   .map((item) => `${item.title}: ${item.context}`)
                   .join("\n\n")
               : "",
@@ -426,7 +483,10 @@ export function CardStudio() {
             types,
             preferences,
             cardStyle: inheritedSettings.cardStyle,
-            existingCards: courseCards.map(({ front, back }) => ({ front, back })),
+            existingCards: courseCards.map(({ front, back }) => ({
+              front,
+              back,
+            })),
           })
         : "",
     [
@@ -438,7 +498,7 @@ export function CardStudio() {
       markers,
       density,
       types,
-      contextPreview,
+      selectedContextPreview,
       sources,
       preferences,
       inheritedSettings.cardStyle,
@@ -447,12 +507,56 @@ export function CardStudio() {
       sourceStatus,
     ],
   );
+  const promptBudget = useMemo(
+    () =>
+      cardPromptSummary({
+        lectureId,
+        title: node?.title ?? "",
+        context: sources.context
+          ? selectedContextPreview
+              .map((item) => `${item.title}: ${item.context}`)
+              .join("\n\n")
+          : "",
+        sourceStatus,
+        notes: sources.notes ? (lecture?.notes ?? "") : "",
+        transcript: sources.transcript
+          ? segments.filter((item) => item.lectureId === lectureId)
+          : [],
+        markers: sources.markers
+          ? markers.filter((item) => item.lectureId === lectureId)
+          : [],
+        slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+        density,
+        count: cardLimit,
+        types,
+        preferences,
+        existingCards: courseCards.map(({ front, back }) => ({ front, back })),
+      }),
+    [
+      cardLimit,
+      courseCards,
+      density,
+      lecture?.notes,
+      lecture?.slideText,
+      lectureId,
+      markers,
+      node?.title,
+      preferences,
+      segments,
+      selectedContextPreview,
+      sourceStatus,
+      sources,
+      types,
+    ],
+  );
   const importResponse = () => {
     try {
       const parsed = parseCardResponse(response, lectureId).slice(0, cardLimit);
       const identity = (front: string, back: string) =>
         `${front}\u0000${back}`.replace(/\s+/g, " ").trim().toLocaleLowerCase();
-      const known = new Set(courseCards.map((card) => identity(card.front, card.back)));
+      const known = new Set(
+        courseCards.map((card) => identity(card.front, card.back)),
+      );
       const unique = parsed.filter((card) => {
         const key = identity(card.front, card.back);
         if (known.has(key)) return false;
@@ -465,11 +569,16 @@ export function CardStudio() {
       }
       const addedIds = addCards(unique);
       unique.forEach((card, index) => {
-        const earlierImported = unique.slice(0, index).map((candidate, candidateIndex) => ({
-          ...candidate,
-          id: addedIds[candidateIndex],
-        }));
-        const similar = likelyDuplicate(card.front, [...courseCards, ...earlierImported]);
+        const earlierImported = unique
+          .slice(0, index)
+          .map((candidate, candidateIndex) => ({
+            ...candidate,
+            id: addedIds[candidateIndex],
+          }));
+        const similar = likelyDuplicate(card.front, [
+          ...courseCards,
+          ...earlierImported,
+        ]);
         if (!similar) return;
         const terms = duplicateExplanation(card.front, similar);
         updateCard(addedIds[index], {
@@ -490,6 +599,13 @@ export function CardStudio() {
   const copyPrompt = async () => {
     await navigator.clipboard.writeText(prompt);
     toast.success("Prompten kopierades");
+  };
+  const copyPromptAndOpen = async (url: string, service: string) => {
+    await copyPrompt();
+    await openExternal(url);
+    toast.message(
+      `Prompten är kopierad. Klistra in den i ${service} och kopiera sedan svaret.`,
+    );
   };
   const generateApi = async () => {
     if (!apiKey) {
@@ -548,7 +664,8 @@ export function CardStudio() {
           resolveAnkiNoteDeletion(deletion.ankiId);
           deleted++;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           markAnkiNoteDeletionError(deletion.ankiId, message);
           if (!deletionFailure) deletionFailure = message;
         }
@@ -557,12 +674,20 @@ export function CardStudio() {
       const deckFor = async (id: string) => {
         const known = decks.get(id);
         if (known) return known;
-        const deck = await ensureDeck(settings.ankiUrl, lectureDeckName(nodes, id, settings.defaultDeck));
+        const deck = await ensureDeck(
+          settings.ankiUrl,
+          lectureDeckName(nodes, id, settings.defaultDeck),
+        );
         decks.set(id, deck);
         return deck;
       };
-      const cardsToSync = eligibleCards.filter((card) =>
-        card.status === "approved" || card.ankiSyncError || !card.ankiId || card.ankiDeck !== lectureDeckName(nodes, card.lectureId, settings.defaultDeck),
+      const cardsToSync = eligibleCards.filter(
+        (card) =>
+          card.status === "approved" ||
+          card.ankiSyncError ||
+          !card.ankiId ||
+          card.ankiDeck !==
+            lectureDeckName(nodes, card.lectureId, settings.defaultDeck),
       );
       let done = 0;
       const failed: string[] = [];
@@ -570,7 +695,8 @@ export function CardStudio() {
       for (const card of cardsToSync) {
         try {
           const deck = await deckFor(card.lectureId);
-          if (onlyPending && !needsAnkiSync(card, deck) && !card.ankiSyncError) continue;
+          if (onlyPending && !needsAnkiSync(card, deck) && !card.ankiSyncError)
+            continue;
           const tags = [...new Set(withoutStructuralTags(card.tags))];
           const id = await syncCard(settings.ankiUrl, deck, { ...card, tags });
           updateCard(card.id, {
@@ -584,7 +710,8 @@ export function CardStudio() {
           });
           done++;
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message =
+            error instanceof Error ? error.message : String(error);
           updateCard(card.id, {
             ankiSyncError: message,
             ankiSyncErrorAt: new Date().toISOString(),
@@ -597,7 +724,10 @@ export function CardStudio() {
       }
       if (done || deleted)
         toast.success(
-          [done ? `${done} kort synkades` : "", deleted ? `${deleted} kort togs bort` : ""]
+          [
+            done ? `${done} kort synkades` : "",
+            deleted ? `${deleted} kort togs bort` : "",
+          ]
             .filter(Boolean)
             .join(" · ") + " i Anki",
         );
@@ -608,9 +738,13 @@ export function CardStudio() {
           `${failed.length} kort kunde inte synkas${firstFailure ? `: ${firstFailure}` : "."}`,
         );
       if (deletionFailure)
-        toast.error(`Ett borttaget kort kunde inte tas bort i Anki: ${deletionFailure}`);
+        toast.error(
+          `Ett borttaget kort kunde inte tas bort i Anki: ${deletionFailure}`,
+        );
       if (done || deleted)
-        targetLectureIds.forEach((id) => updateLecture(id, { ankiLastSyncedAt: new Date().toISOString() }));
+        targetLectureIds.forEach((id) =>
+          updateLecture(id, { ankiLastSyncedAt: new Date().toISOString() }),
+        );
     } catch {
       setAnkiHelpOpen(true);
     } finally {
@@ -621,8 +755,13 @@ export function CardStudio() {
     try {
       const text = await navigator.clipboard.readText();
       if (!text.trim()) throw new Error("Urklippet är tomt");
+      const detected = parseCardResponse(text, lectureId);
+      if (!detected.length)
+        throw new Error("Inga Anki-kort hittades i urklippet");
       setResponse(text);
-      toast.success("AI-svaret hämtades från urklippet");
+      toast.success(
+        `${detected.length} kort hittades i urklippet och är redo att importeras`,
+      );
     } catch (error) {
       toast.error(`Kunde inte läsa urklippet: ${String(error)}`);
     }
@@ -665,11 +804,20 @@ export function CardStudio() {
         </div>
         <div className="flex items-center gap-2">
           {pendingSyncCount > 0 && (
-            <Button variant="outline" size="sm" onClick={() => void syncApproved(true)} disabled={busy}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void syncApproved(true)}
+              disabled={busy}
+            >
               Försök igen ({pendingSyncCount})
             </Button>
           )}
-          <Button variant="secondary" onClick={() => void syncApproved()} disabled={busy}>
+          <Button
+            variant="secondary"
+            onClick={() => void syncApproved()}
+            disabled={busy}
+          >
             <Send className="size-4" /> Synka godkända
           </Button>
         </div>
@@ -682,169 +830,234 @@ export function CardStudio() {
           <div className="mt-5">
             <Label>Hur omfattande ska repetitionen vara?</Label>
             <div className="mt-2 grid grid-cols-3 gap-1 rounded-lg border border-border bg-muted p-1">
-              {([['few', 'Få'], ['balanced', 'Lagom'], ['many', 'Många']] as const).map(([value, label]) => (
-                <button key={value} onClick={() => setDensity(value)} className={`rounded-md px-2 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${density === value ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{label}</button>
-              ))}
-            </div>
-            <p className="mt-2 text-xs leading-5 text-muted-foreground">AI:n avgör hur många kort materialet motiverar och undviker utfyllnad.</p>
-          </div>
-          <details className="mt-5 rounded-lg border border-border bg-card px-3 py-2">
-            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Avancerat: korttyper, källor och kvalitetsval</summary>
-            <div className="pt-1">
-          <div className="mt-6">
-            <Label>Korttyper</Label>
-            <div className="space-y-2">
-              {cardTypes.map((t) => (
-                <label
-                  key={t.id}
-                  className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-700"
-                >
-                  <input
-                    type="checkbox"
-                    checked={types.includes(t.id)}
-                    onChange={() =>
-                      setTypes((x) =>
-                        x.includes(t.id)
-                          ? x.filter((v) => v !== t.id)
-                          : [...x, t.id],
-                      )
-                    }
-                    className="accent-violet-600"
-                  />
-                  {t.label}
-                </label>
-              ))}
-            </div>
-          </div>
-          <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">
-            <div className="font-semibold text-slate-700">Källor</div>
-            <div className="mt-2 grid grid-cols-2 gap-2">
               {(
                 [
-                  [
-                    "transcript",
-                    `Transkript (${segments.filter((x) => x.lectureId === lectureId).length})`,
-                  ],
-                  ["notes", "Anteckningar"],
-                  ["markers", "Markeringar"],
-                  ["slides", `Slide-text${lecture?.slideText ? " ✓" : ""}`],
-                  ["context", "Ärvd kontext"],
+                  ["few", "Få"],
+                  ["balanced", "Lagom"],
+                  ["many", "Många"],
                 ] as const
-              ).map(([id, label]) => (
-                <label
-                  key={id}
-                  className="flex cursor-pointer items-center gap-1.5"
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  onClick={() => setDensity(value)}
+                  className={`rounded-md px-2 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${density === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                 >
-                  <input
-                    type="checkbox"
-                    checked={sources[id]}
-                    onChange={() =>
-                      setSources((current) => ({
-                        ...current,
-                        [id]: !current[id],
-                      }))
-                    }
-                    className="accent-violet-600"
-                  />
                   {label}
-                </label>
+                </button>
               ))}
             </div>
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
+              AI:n avgör hur många kort materialet motiverar och undviker
+              utfyllnad.
+            </p>
           </div>
-          <details className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
-            <summary className="cursor-pointer text-xs font-semibold text-slate-700">
-              Förhandsgranska context som används
+          <details className="mt-5 rounded-lg border border-border bg-card px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+              Avancerat: korttyper, källor och kvalitetsval
             </summary>
-            <div className="mt-3 space-y-2 text-xs leading-5 text-slate-500">
-              {sources.context && (contextFiles?.length ?? 0) > 0 && (
-                <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-2">
-                  <div className="mb-1 font-semibold text-[var(--palette-text)]">
-                    Bifogade filer
-                  </div>
-                  {(contextFiles ?? []).map((file) => {
-                    const available = Boolean(file.extractedText?.trim());
-                    const included =
-                      available && !excludedContextFileIds.includes(file.id);
-                    return (
-                      <label
-                        key={file.id}
-                        className="flex cursor-pointer items-center gap-2 py-0.5 text-[var(--palette-text-muted)]"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={included}
-                          disabled={!available}
-                          onChange={() =>
-                            setExcludedContextFileIds((current) =>
-                              current.includes(file.id)
-                                ? current.filter((id) => id !== file.id)
-                                : [...current, file.id],
-                            )
-                          }
-                        />
-                        <span className="min-w-0 flex-1 truncate">
-                          {file.name}
-                        </span>
-                        <span className="shrink-0 text-[var(--palette-text-subtle)]">
-                          {available
-                            ? `${Math.ceil((file.extractedText?.length ?? 0) / 4).toLocaleString("sv-SE")} tokens`
-                            : "Ingen text"}
-                        </span>
-                      </label>
-                    );
-                  })}
+            <div className="pt-1">
+              <div className="mt-6">
+                <Label>Korttyper</Label>
+                <div className="space-y-2">
+                  {cardTypes.map((t) => (
+                    <label
+                      key={t.id}
+                      className="flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs text-slate-700"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={types.includes(t.id)}
+                        onChange={() =>
+                          setTypes((x) =>
+                            x.includes(t.id)
+                              ? x.filter((v) => v !== t.id)
+                              : [...x, t.id],
+                          )
+                        }
+                        className="accent-violet-600"
+                      />
+                      {t.label}
+                    </label>
+                  ))}
                 </div>
-              )}
-              {sources.context && contextTokenEstimate > 12_000 && (
-                <p className="rounded-lg bg-[var(--palette-warning-muted)] px-2 py-1.5 text-[var(--palette-warning)]">
-                  Den valda contexten är ungefär {contextTokenEstimate.toLocaleString("sv-SE")} tokens. Mycket material skickas till vald AI-tjänst när du genererar.
-                </p>
-              )}
-              {sources.context && contextPreview.length ? (
-                contextPreview.map((item) => (
-                  <div key={item.title} className="rounded-lg bg-slate-50 p-2">
-                    <div className="font-semibold text-slate-700">
-                      {item.title}
+              </div>
+              <div className="mt-5 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">
+                <div className="font-semibold text-slate-700">Källor</div>
+                <div className="mt-2 grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      [
+                        "transcript",
+                        `Transkript (${segments.filter((x) => x.lectureId === lectureId).length})`,
+                      ],
+                      ["notes", "Anteckningar"],
+                      ["markers", "Markeringar"],
+                      ["slides", `Slide-text${lecture?.slideText ? " ✓" : ""}`],
+                      ["context", "Ärvd kontext"],
+                    ] as const
+                  ).map(([id, label]) => (
+                    <label
+                      key={id}
+                      className="flex cursor-pointer items-center gap-1.5"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={sources[id]}
+                        onChange={() =>
+                          setSources((current) => ({
+                            ...current,
+                            [id]: !current[id],
+                          }))
+                        }
+                        className="accent-violet-600"
+                      />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <details className="mt-4 rounded-xl border border-slate-200 bg-white p-3">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-700">
+                  Förhandsgranska context som används
+                </summary>
+                <div className="mt-3 space-y-2 text-xs leading-5 text-slate-500">
+                  {sources.context && (
+                    <div className="flex flex-wrap gap-x-3 gap-y-1 rounded-md bg-[var(--palette-surface-muted)] px-2.5 py-2 text-[var(--palette-text-muted)]">
+                      {(
+                        [
+                          ["lecture", "Föreläsning"],
+                          ["topic", "Ämne"],
+                          ["module", "Modul"],
+                          ["course", "Kurs"],
+                          ["global", "Globalt"],
+                        ] as const
+                      ).map(([level, label]) => (
+                        <label
+                          key={level}
+                          className="flex cursor-pointer items-center gap-1.5"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={contextLevels[level]}
+                            onChange={() =>
+                              setContextLevels((current) => ({
+                                ...current,
+                                [level]: !current[level],
+                              }))
+                            }
+                          />
+                          {label}
+                        </label>
+                      ))}
                     </div>
-                    <div className="mt-1 whitespace-pre-wrap">
-                      {item.context}
+                  )}
+                  {sources.context && (contextFiles?.length ?? 0) > 0 && (
+                    <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-2">
+                      <div className="mb-1 font-semibold text-[var(--palette-text)]">
+                        Bifogade filer
+                      </div>
+                      {(contextFiles ?? []).map((file) => {
+                        const available = Boolean(file.extractedText?.trim());
+                        const included =
+                          available &&
+                          !excludedContextFileIds.includes(file.id);
+                        return (
+                          <label
+                            key={file.id}
+                            className="flex cursor-pointer items-center gap-2 py-0.5 text-[var(--palette-text-muted)]"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={included}
+                              disabled={!available}
+                              onChange={() =>
+                                setExcludedContextFileIds((current) =>
+                                  current.includes(file.id)
+                                    ? current.filter((id) => id !== file.id)
+                                    : [...current, file.id],
+                                )
+                              }
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {file.name}
+                            </span>
+                            <span className="shrink-0 text-[var(--palette-text-subtle)]">
+                              {available
+                                ? `${Math.ceil((file.extractedText?.length ?? 0) / 4).toLocaleString("sv-SE")} tokens`
+                                : "Ingen text"}
+                            </span>
+                          </label>
+                        );
+                      })}
                     </div>
-                  </div>
-                ))
-              ) : (
-                <p>
-                  {sources.context
-                    ? "Ingen global eller ärvd context har lagts till."
-                    : "Context är avstängt i källvalen ovan."}
-                </p>
-              )}
-            </div>
-          </details>
-          <div className="mt-4">
-            <Label>Kvalitetsval</Label>
-            <div className="space-y-2">
-              {generationPreferences.map((preference) => (
-                <label
-                  key={preference}
-                  className="flex cursor-pointer items-start gap-2 text-xs leading-4 text-slate-600"
-                >
-                  <input
-                    type="checkbox"
-                    checked={preferences.includes(preference)}
-                    onChange={() =>
-                      setPreferences((current) =>
-                        current.includes(preference)
-                          ? current.filter((item) => item !== preference)
-                          : [...current, preference],
-                      )
-                    }
-                    className="mt-0.5 accent-violet-600"
-                  />
-                  {preference}
-                </label>
-              ))}
-            </div>
-          </div>
+                  )}
+                  {sources.context && contextTokenEstimate > 12_000 && (
+                    <p className="rounded-lg bg-[var(--palette-warning-muted)] px-2 py-1.5 text-[var(--palette-warning)]">
+                      Den valda contexten är ungefär{" "}
+                      {contextTokenEstimate.toLocaleString("sv-SE")} tokens.
+                      Mycket material skickas till vald AI-tjänst när du
+                      genererar.
+                    </p>
+                  )}
+                  {sources.context && selectedContextPreview.length ? (
+                    selectedContextPreview.map((item) => (
+                      <div
+                        key={item.title}
+                        className="rounded-lg bg-slate-50 p-2"
+                      >
+                        <div className="font-semibold text-slate-700">
+                          {item.title}
+                        </div>
+                        <div className="mt-1 whitespace-pre-wrap">
+                          {item.context}
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p>
+                      {sources.context
+                        ? "Ingen global eller ärvd context har lagts till."
+                        : "Context är avstängt i källvalen ovan."}
+                    </p>
+                  )}
+                </div>
+              </details>
+              <p className="mt-3 text-xs leading-5 text-muted-foreground">
+                Prompten använder ungefär{" "}
+                {promptBudget.estimatedTokens.toLocaleString("sv-SE")} av högst{" "}
+                {promptBudget.budgetTokens.toLocaleString("sv-SE")} tokens.
+                {promptBudget.relevantCardCount
+                  ? ` ${promptBudget.relevantCardCount} närliggande kort används för dubblettskydd.`
+                  : " Inga relevanta äldre kort behöver skickas."}
+                {promptBudget.omitted
+                  ? ` ${promptBudget.omitted} källa${promptBudget.omitted === 1 ? " är" : "or är"} förkortad enligt budgeten.`
+                  : ""}
+              </p>
+              <div className="mt-4">
+                <Label>Kvalitetsval</Label>
+                <div className="space-y-2">
+                  {generationPreferences.map((preference) => (
+                    <label
+                      key={preference}
+                      className="flex cursor-pointer items-start gap-2 text-xs leading-4 text-slate-600"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={preferences.includes(preference)}
+                        onChange={() =>
+                          setPreferences((current) =>
+                            current.includes(preference)
+                              ? current.filter((item) => item !== preference)
+                              : [...current, preference],
+                          )
+                        }
+                        className="mt-0.5 accent-violet-600"
+                      />
+                      {preference}
+                    </label>
+                  ))}
+                </div>
+              </div>
             </div>
           </details>
           <Button
@@ -858,20 +1071,39 @@ export function CardStudio() {
         <main className="ui-app-bg min-w-0 overflow-auto p-6">
           <details
             className="mb-4 rounded-lg border border-border bg-card"
-            open={syncStatuses.some((status) => status.pending || status.lastError)}
+            open={syncStatuses.some(
+              (status) => status.pending || status.lastError,
+            )}
           >
             <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-foreground">
               Anki-synkstatus
               <span className="ml-2 text-xs font-normal text-muted-foreground">
-                {syncStatuses.reduce((total, status) => total + status.pending, 0)} väntande
+                {syncStatuses.reduce(
+                  (total, status) => total + status.pending,
+                  0,
+                )}{" "}
+                väntande
               </span>
             </summary>
             <div className="border-t border-border">
               {syncStatuses.map((status) => (
-                <div key={status.lecture.id} className="grid gap-1 border-b border-border px-4 py-3 last:border-b-0 sm:grid-cols-[minmax(10rem,1fr)_auto_auto] sm:items-center sm:gap-4">
-                  <span className="truncate text-sm font-medium text-foreground">{status.lecture.title}</span>
-                  <span className={status.pending ? "text-xs text-[var(--palette-warning)]" : "text-xs text-muted-foreground"}>
-                    {status.pending ? `${status.pending} väntande` : "Inga väntande ändringar"}
+                <div
+                  key={status.lecture.id}
+                  className="grid gap-1 border-b border-border px-4 py-3 last:border-b-0 sm:grid-cols-[minmax(10rem,1fr)_auto_auto] sm:items-center sm:gap-4"
+                >
+                  <span className="truncate text-sm font-medium text-foreground">
+                    {status.lecture.title}
+                  </span>
+                  <span
+                    className={
+                      status.pending
+                        ? "text-xs text-[var(--palette-warning)]"
+                        : "text-xs text-muted-foreground"
+                    }
+                  >
+                    {status.pending
+                      ? `${status.pending} väntande`
+                      : "Inga väntande ändringar"}
                   </span>
                   <span className="text-xs text-muted-foreground">
                     {status.lastSyncedAt
@@ -879,7 +1111,10 @@ export function CardStudio() {
                       : "Aldrig synkad"}
                   </span>
                   {status.lastError && (
-                    <p className="sm:col-span-3 text-xs leading-5 text-destructive" title={status.lastError.message}>
+                    <p
+                      className="sm:col-span-3 text-xs leading-5 text-destructive"
+                      title={status.lastError.message}
+                    >
                       Senaste fel: {status.lastError.message}
                     </p>
                   )}
@@ -919,8 +1154,11 @@ export function CardStudio() {
                 onClick={approveAllScopedGenerated}
                 disabled={!scopedGeneratedCards.length}
               >
-                <CheckCheck className="size-3.5" /> Godkänn alla i {selectedNode?.type === "course" ? "kursen" : "modulen"}
-                {scopedGeneratedCards.length ? ` (${scopedGeneratedCards.length})` : ""}
+                <CheckCheck className="size-3.5" /> Godkänn alla i{" "}
+                {selectedNode?.type === "course" ? "kursen" : "modulen"}
+                {scopedGeneratedCards.length
+                  ? ` (${scopedGeneratedCards.length})`
+                  : ""}
               </Button>
             )}
             {isBulkScope && (
@@ -930,7 +1168,8 @@ export function CardStudio() {
                 onClick={syncScopedWithPreview}
                 disabled={busy}
               >
-                <Send className="size-3.5" /> Synka godkända i {selectedNode?.type === "course" ? "kursen" : "modulen"}
+                <Send className="size-3.5" /> Synka godkända i{" "}
+                {selectedNode?.type === "course" ? "kursen" : "modulen"}
               </Button>
             )}
             <Button
@@ -963,12 +1202,12 @@ export function CardStudio() {
           </div>
           <div className="grid gap-3">
             {lectureCards.map((card) => (
-            <CardRow
-              key={card.id}
-              card={card}
-              update={updateCard}
-              remove={removeCard}
-              cards={cards}
+              <CardRow
+                key={card.id}
+                card={card}
+                update={updateCard}
+                remove={removeCard}
+                cards={cards}
               />
             ))}
             {!lectureCards.length && (
@@ -1044,43 +1283,49 @@ export function CardStudio() {
           </div>
           {settings.aiMode === "clipboard" ? (
             <>
-              <div>
-                <Label>Färdig prompt</Label>
-                <Textarea
-                  readOnly
-                  value={prompt}
-                  className="h-36 font-mono text-xs"
-                />
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  className="min-w-40 flex-1"
-                  onClick={copyPrompt}
-                >
-                  <Clipboard className="size-4" /> Kopiera prompt
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => void openExternal("https://chatgpt.com")}
-                  title="ChatGPT"
-                >
-                  <ExternalLink className="size-4" /> ChatGPT
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void openExternal("https://claude.ai")}
-                >
-                  Claude
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => void openExternal("https://gemini.google.com")}
-                >
-                  Gemini
-                </Button>
+              <div className="rounded-lg border border-border bg-muted/40 p-4">
+                <p className="text-sm font-semibold text-foreground">
+                  1. Skicka underlaget till din AI
+                </p>
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Lectio har redan valt material, begränsat context och bett om
+                  ett validerbart JSON-svar.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    className="min-w-52"
+                    onClick={() =>
+                      void copyPromptAndOpen("https://chatgpt.com", "ChatGPT")
+                    }
+                  >
+                    <ExternalLink className="size-4" /> Öppna ChatGPT och
+                    kopiera
+                  </Button>
+                  <Button variant="outline" onClick={copyPrompt}>
+                    <Clipboard className="size-4" /> Kopiera endast prompten
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      void copyPromptAndOpen("https://claude.ai", "Claude")
+                    }
+                  >
+                    Claude
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      void copyPromptAndOpen(
+                        "https://gemini.google.com",
+                        "Gemini",
+                      )
+                    }
+                  >
+                    Gemini
+                  </Button>
+                </div>
               </div>
             </>
           ) : (
@@ -1137,7 +1382,7 @@ export function CardStudio() {
           <div className="border-t border-slate-100 pt-4">
             <Label>
               {settings.aiMode === "clipboard"
-                ? "Klistra in AI-svaret här"
+                ? "2. Hämta AI-svaret"
                 : "AI-svar för granskning"}
             </Label>
             <Textarea
@@ -1147,12 +1392,13 @@ export function CardStudio() {
               placeholder='{"cards":[…]}'
             />
             {settings.aiMode === "clipboard" && (
-              <button
+              <Button
+                variant="outline"
+                className="mt-2"
                 onClick={() => void pasteResponse()}
-                className="mt-2 flex items-center gap-1.5 text-xs font-medium text-violet-600 hover:text-violet-800"
               >
-                <Clipboard className="size-3.5" /> Hämta svar från urklippet
-              </button>
+                <Clipboard className="size-4" /> Hämta och kontrollera urklipp
+              </Button>
             )}
           </div>
           <div className="flex gap-2">
@@ -1161,7 +1407,7 @@ export function CardStudio() {
               disabled={!response.trim()}
               onClick={importResponse}
             >
-              <Plus className="size-4" /> Validera och importera
+              <Plus className="size-4" /> 3. Validera och importera kort
             </Button>
           </div>
         </div>
@@ -1201,16 +1447,49 @@ function CardRow({
           {card.duplicateWarning && (
             <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md bg-[var(--palette-warning-muted)] px-2.5 py-2 text-xs text-[var(--palette-warning)]">
               <span>{card.duplicateWarning}</span>
-              <button type="button" className="font-medium underline underline-offset-2" onClick={() => update(card.id, { duplicateWarning: undefined, duplicateOfId: undefined })}>Behåll ändå</button>
-              {card.duplicateOfId && cards.some((candidate) => candidate.id === card.duplicateOfId) && (
-                <button type="button" className="font-medium underline underline-offset-2" onClick={() => {
-                  const original = cards.find((candidate) => candidate.id === card.duplicateOfId);
-                  if (!original) return;
-                  update(original.id, { back: original.back.trim() === card.back.trim() ? original.back : `${original.back}\n\n${card.back}` });
-                  remove(card.id);
-                }}>Slå ihop</button>
-              )}
-              <button type="button" className="font-medium underline underline-offset-2" onClick={() => remove(card.id)}>Radera nya</button>
+              <button
+                type="button"
+                className="font-medium underline underline-offset-2"
+                onClick={() =>
+                  update(card.id, {
+                    duplicateWarning: undefined,
+                    duplicateOfId: undefined,
+                  })
+                }
+              >
+                Behåll ändå
+              </button>
+              {card.duplicateOfId &&
+                cards.some(
+                  (candidate) => candidate.id === card.duplicateOfId,
+                ) && (
+                  <button
+                    type="button"
+                    className="font-medium underline underline-offset-2"
+                    onClick={() => {
+                      const original = cards.find(
+                        (candidate) => candidate.id === card.duplicateOfId,
+                      );
+                      if (!original) return;
+                      update(original.id, {
+                        back:
+                          original.back.trim() === card.back.trim()
+                            ? original.back
+                            : `${original.back}\n\n${card.back}`,
+                      });
+                      remove(card.id);
+                    }}
+                  >
+                    Slå ihop
+                  </button>
+                )}
+              <button
+                type="button"
+                className="font-medium underline underline-offset-2"
+                onClick={() => remove(card.id)}
+              >
+                Radera nya
+              </button>
             </div>
           )}
         </div>

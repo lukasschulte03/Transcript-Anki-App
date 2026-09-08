@@ -13,9 +13,11 @@ import {
 } from "../core/store";
 import {
   createCardPrompt,
+  cardPromptSummary,
   duplicateExplanation,
   generateCardsWithApi,
   aiModelSuggestions,
+  selectRelevantExistingCards,
   parseCardResponse,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
@@ -71,6 +73,55 @@ describe("mobil ljudimport", () => {
     ).toContain("kan saknas");
     expect(audioFingerprint(audio("Rond.M4A", 42, 9))).toBe(
       audioFingerprint(audio("rond.m4a", 42, 9)),
+    );
+  });
+});
+
+describe("Anki-promptens budget och dubblettskydd", () => {
+  it("skickar bara lexikalt relevanta befintliga kort", () => {
+    const cards = selectRelevantExistingCards(
+      [
+        { front: "Hur behandlas hyperkalemi?", back: "Kalcium och insulin." },
+        { front: "Vad är en mitokondrie?", back: "Cellorganell." },
+      ],
+      "Akut behandling av hyperkalemi med insulin",
+    );
+    expect(cards).toHaveLength(1);
+    expect(cards[0]?.front).toContain("hyperkalemi");
+  });
+
+  it("begränsar stora källor till den definierade budgeten", () => {
+    const summary = cardPromptSummary({
+      lectureId: "lecture",
+      title: "Akut peritonit",
+      context: "C".repeat(200_000),
+      notes: "N".repeat(200_000),
+      transcript: [],
+      markers: [],
+      slideText: "S".repeat(200_000),
+      count: 36,
+      types: ["basic"],
+      preferences: [],
+      contextBudget: 1_000,
+    });
+    expect(summary.estimatedTokens).toBeLessThanOrEqual(1_000);
+    expect(summary.omitted).toBeGreaterThan(0);
+    expect(
+      createCardPrompt({
+        lectureId: "lecture",
+        title: "Akut buk",
+        context: "C".repeat(200_000),
+        notes: "N".repeat(200_000),
+        transcript: [],
+        markers: [],
+        slideText: "S".repeat(200_000),
+        count: 36,
+        types: ["basic"],
+        preferences: [],
+        contextBudget: 1_000,
+      }).length,
+    ).toBeLessThanOrEqual(
+      4_000 + "\n[Förkortat för att hålla prompten inom budget]".length,
     );
   });
 });
@@ -695,7 +746,7 @@ describe("kortformat", () => {
   it("bygger en kompakt prompt utan instruktioner för otillåtna korttyper", () => {
     const prompt = createCardPrompt({
       lectureId: "lecture",
-      title: "Akut buk",
+      title: "Akut peritonit",
       context: "",
       notes: "",
       transcript: [],
@@ -708,7 +759,7 @@ describe("kortformat", () => {
         { front: "Vad är peritonit?", back: "Inflammation i peritoneum." },
       ],
     });
-    expect(prompt).toContain("BEFINTLIGA KORT I KURSEN");
+    expect(prompt).toContain("NÄRLIGGANDE BEFINTLIGA KORT");
     expect(prompt).toContain("Vad är peritonit?");
     expect(prompt).toContain("Promptversion: 1");
     expect(prompt).toContain("Använd endast uttryckligt källstöd");
