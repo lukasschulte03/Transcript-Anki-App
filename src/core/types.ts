@@ -211,6 +211,8 @@ export interface CloudSyncConfiguration {
 }
 
 export interface LibraryBackup {
+  /** Bumped only when the stored backup shape changes. */
+  schemaVersion: 2;
   id: string;
   createdAt: string;
   reason: "import" | "deletion" | "manual";
@@ -221,6 +223,13 @@ export interface LibraryBackup {
   cards: Flashcard[];
   settings: AppSettings;
   assetCount: number;
+  /** Asset ids present when the snapshot was made. */
+  assetIds: string[];
+  /**
+   * Only destructive operations retain binary copies. Routine backups keep
+   * references instead, so a sync does not duplicate every recording locally.
+   */
+  retainedAssets?: StoredAsset[];
 }
 
 export interface StoredAsset {

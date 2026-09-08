@@ -48,6 +48,12 @@ import {
   syncProviderOptions,
 } from "../../services/sync";
 import { syncGoogleDrive } from "../../services/googleDriveSync";
+import {
+  backupSourceFromState,
+  createLibraryBackup,
+  normalizeLibraryBackup,
+  restoreBackupAssets,
+} from "../../services/libraryBackup";
 import { isTauri } from "../../services/platform";
 import {
   builtInPalettes,
@@ -229,28 +235,7 @@ export function SettingsView() {
   );
   const createBackup = async (reason: LibraryBackup["reason"]) => {
     const snapshot = useAppStore.getState();
-    const assetCount = await db.assets.count();
-    await db.backups.put({
-      id: crypto.randomUUID(),
-      createdAt: new Date().toISOString(),
-      reason,
-      nodes: snapshot.nodes,
-      lectures: snapshot.lectures,
-      segments: snapshot.segments,
-      markers: snapshot.markers,
-      cards: snapshot.cards,
-      settings: snapshot.settings,
-      assetCount,
-    });
-    const all = await db.backups.orderBy("createdAt").toArray();
-    const limit = Math.max(
-      3,
-      Math.min(50, snapshot.settings.backupLimit ?? 10),
-    );
-    if (all.length > limit)
-      await db.backups.bulkDelete(
-        all.slice(0, -limit).map((backup) => backup.id),
-      );
+    return createLibraryBackup(reason, backupSourceFromState(snapshot));
   };
   const setBackupLimit = async (backupLimit: number) => {
     updateSettings({ backupLimit });
@@ -260,7 +245,8 @@ export function SettingsView() {
         all.slice(0, -backupLimit).map((backup) => backup.id),
       );
   };
-  const restoreBackup = async (backup: LibraryBackup) => {
+  const restoreBackup = async (rawBackup: LibraryBackup) => {
+    const backup = normalizeLibraryBackup(rawBackup);
     const current = useAppStore.getState();
     const preview = [
       `Återställ metadata från ${new Date(backup.createdAt).toLocaleString("sv-SE")}?`,
@@ -268,12 +254,21 @@ export function SettingsView() {
       `Nuvarande: ${current.nodes.length} objekt, ${current.segments.length} transkriptsegment, ${current.cards.length} kort.`,
       `Säkerhetskopia: ${backup.nodes.length} objekt, ${backup.segments.length} transkriptsegment, ${backup.cards.length} kort.`,
       "",
-      "Ljud, PDF:er och andra media ersätts inte. Nuvarande metadata sparas först som en ny säkerhetskopia.",
+      backup.retainedAssets?.length
+        ? `Den här raderingsbackupen återställer även ${backup.retainedAssets.length} mediafil${backup.retainedAssets.length === 1 ? "" : "er"}. Nuvarande metadata sparas först som en ny säkerhetskopia.`
+        : "Metadata återställs och befintliga lokala mediareferenser behålls. Nuvarande metadata sparas först som en ny säkerhetskopia.",
     ].join("\\n");
     if (!confirm(preview)) return;
     await createBackup("manual");
+    const assets = await restoreBackupAssets(backup);
     restoreLibraryBackup(backup);
-    toast.success("Bibliotekets metadata återställdes");
+    toast.success(
+      assets.missing
+        ? `Bibliotekets metadata återställdes. ${assets.missing} äldre mediareferenser saknas.`
+        : assets.restored
+          ? `Bibliotek och ${assets.restored} återställda mediafiler är klara.`
+          : "Bibliotekets metadata återställdes",
+    );
   };
   const clearInterruptedRecordings = async () => {
     const sessions = storageSummary?.interruptedSessions ?? [];
@@ -341,7 +336,6 @@ export function SettingsView() {
     }
     setCloudConnectBusy(true);
     try {
-      await createBackup("manual");
       await syncGoogleDrive();
       toast.success("Google Drive-synken är klar.");
     } catch (error) {

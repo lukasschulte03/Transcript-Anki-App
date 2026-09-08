@@ -38,10 +38,15 @@ export const downloadBlob = (name: string, blob: Blob) => {
 };
 
 export async function confirmStorageForImport(file: Blob, label: string) {
-  const estimate = await navigator.storage?.estimate?.();
-  const available = (estimate?.quota ?? 0) - (estimate?.usage ?? 0);
-  if (!estimate?.quota || available >= file.size * 1.2) return true;
+  if (await hasStorageCapacity(file.size)) return true;
   return confirm(
     `Det verkar finnas mindre ledigt utrymme än ${label} behöver. Importen kan misslyckas. Vill du fortsätta?`,
   );
+}
+
+/** A conservative IndexedDB quota check for imports and sync downloads. */
+export async function hasStorageCapacity(bytes: number, reserve = 1.2) {
+  const estimate = await navigator.storage?.estimate?.();
+  const available = (estimate?.quota ?? 0) - (estimate?.usage ?? 0);
+  return !estimate?.quota || available >= Math.max(0, bytes) * reserve;
 }

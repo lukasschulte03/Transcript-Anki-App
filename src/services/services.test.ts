@@ -64,6 +64,10 @@ import {
 } from "./cardGenerationCost";
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import { selectVisualCandidates, visualPromptLines } from "./visualIndex";
+import {
+  backupSourceFromState,
+  normalizeLibraryBackup,
+} from "./libraryBackup";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -79,6 +83,42 @@ describe("Anki-chunkning", () => {
     expect(chunks[0].transcript.map((segment) => segment.id)).toEqual(["one"]);
     expect(chunks[1].transcript.map((segment) => segment.id)).toEqual(["two"]);
     expect(chunkCardCeiling(36, chunks[0])).toBe(18);
+  });
+});
+
+describe("biblioteksbackup", () => {
+  it("migrerar en äldre metadata-backup utan att förlora innehållet", () => {
+    const legacy = {
+      id: "old",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      reason: "manual" as const,
+      nodes: [{ id: "course", parentId: "workspace", type: "course" as const, title: "KM3", sortIndex: 0, context: "", createdAt: "2026-01-01" }],
+      lectures: { lecture: { lectureId: "lecture", notes: "Anteckning" } },
+      segments: [{ id: "segment", lectureId: "lecture", start: 0, end: 1, text: "Text" }],
+      markers: [{ id: "marker", lectureId: "lecture", timestamp: 0, createdAt: "2026-01-01" }],
+      cards: [{ id: "card", lectureId: "lecture", type: "basic" as const, front: "Fråga", back: "Svar", tags: [], status: "approved" as const }],
+      settings: { backupLimit: 10 },
+      assetCount: 2,
+    } as any;
+    const backup = normalizeLibraryBackup(legacy);
+    expect(backup.schemaVersion).toBe(2);
+    expect(backup.assetIds).toEqual([]);
+    expect(backup.lectures.lecture.notes).toBe("Anteckning");
+    expect(backup.cards[0]?.front).toBe("Fråga");
+  });
+
+  it("tar en komplett återställningsbar metadata-snapshot", () => {
+    const source = backupSourceFromState({
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "N" } },
+      segments: [{ id: "s", lectureId: "lecture", start: 0, end: 1, text: "T" }],
+      markers: [],
+      cards: [{ id: "c", lectureId: "lecture", type: "basic", front: "F", back: "B", tags: [], status: "generated" }],
+      settings: { backupLimit: 5 },
+    } as any);
+    expect(source.lectures.lecture.notes).toBe("N");
+    expect(source.segments).toHaveLength(1);
+    expect(source.cards).toHaveLength(1);
   });
 });
 

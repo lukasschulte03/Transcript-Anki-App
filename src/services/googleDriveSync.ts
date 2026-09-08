@@ -2,6 +2,8 @@ import { db } from "../core/database";
 import { useAppStore } from "../core/store";
 import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
+import { hasStorageCapacity } from "../lib/utils";
+import { backupSourceFromState, createLibraryBackup } from "./libraryBackup";
 import { netFetch } from "./platform";
 import { getGoogleDriveAccessToken } from "./sync";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
@@ -352,6 +354,10 @@ async function downloadRemoteLibrary(
       token,
     );
     const blob = await response.blob();
+    if (!(await hasStorageCapacity(blob.size)))
+      throw new Error(
+        "Det finns inte tillräckligt lokalt lagringsutrymme för att hämta synkade filer. Frigör utrymme och försök igen.",
+      );
     const { hash: _hash, remoteId: _remoteId, ...stored } = asset;
     await db.assets.put({ ...stored, blob });
     syncJob({
@@ -521,6 +527,13 @@ async function syncGoogleDriveInternal() {
         });
         return;
       }
+      // A merge/import can change many metadata references at once. Make the
+      // recovery checkpoint here, after a no-op is known but before applying
+      // any remote operation or mutating the sync base.
+      await createLibraryBackup(
+        "manual",
+        backupSourceFromState(useAppStore.getState()),
+      );
     }
     const syncAssets = assets.filter((asset) =>
       belongsToLibrary(asset, snapshot),

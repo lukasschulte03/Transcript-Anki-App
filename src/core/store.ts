@@ -14,6 +14,7 @@ import type {
 import { uid } from "../lib/utils";
 import { db } from "./database";
 import { normalizePalette } from "./theme";
+import { backupSourceFromState, createLibraryBackup } from "../services/libraryBackup";
 
 const now = () => new Date().toISOString();
 const workspaceId = "workspace-main";
@@ -298,87 +299,99 @@ export const useAppStore = create<AppState>()(
         set({ nodes: reordered });
         return true;
       },
-      removeNode: (id) =>
-        set((s) => {
-          const descendants = new Set<string>([id]);
-          let changed = true;
-          while (changed) {
-            changed = false;
-            s.nodes.forEach((n) => {
-              if (
-                n.parentId &&
-                descendants.has(n.parentId) &&
-                !descendants.has(n.id)
-              ) {
-                descendants.add(n.id);
-                changed = true;
-              }
-            });
-          }
-          const removedIds = [...descendants];
-          void db.backups.put({
-            id: uid(),
-            createdAt: now(),
-            reason: "deletion",
-            nodes: s.nodes,
-            lectures: s.lectures,
-            segments: s.segments,
-            markers: s.markers,
-            cards: s.cards,
-            settings: s.settings,
-            assetCount: 0,
+      removeNode: (id) => {
+        const before = get();
+        const descendants = new Set<string>([id]);
+        let changed = true;
+        while (changed) {
+          changed = false;
+          before.nodes.forEach((node) => {
+            if (
+              node.parentId &&
+              descendants.has(node.parentId) &&
+              !descendants.has(node.id)
+            ) {
+              descendants.add(node.id);
+              changed = true;
+            }
           });
-          void db.transaction(
-            "rw",
-            db.assets,
-            db.recordingSessions,
-            db.recordingChunks,
-            async () => {
-              await db.assets.where("lectureId").anyOf(removedIds).delete();
-              const sessions = await db.recordingSessions
-                .where("lectureId")
-                .anyOf(removedIds)
-                .toArray();
-              const sessionIds = sessions.map((session) => session.id);
-              if (sessionIds.length)
-                await db.recordingChunks
-                  .where("sessionId")
-                  .anyOf(sessionIds)
-                  .delete();
-              await db.recordingSessions
-                .where("lectureId")
-                .anyOf(removedIds)
-                .delete();
-            },
+        }
+        const removedIds = [...descendants];
+        const lectures = { ...before.lectures };
+        removedIds.forEach((removedId) => delete lectures[removedId]);
+        set({
+          nodes: before.nodes.filter((node) => !descendants.has(node.id)),
+          lectures,
+          selectedId: workspaceId,
+          segments: before.segments.filter(
+            (segment) => !descendants.has(segment.lectureId),
+          ),
+          markers: before.markers.filter(
+            (marker) => !descendants.has(marker.lectureId),
+          ),
+          cards: before.cards.filter(
+            (card) => !descendants.has(card.lectureId),
+          ),
+          pendingAnkiDeletions: Array.from(
+            new Map(
+              [
+                ...before.pendingAnkiDeletions,
+                ...before.cards
+                  .filter(
+                    (card) =>
+                      descendants.has(card.lectureId) &&
+                      card.ankiId !== undefined,
+                  )
+                  .map((card) => ({
+                    ankiId: card.ankiId as number,
+                    lectureId: card.lectureId,
+                  })),
+              ].map((item) => [item.ankiId, item]),
+            ).values(),
+          ),
+        });
+        // Do not remove media until its recoverable backup has committed.
+        void (async () => {
+          const affectedAssets = (await db.assets.toArray()).filter(
+            (asset) =>
+              descendants.has(asset.lectureId) ||
+              (asset.nodeId !== undefined && descendants.has(asset.nodeId)),
           );
-          const lectures = { ...s.lectures };
-          removedIds.forEach((removedId) => delete lectures[removedId]);
-          return {
-            nodes: s.nodes.filter((n) => !descendants.has(n.id)),
-            lectures,
-            selectedId: workspaceId,
-            segments: s.segments.filter((x) => !descendants.has(x.lectureId)),
-            markers: s.markers.filter((x) => !descendants.has(x.lectureId)),
-            cards: s.cards.filter((x) => !descendants.has(x.lectureId)),
-            pendingAnkiDeletions: Array.from(
-              new Map(
-                [
-                  ...s.pendingAnkiDeletions,
-                  ...s.cards
-                    .filter(
-                      (card) =>
-                        descendants.has(card.lectureId) &&
-                        card.ankiId !== undefined,
-                    )
-                    .map((card) => ({
-                      ankiId: card.ankiId as number,
-                      lectureId: card.lectureId,
-                    })),
-                ].map((item) => [item.ankiId, item]),
-              ).values(),
-            ),
-          };
-        }),
+          try {
+            await createLibraryBackup(
+              "deletion",
+              backupSourceFromState(before),
+              { retainAssets: affectedAssets },
+            );
+            await db.transaction(
+              "rw",
+              db.assets,
+              db.recordingSessions,
+              db.recordingChunks,
+              async () => {
+                await db.assets.bulkDelete(affectedAssets.map((asset) => asset.id));
+                const sessions = await db.recordingSessions
+                  .where("lectureId")
+                  .anyOf(removedIds)
+                  .toArray();
+                const sessionIds = sessions.map((session) => session.id);
+                if (sessionIds.length)
+                  await db.recordingChunks
+                    .where("sessionId")
+                    .anyOf(sessionIds)
+                    .delete();
+                await db.recordingSessions
+                  .where("lectureId")
+                  .anyOf(removedIds)
+                  .delete();
+              },
+            );
+          } catch (error) {
+            // Metadata is hidden, but media stays untouched and can be recovered.
+            console.error("Lectio kunde inte säkra raderade media", error);
+          }
+        })();
+      },
       selectNode: (id) => set({ selectedId: id }),
       setActiveView: (activeView) => set({ activeView }),
       updateLecture: (lectureId, patch) =>
