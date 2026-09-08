@@ -218,6 +218,8 @@ export function LectureImportAssistant({
           } catch {
             toast.message("Slides importerades utan automatisk textextraktion");
           }
+        } else if (slideFile.type.startsWith("image/")) {
+          visualPages = [`Bild: ${slideFile.name}`];
         }
       }
       updateLecture(lectureId, patch);

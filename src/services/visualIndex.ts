@@ -164,6 +164,7 @@ async function renderVisualPng(
   scale: number,
 ) {
   const asset = await db.assets.get(lecture.slideAssetId!);
+  if (asset?.mimeType.startsWith("image/")) return asset.blob;
   if (
     !asset ||
     (!/pdf/i.test(asset.mimeType) && !asset.name.toLowerCase().endsWith(".pdf"))

@@ -335,6 +335,52 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       } catch {
         toast.success("Slides importerade · text kan läggas till manuellt");
       }
+    } else if (file.type.startsWith("image/")) {
+      const pages = [`Bild: ${file.name}`];
+      const jobId = `visual-index:${lectureId}:${id}`;
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Indexerar slidebild",
+        phase: "queued",
+        status: "queued",
+        current: 0,
+        total: 1,
+        detail: "Förbereder en lokal bildkandidat…",
+      });
+      window.setTimeout(() => {
+        void buildVisualIndex(file, pages)
+          .then(({ sourceHash, candidates }) => {
+            updateLecture(lectureId, {
+              visualIndex: candidates,
+              visualIndexHash: sourceHash,
+              visualIndexUpdatedAt: new Date().toISOString(),
+            });
+            upsertJob({
+              id: jobId,
+              kind: "library",
+              label: "Indexerar slidebild",
+              phase: "complete",
+              status: "complete",
+              current: 1,
+              total: 1,
+              detail: "Bildkandidaten är klar.",
+            });
+          })
+          .catch((error) =>
+            upsertJob({
+              id: jobId,
+              kind: "library",
+              label: "Indexerar slidebild",
+              phase: "error",
+              status: "error",
+              current: 0,
+              total: 1,
+              detail: String(error),
+            }),
+          );
+      }, 0);
+      toast.success("Slidebild importerad");
     } else {
       toast.success("Slides importerade");
     }
