@@ -28,7 +28,13 @@ const cardSchema = z.object({
   front: z.string().min(1),
   back: z.string().min(1),
   tags: z.array(z.string()).default([]),
-  visualId: z.string().min(1).optional(),
+  // Models commonly emit `"visualId": ""` when no image is appropriate.
+  // Treat that as omitted rather than rejecting an otherwise valid batch.
+  visualId: z.preprocess(
+    (value) =>
+      typeof value === "string" && value.trim().length === 0 ? undefined : value,
+    z.string().min(1).optional(),
+  ),
 });
 const responseSchema = z.object({ cards: z.array(cardSchema) });
 
@@ -303,6 +309,22 @@ export function parseCardResponse(
     lectureId,
     status: "generated" as const,
   }));
+}
+
+/** A validation error should guide the student, never expose a full Zod dump. */
+export function cardResponseErrorMessage(error: unknown) {
+  if (error instanceof z.ZodError) {
+    const fields = [...new Set(
+      error.issues
+        .map((issue) => issue.path.at(-1))
+        .filter((field): field is string | number => typeof field === "string" || typeof field === "number")
+        .map(String),
+    )];
+    return `AI-svaret har felaktigt innehåll${fields.length ? ` i fältet/fälten ${fields.slice(0, 3).join(", ")}` : ""}. Be AI:n försöka igen eller korrigera svaret.`;
+  }
+  if (error instanceof SyntaxError)
+    return "AI-svaret innehåller inte giltig JSON. Försök generera igen.";
+  return "AI-svaret kunde inte läsas. Försök generera igen.";
 }
 
 export function likelyDuplicate(

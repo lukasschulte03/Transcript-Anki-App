@@ -33,5 +33,8 @@ test("appskalet har en stabil visuell baslinje", async ({ page }) => {
   await page.getByRole("button", { name: "Översikt", exact: true }).click();
   await expect(page.locator("#root")).toHaveScreenshot("app-shell-light.png", {
     animations: "disabled",
+    // The footer carries the app version, which legitimately changes every
+    // release and should not invalidate the visual layout baseline.
+    mask: [page.getByText(/Lectio · v/)],
   });
 });

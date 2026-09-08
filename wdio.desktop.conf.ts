@@ -1,6 +1,8 @@
 import path from "node:path";
 import type { Options } from "@wdio/types";
 
+// The standalone Tauri manifest uses its own target directory. The QA script
+// builds this exact release binary immediately before launching WebDriver.
 const appBinaryPath = path.resolve("src-tauri/target/release/lectio.exe");
 const isolatedAppData = path.resolve("test-results/desktop/appdata");
 

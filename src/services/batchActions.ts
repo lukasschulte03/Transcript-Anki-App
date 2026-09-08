@@ -1,4 +1,7 @@
-import type { CardType, LibraryNode } from "../core/types";
+import {
+  resolveCardGenerationSettings,
+  type LibraryNode,
+} from "../core/types";
 import { db } from "../core/database";
 import { useAppStore } from "../core/store";
 import { uid } from "../lib/utils";
@@ -251,6 +254,9 @@ function courseId(nodes: LibraryNode[], lectureId: string) {
 async function generate(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   const state = useAppStore.getState();
+  const generation = resolveCardGenerationSettings(
+    state.settings.cardGeneration,
+  );
   if (state.settings.aiMode !== "api") {
     patchJob(job.id, {
       status: "waiting",
@@ -285,13 +291,36 @@ async function generate(job: BatchJob) {
     .where("nodeId")
     .anyOf(chain.map((item) => item.id))
     .toArray();
-  const context = [
-    state.settings.userContext,
-    ...chain.map((item) => item.context),
-    ...contextFiles.map((file) => file.extractedText ?? ""),
-  ]
-    .filter((text) => text.trim())
-    .join("\n\n");
+  const enabledContextNodeIds = new Set(
+    chain
+      .filter(
+        (item) =>
+          item.type !== "workspace" &&
+          generation.contextLevels[
+            item.type as keyof typeof generation.contextLevels
+          ],
+      )
+      .map((item) => item.id),
+  );
+  const context = generation.sources.context
+    ? [
+        generation.contextLevels.global ? state.settings.userContext : "",
+        ...chain
+          .filter(
+            (item) =>
+              item.type !== "workspace" &&
+              generation.contextLevels[
+                item.type as keyof typeof generation.contextLevels
+              ],
+          )
+          .map((item) => item.context),
+        ...contextFiles
+          .filter((file) => !file.nodeId || enabledContextNodeIds.has(file.nodeId))
+          .map((file) => file.extractedText ?? ""),
+      ]
+        .filter((text) => text.trim())
+        .join("\n\n")
+    : "";
   const lectureSegments = state.segments.filter(
     (segment) => segment.lectureId === job.lectureId,
   );
@@ -300,7 +329,9 @@ async function generate(job: BatchJob) {
       courseId(state.nodes, card.lectureId) ===
       courseId(state.nodes, job.lectureId),
   );
-  const chunks = planGenerationChunks(lectureSegments);
+  const chunks = planGenerationChunks(
+    generation.sources.transcript ? lectureSegments : [],
+  );
   const known = new Set(
     existing.map((card) =>
       `${card.front}\0${card.back}`.toLocaleLowerCase("sv"),
@@ -323,24 +354,25 @@ async function generate(job: BatchJob) {
         chunks.length > 1
           ? `Använd transkriptets del ${chunk.index + 1} av ${chunk.total}, samt slides, anteckningar och context självständigt.`
           : "Använd transkript, slides, anteckningar och context självständigt.",
-      notes: lecture.notes,
+      notes: generation.sources.notes ? lecture.notes : "",
       transcript: chunk.transcript,
-      markers: state.markers.filter(
-        (marker) => marker.lectureId === job.lectureId,
+      markers: generation.sources.markers
+        ? state.markers.filter((marker) => marker.lectureId === job.lectureId)
+        : [],
+      slideText: generation.sources.slides ? (lecture.slideText ?? "") : "",
+      visualCandidates: generation.sources.slides
+        ? selectVisualCandidates(
+            rankedVisuals,
+            chunk.transcript.map((segment) => segment.text).join("\n"),
+          )
+        : [],
+      density: generation.density,
+      count: chunkCardCeiling(
+        generation.density === "few" ? 18 : generation.density === "many" ? 54 : 36,
+        chunk,
       ),
-      slideText: lecture.slideText ?? "",
-      visualCandidates: selectVisualCandidates(
-        rankedVisuals,
-        chunk.transcript.map((segment) => segment.text).join("\n"),
-      ),
-      density: "balanced",
-      count: chunkCardCeiling(36, chunk),
-      types: ["basic", "concept"] satisfies CardType[],
-      preferences: [
-        "Undvik triviala kort",
-        "Ett koncept per kort",
-        "Prioritera examinationsrelevant förståelse",
-      ],
+      types: generation.types,
+      preferences: generation.preferences,
       cardStyle: Object.assign({}, ...chain.map((item) => item.settings))
         .cardStyle,
       existingCards: [...existing, ...generated].map(({ front, back }) => ({
@@ -351,7 +383,13 @@ async function generate(job: BatchJob) {
     const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
     const visualIds = new Set(visualSources.keys());
     const parsed = parseCardResponse(raw, job.lectureId)
-      .slice(0, chunkCardCeiling(36, chunk))
+      .slice(
+        0,
+        chunkCardCeiling(
+          generation.density === "few" ? 18 : generation.density === "many" ? 54 : 36,
+          chunk,
+        ),
+      )
       .map((card) =>
         card.visualId && !visualIds.has(card.visualId)
           ? { ...card, visualId: undefined }

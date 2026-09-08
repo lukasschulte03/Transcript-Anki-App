@@ -1,10 +1,31 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
+import path from "node:path";
 
 const port = 4174;
 const url = `http://127.0.0.1:${port}`;
 const outputDir = "test-results/lighthouse";
-const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const require = createRequire(import.meta.url);
+const viteCli = path.resolve(path.dirname(require.resolve("vite")), "../../bin/vite.js");
+const lighthouseCli = path.resolve(path.dirname(require.resolve("lighthouse")), "../cli/index.js");
+
+function waitForExit(child, label, timeoutMs = 90_000) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error(`${label} överskred ${Math.round(timeoutMs / 1_000)} sekunder.`));
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      resolve(code);
+    });
+  });
+}
 
 function waitForServer(timeoutMs = 30_000) {
   const startedAt = Date.now();
@@ -26,34 +47,29 @@ function waitForServer(timeoutMs = 30_000) {
   });
 }
 
-const server = spawn(pnpmCommand, ["vite", "preview", "--host", "127.0.0.1", "--port", String(port)], {
+const server = spawn(process.execPath, [viteCli, "preview", "--host", "127.0.0.1", "--port", String(port)], {
   stdio: "pipe",
   windowsHide: true,
-  shell: process.platform === "win32",
 });
 try {
   await waitForServer();
   await mkdir(outputDir, { recursive: true });
-  const lighthouseExitCode = await new Promise((resolve, reject) => {
-    const lighthouse = spawn(
-      pnpmCommand,
-      [
-        "exec",
-        "lighthouse",
-        url,
-        "--output=json",
-        `--output-path=${outputDir}/report.json`,
-        "--only-categories=performance",
-        "--only-categories=accessibility",
-        "--only-categories=best-practices",
-        "--chrome-flags=--headless=new --no-sandbox",
-        "--quiet",
-      ],
-      { stdio: "inherit", windowsHide: true, shell: process.platform === "win32" },
-    );
-    lighthouse.once("error", reject);
-    lighthouse.once("exit", resolve);
-  });
+  const lighthouse = spawn(
+    process.execPath,
+    [
+      lighthouseCli,
+      url,
+      "--output=json",
+      `--output-path=${outputDir}/report.json`,
+      "--only-categories=performance",
+      "--only-categories=accessibility",
+      "--only-categories=best-practices",
+      "--chrome-flags=--headless=new --no-sandbox",
+      "--quiet",
+    ],
+    { stdio: "inherit", windowsHide: true },
+  );
+  const lighthouseExitCode = await waitForExit(lighthouse, "Lighthouse");
   let lhr;
   try {
     lhr = JSON.parse(await readFile(`${outputDir}/report.json`, "utf8"));

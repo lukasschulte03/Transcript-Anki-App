@@ -44,6 +44,41 @@ export interface Marker {
 export type CardStatus = "generated" | "approved" | "synced";
 export type CardType = "basic" | "cloze" | "concept" | "definition" | "problem";
 
+export type CardGenerationSettings = {
+  density: "few" | "balanced" | "many";
+  types: CardType[];
+  sources: Record<"transcript" | "notes" | "markers" | "slides" | "context", boolean>;
+  preferences: string[];
+  contextLevels: Record<"global" | "course" | "module" | "topic" | "lecture", boolean>;
+};
+
+export const defaultCardGenerationSettings = (): CardGenerationSettings => ({
+  density: "balanced",
+  types: ["basic", "concept"],
+  sources: { transcript: true, notes: true, markers: true, slides: true, context: true },
+  preferences: [
+    "Undvik triviala frågor.",
+    "Prioritera examinationsrelevant förståelse.",
+    "Håll svaren korta och precisa.",
+  ],
+  contextLevels: { global: true, course: true, module: true, topic: true, lecture: true },
+});
+
+/** Safely fills fields omitted by libraries saved before generation defaults existed. */
+export function resolveCardGenerationSettings(
+  stored?: Partial<CardGenerationSettings>,
+): CardGenerationSettings {
+  const defaults = defaultCardGenerationSettings();
+  return {
+    ...defaults,
+    ...stored,
+    types: stored?.types?.length ? stored.types : defaults.types,
+    sources: { ...defaults.sources, ...stored?.sources },
+    preferences: stored?.preferences ?? defaults.preferences,
+    contextLevels: { ...defaults.contextLevels, ...stored?.contextLevels },
+  };
+}
+
 export interface Flashcard {
   id: string;
   lectureId: string;
@@ -181,6 +216,8 @@ export interface AppSettings {
   aiProvider: "openai" | "anthropic" | "gemini" | "groq" | "custom";
   aiModel: string;
   aiBaseUrl: string;
+  /** Shared defaults for individual and queued Anki card generation. */
+  cardGeneration: CardGenerationSettings;
   transcriptionProvider: "local" | "manual" | "openai" | "groq";
   localTranscriptionModel:
     "tiny" | "base" | "small" | "medium" | "large-v3-turbo" | "large-v3";

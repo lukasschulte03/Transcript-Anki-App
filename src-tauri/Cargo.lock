@@ -2115,7 +2115,7 @@ dependencies = [
 
 [[package]]
 name = "lectio"
-version = "0.4.9"
+version = "0.4.11"
 dependencies = [
  "base64 0.22.1",
  "keyring",

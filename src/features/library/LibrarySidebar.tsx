@@ -96,6 +96,10 @@ export function LibrarySidebar() {
   const [draggedNodeId, setDraggedNodeId] = useState<string | null>(null);
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const searchInput = useRef<HTMLInputElement>(null);
+  // `dataTransfer.getData()` is intentionally unavailable during dragover in
+  // Chromium/WebView2. Keep the active id in a ref as well as state so the
+  // first target receives preventDefault and becomes a real drop target.
+  const draggedNodeIdRef = useRef<string | null>(null);
   const root = nodes.find((node) => node.type === "workspace") ?? nodes[0];
   const courses = sortNodes(
     nodes.filter((node) => node.type === "course" && node.parentId === root?.id),
@@ -179,14 +183,17 @@ export function LibrarySidebar() {
   const onDragStart = (event: DragEvent<HTMLElement>, nodeId: string) => {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", nodeId);
+    draggedNodeIdRef.current = nodeId;
     setDraggedNodeId(nodeId);
   };
   const onDragEnd = () => {
+    draggedNodeIdRef.current = null;
     setDraggedNodeId(null);
     setDropTargetId(null);
   };
   const onDragOver = (event: DragEvent<HTMLElement>, targetId: string) => {
-    const nodeId = draggedNodeId ?? event.dataTransfer.getData("text/plain");
+    const nodeId =
+      draggedNodeIdRef.current ?? event.dataTransfer.getData("text/plain");
     if (
       !nodeId ||
       (!canMoveLibraryNode(nodes, nodeId, targetId) &&
@@ -199,11 +206,14 @@ export function LibrarySidebar() {
   };
   const onDrop = (event: DragEvent<HTMLElement>, targetId: string) => {
     event.preventDefault();
-    const nodeId = draggedNodeId ?? event.dataTransfer.getData("text/plain");
+    const nodeId =
+      draggedNodeIdRef.current ?? event.dataTransfer.getData("text/plain");
     const moved = nodeId
       ? canMoveLibraryNode(nodes, nodeId, targetId)
         ? moveNode(nodeId, targetId)
-        : reorderNode(nodeId, targetId)
+        : canReorderLibraryNode(nodes, nodeId, targetId)
+          ? reorderNode(nodeId, targetId)
+          : false
       : false;
     if (moved) {
       const movedNode = nodes.find((node) => node.id === nodeId);
@@ -211,6 +221,8 @@ export function LibrarySidebar() {
       toast.success(
         `Flyttade ${movedNode?.title ?? "objektet"} till ${target?.title ?? "ny plats"}`,
       );
+    } else if (nodeId) {
+      toast.error("Det objektet kan inte placeras där");
     }
     onDragEnd();
   };

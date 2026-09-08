@@ -5,7 +5,11 @@ import {
   flagTranscriptionQuality,
   parseTimestampedText,
 } from "./transcription";
-import type { AppSettings, LibraryNode } from "../core/types";
+import {
+  resolveCardGenerationSettings,
+  type AppSettings,
+  type LibraryNode,
+} from "../core/types";
 import {
   canMoveLibraryNode,
   moveLibraryNode,
@@ -19,6 +23,7 @@ import {
   aiModelSuggestions,
   selectRelevantExistingCards,
   parseCardResponse,
+  cardResponseErrorMessage,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
 import {
@@ -90,6 +95,24 @@ describe("Anki-chunkning", () => {
     expect(chunks[0].transcript.map((segment) => segment.id)).toEqual(["one"]);
     expect(chunks[1].transcript.map((segment) => segment.id)).toEqual(["two"]);
     expect(chunkCardCeiling(36, chunks[0])).toBe(18);
+  });
+});
+
+describe("AI-kortsvar", () => {
+  it("tolkar tomma visualId som att kortet saknar bild", () => {
+    const [card] = parseCardResponse(
+      JSON.stringify({
+        cards: [{ type: "basic", front: "Fråga", back: "Svar", visualId: "" }],
+      }),
+      "lecture",
+    );
+    expect(card.visualId).toBeUndefined();
+  });
+
+  it("gör Zod-fel begripliga utan att visa hela valideringsdumpen", () => {
+    expect(cardResponseErrorMessage(new Error("internt fel"))).toBe(
+      "AI-svaret kunde inte läsas. Försök generera igen.",
+    );
   });
 });
 
@@ -753,6 +776,16 @@ afterEach(() => vi.unstubAllGlobals());
 describe("teman", () => {
   it("har komplett kontrastvaliderad tokenuppsättning", () => {
     expect(builtInPalettes.flatMap(validateTheme)).toEqual([]);
+  });
+});
+
+describe("kortgenereringsstandarder", () => {
+  it("fyller säkert i inställningar som saknas i äldre bibliotek", () => {
+    const settings = resolveCardGenerationSettings({ density: "many" });
+    expect(settings.density).toBe("many");
+    expect(settings.types).toEqual(["basic", "concept"]);
+    expect(settings.sources.transcript).toBe(true);
+    expect(settings.contextLevels.course).toBe(true);
   });
 });
 

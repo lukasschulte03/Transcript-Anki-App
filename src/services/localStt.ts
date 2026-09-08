@@ -106,7 +106,8 @@ export async function prepareAudioForCloudTranscription(audio: Blob) {
   const directory = await join(await appDataDir(), "api-input");
   await mkdir(directory, { recursive: true });
   const inputPath = await join(directory, `${uid()}.source`);
-  await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
+  // Avoid a full ArrayBuffer copy of long lectures in WebView2 memory.
+  await writeFile(inputPath, audio.stream());
   let preparedPaths: string[] = [];
   try {
     preparedPaths = await invoke<string[]>("prepare_api_audio", { inputPath });
@@ -130,7 +131,7 @@ export async function optimizeAudioForStorage(audio: Blob) {
   const directory = await join(await appDataDir(), "audio-optimisation-input");
   await mkdir(directory, { recursive: true });
   const inputPath = await join(directory, `${uid()}.source`);
-  await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
+  await writeFile(inputPath, audio.stream());
   let outputPath = "";
   try {
     const result = await invoke<{ path: string; bytes: number }>(
@@ -169,7 +170,7 @@ export async function transcribeWithLocalWhisper(
               ? "flac"
               : "webm";
   const inputPath = await join(directory, `${uid()}.${extension}`);
-  await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
+  await writeFile(inputPath, audio.stream());
   try {
     const raw = await invoke<string>("transcribe_local", {
       inputPath,

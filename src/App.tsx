@@ -72,6 +72,9 @@ export default function App() {
   const libraryOperation = jobs.find(
     (job) => job.kind === "library" && job.status === "active",
   );
+  const transcriptionActive = jobs.some(
+    (job) => job.kind === "transcription" && job.status === "active",
+  );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
@@ -189,9 +192,16 @@ export default function App() {
             ) : activeView === "settings" ? (
               <SettingsView />
             ) : selected?.type === "lecture" ? (
-              <LectureWorkspace lectureId={selected.id} />
+              // A lecture owns media elements, Blob URLs and the native PDF
+              // viewer. A new key makes React fully dispose those resources
+              // before another (possibly very large) lecture is mounted.
+              <LectureWorkspace
+                key={selected.id}
+                lectureId={selected.id}
+                mediaSuspended={transcriptionActive}
+              />
             ) : selected ? (
-              <ObjectOverview nodeId={selected.id} />
+              <ObjectOverview key={selected.id} nodeId={selected.id} />
             ) : null}
           </Suspense>
         </div>

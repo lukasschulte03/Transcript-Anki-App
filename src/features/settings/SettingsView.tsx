@@ -74,6 +74,11 @@ import {
   type LocalModelStatus,
 } from "../../services/localStt";
 import { aiModelSuggestions } from "../../services/ai";
+import {
+  deleteCredential,
+  readCredential,
+  writeCredential,
+} from "../../services/credentials";
 import { LocalVisionSettings } from "./LocalVisionSettings";
 
 const aiBaseUrls = {
@@ -1125,7 +1130,7 @@ export function SettingsView() {
                     selected={settings.aiMode === "api"}
                     icon={Zap}
                     title="Eget API"
-                    description="Direkt generering med en tillfällig API-nyckel"
+                    description="Direkt generering med en sparad API-nyckel"
                     onClick={() => updateSettings({ aiMode: "api" })}
                   />
                 </div>
@@ -1213,11 +1218,11 @@ export function SettingsView() {
                         </p>
                       </Field>
                     )}
-                    <p className="mt-3 text-xs leading-5 text-slate-500">
-                      API-nyckeln anges först när du genererar och sparas inte
-                      av Lectio. Endast de valda leverantörernas officiella
-                      API:er används.
-                    </p>
+                    <ApiKeyField
+                      credentialKey={`ai:${settings.aiProvider}`}
+                      provider={settings.aiProvider}
+                      className="mt-4"
+                    />
                   </div>
                 )}
                 <Field label="Global context för Anki">
@@ -1369,9 +1374,14 @@ export function SettingsView() {
                         />
                       </Field>
                     </div>
+                    <ApiKeyField
+                      credentialKey={`transcription:${settings.transcriptionProvider}`}
+                      provider={settings.transcriptionProvider}
+                      className="mt-4"
+                    />
                     <p className="mt-3 text-xs leading-5 text-amber-700">
-                      Ljudfilen skickas till vald provider. API-nyckeln används
-                      bara för den aktuella transkriberingen och sparas inte.
+                      Ljudfilen skickas till vald provider. Nyckeln sparas krypterat
+                      i Windows Credential Manager och skickas endast till providern.
                     </p>
                   </div>
                 )}
@@ -1772,6 +1782,95 @@ function InfoPanel({
   );
 }
 
+function ApiKeyField({
+  credentialKey,
+  provider,
+  className = "",
+}: {
+  credentialKey: string;
+  provider: string;
+  className?: string;
+}) {
+  const [value, setValue] = useState("");
+  const [saved, setSaved] = useState(false);
+  const [working, setWorking] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setValue("");
+    void readCredential(credentialKey)
+      .then((secret) => {
+        if (!cancelled) setSaved(Boolean(secret));
+      })
+      .catch(() => {
+        if (!cancelled) setSaved(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [credentialKey]);
+
+  const save = async () => {
+    if (!value.trim()) return;
+    setWorking(true);
+    try {
+      await writeCredential(credentialKey, value.trim());
+      setValue("");
+      setSaved(true);
+      toast.success(`API-nyckeln för ${provider} sparades säkert`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+  const remove = async () => {
+    setWorking(true);
+    try {
+      await deleteCredential(credentialKey);
+      setValue("");
+      setSaved(false);
+      toast.success("Den sparade API-nyckeln togs bort");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <div className={`rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)] p-3 ${className}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-xs font-medium text-[var(--palette-text)]">API-nyckel</p>
+          <p className="mt-0.5 text-xs text-[var(--palette-text-muted)]">
+            {saved
+              ? "Sparad säkert i Windows Credential Manager."
+              : "Ingen nyckel sparad för den här providern."}
+          </p>
+        </div>
+        {saved && (
+          <Button type="button" size="sm" variant="ghost" onClick={() => void remove()} disabled={working}>
+            <Trash2 className="mr-1.5 size-3.5" />Ta bort
+          </Button>
+        )}
+      </div>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <Input
+          type="password"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          placeholder={saved ? "Klistra in en ny nyckel för att ersätta" : "Klistra in API-nyckel"}
+          autoComplete="off"
+        />
+        <Button type="button" onClick={() => void save()} disabled={working || !value.trim()}>
+          {working ? "Sparar…" : saved ? "Ersätt" : "Spara"}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function Field({
   label,
   children,
@@ -1927,6 +2026,9 @@ function LocalModelManager() {
     }
   };
   const acceleration = settings.localTranscriptionAcceleration ?? "auto";
+  // Older installations predate benchmark persistence. Treat missing data as
+  // an empty record so AMD/CPU-only machines can always open this section.
+  const transcriptionBenchmarks = settings.localTranscriptionBenchmarks ?? {};
   const benchmarkAcceleration =
     acceleration === "nvidia" ||
     (acceleration === "auto" && engine?.nvidiaRuntimeReady)
@@ -1945,7 +2047,7 @@ function LocalModelManager() {
       );
       updateSettings({
         localTranscriptionBenchmarks: {
-          ...settings.localTranscriptionBenchmarks,
+          ...transcriptionBenchmarks,
           [result.acceleration]: result,
         },
       });
@@ -2055,24 +2157,24 @@ function LocalModelManager() {
           >
             {benchmarking ? "Testar…" : "Kör prestandatest"}
           </Button>
-          {settings.localTranscriptionBenchmarks[benchmarkAcceleration] && (
+          {transcriptionBenchmarks[benchmarkAcceleration] && (
             <span className="w-full text-slate-500">
               Senaste test:{" "}
               {Math.max(
                 1,
                 Math.round(
                   1 /
-                    settings.localTranscriptionBenchmarks[
+                    transcriptionBenchmarks[
                       benchmarkAcceleration
                     ]!.realtimeFactor,
                 ),
               )}
               × snabbare än realtid · används för tidsuppskattningar.
-              {settings.localTranscriptionBenchmarks[benchmarkAcceleration]!
+              {transcriptionBenchmarks[benchmarkAcceleration]!
                 .gpuUsed &&
-              settings.localTranscriptionBenchmarks[benchmarkAcceleration]!
+              transcriptionBenchmarks[benchmarkAcceleration]!
                 .vramTotalMb
-                ? ` NVIDIA bekräftad · ${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramUsedMb ?? "?"}/${settings.localTranscriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb} MB VRAM vid avläsning.`
+                ? ` NVIDIA bekräftad · ${transcriptionBenchmarks[benchmarkAcceleration]!.vramUsedMb ?? "?"}/${transcriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb} MB VRAM vid avläsning.`
                 : ""}
             </span>
           )}

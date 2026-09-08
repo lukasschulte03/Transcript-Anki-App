@@ -73,7 +73,13 @@ function highlightedTranscriptText(text: string, query: string) {
   );
 }
 
-export function LectureWorkspace({ lectureId }: { lectureId: string }) {
+export function LectureWorkspace({
+  lectureId,
+  mediaSuspended = false,
+}: {
+  lectureId: string;
+  mediaSuspended?: boolean;
+}) {
   const {
     nodes,
     lectures,
@@ -140,9 +146,24 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       lecture.slideAssetId ? db.assets.get(lecture.slideAssetId) : undefined,
     [lecture.slideAssetId],
   );
+  const slideIsPdf = Boolean(
+    slideAsset &&
+      (slideAsset.mimeType === "application/pdf" ||
+        slideAsset.name.toLowerCase().endsWith(".pdf")),
+  );
   const slideUrl = useMemo(
-    () => (slideAsset ? URL.createObjectURL(slideAsset.blob) : ""),
-    [slideAsset],
+    () => {
+      if (mediaSuspended || !slideAsset) return "";
+      // Files imported through Windows/Drive occasionally arrive as an empty
+      // or text MIME type even though their extension and bytes are PDF. Edge
+      // otherwise renders the raw `%PDF` bytes as text instead of its viewer.
+      const blob =
+        slideIsPdf && slideAsset.blob.type !== "application/pdf"
+          ? new Blob([slideAsset.blob], { type: "application/pdf" })
+          : slideAsset.blob;
+      return URL.createObjectURL(blob);
+    },
+    [mediaSuspended, slideAsset, slideIsPdf],
   );
   const [time, setTime] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
@@ -251,7 +272,10 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       lectureId,
       kind: "slides",
       name: file.name,
-      mimeType: file.type,
+      mimeType:
+        file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+          ? "application/pdf"
+          : file.type,
       blob: file,
       createdAt: new Date().toISOString(),
     });
@@ -607,12 +631,15 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
             </Button>
           </div>
           <div className="grid min-h-0 flex-1 place-items-center p-3">
-            {slideUrl ? (
-              slideAsset?.mimeType === "application/pdf" ||
-              slideAsset?.name.toLowerCase().endsWith(".pdf") ? (
+            {mediaSuspended && slideAsset ? (
+              <div className="max-w-56 text-center text-xs leading-5 text-[var(--palette-text-muted)]">
+                Slides pausas tillfälligt medan transkriberingen använder minne.
+              </div>
+            ) : slideUrl && slideAsset ? (
+              slideIsPdf ? (
                 <PdfSlideViewer
                   key={`${lectureId}:${slideAsset.id}`}
-                  blob={slideAsset.blob}
+                  source={slideUrl}
                   name={slideAsset.name}
                 />
               ) : (
@@ -883,7 +910,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
           </div>
         </section>
       </main>
-      <AudioPanel lectureId={lectureId} onTime={setTime} />
+      <AudioPanel
+        lectureId={lectureId}
+        onTime={setTime}
+        mediaSuspended={mediaSuspended}
+      />
       <Dialog
         open={terminologyReviewOpen}
         onOpenChange={setTerminologyReviewOpen}

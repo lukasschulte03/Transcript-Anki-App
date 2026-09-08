@@ -19,13 +19,19 @@ import {
 } from "lucide-react";
 import { useAppStore } from "../../core/store";
 import { db } from "../../core/database";
-import type { CardType, Flashcard } from "../../core/types";
+import {
+  resolveCardGenerationSettings,
+  type CardGenerationSettings,
+  type CardType,
+  type Flashcard,
+} from "../../core/types";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import {
   createCardPrompt,
   cardPromptSummary,
+  cardResponseErrorMessage,
   duplicateExplanation,
   generateCardsWithApi,
   parseCardResponse,
@@ -166,22 +172,15 @@ export function CardStudio() {
     selectedNode?.type === "lecture" && scopedLectureIds.has(selectedNode.id)
       ? selectedNode.id
       : (scopedLectures[0]?.id ?? "");
+  const savedGeneration = resolveCardGenerationSettings(settings.cardGeneration);
   const [density, setDensity] = useState<"few" | "balanced" | "many">(
-    "balanced",
+    () => savedGeneration.density,
   );
-  const [types, setTypes] = useState<CardType[]>(["basic", "concept"]);
-  const [sources, setSources] = useState({
-    transcript: true,
-    notes: true,
-    markers: true,
-    slides: true,
-    context: true,
-  });
-  const [preferences, setPreferences] = useState<string[]>([
-    generationPreferences[0],
-    generationPreferences[1],
-    generationPreferences[3],
-  ]);
+  const [types, setTypes] = useState<CardType[]>(() => savedGeneration.types);
+  const [sources, setSources] = useState(() => savedGeneration.sources);
+  const [preferences, setPreferences] = useState<string[]>(
+    () => savedGeneration.preferences,
+  );
   const [promptOpen, setPromptOpen] = useState(false);
   const [ankiHelpOpen, setAnkiHelpOpen] = useState(false);
   const [openingAnki, setOpeningAnki] = useState(false);
@@ -339,15 +338,22 @@ export function CardStudio() {
   const [excludedContextFileIds, setExcludedContextFileIds] = useState<
     string[]
   >([]);
-  const [contextLevels, setContextLevels] = useState<
-    Record<"global" | "course" | "module" | "topic" | "lecture", boolean>
-  >({
-    global: true,
-    course: true,
-    module: true,
-    topic: true,
-    lecture: true,
-  });
+  const [contextLevels, setContextLevels] = useState(
+    () => savedGeneration.contextLevels,
+  );
+  const updateGenerationDefaults = (
+    patch: Partial<CardGenerationSettings>,
+  ) => {
+    const current = resolveCardGenerationSettings(settings.cardGeneration);
+    updateSettings({
+      cardGeneration: {
+        ...current,
+        ...patch,
+        sources: { ...current.sources, ...patch.sources },
+        contextLevels: { ...current.contextLevels, ...patch.contextLevels },
+      },
+    });
+  };
   const inheritedSettings = useMemo(() => {
     const chain = [];
     let current = nodes.find((item) => item.id === lectureId);
@@ -775,8 +781,8 @@ export function CardStudio() {
       } else {
         setPromptOpen(false);
       }
-    } catch (e) {
-      toast.error(`Svaret kunde inte läsas: ${String(e)}`);
+    } catch (error) {
+      toast.error(cardResponseErrorMessage(error));
     }
   };
   const copyPrompt = async () => {
@@ -823,8 +829,8 @@ export function CardStudio() {
           ? `Alla ${generationChunks.length} delar är klara – granska korten.`
           : "AI-svaret är klart – granska och importera",
       );
-    } catch (e) {
-      toast.error(String(e));
+    } catch (error) {
+      toast.error(cardResponseErrorMessage(error));
     } finally {
       setBusy(false);
       setGenerationProgress(null);
@@ -1048,7 +1054,10 @@ export function CardStudio() {
               ).map(([value, label]) => (
                 <button
                   key={value}
-                  onClick={() => setDensity(value)}
+                  onClick={() => {
+                    setDensity(value);
+                    updateGenerationDefaults({ density: value });
+                  }}
                   className={`rounded-md px-2 py-2 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${density === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
                 >
                   {label}
@@ -1076,13 +1085,13 @@ export function CardStudio() {
                       <input
                         type="checkbox"
                         checked={types.includes(t.id)}
-                        onChange={() =>
-                          setTypes((x) =>
-                            x.includes(t.id)
-                              ? x.filter((v) => v !== t.id)
-                              : [...x, t.id],
-                          )
-                        }
+                        onChange={() => {
+                          const next = types.includes(t.id)
+                            ? types.filter((value) => value !== t.id)
+                            : [...types, t.id];
+                          setTypes(next);
+                          updateGenerationDefaults({ types: next });
+                        }}
                         className="accent-violet-600"
                       />
                       {t.label}
@@ -1112,12 +1121,11 @@ export function CardStudio() {
                       <input
                         type="checkbox"
                         checked={sources[id]}
-                        onChange={() =>
-                          setSources((current) => ({
-                            ...current,
-                            [id]: !current[id],
-                          }))
-                        }
+                        onChange={() => {
+                          const next = { ...sources, [id]: !sources[id] };
+                          setSources(next);
+                          updateGenerationDefaults({ sources: next });
+                        }}
                         className="accent-violet-600"
                       />
                       {label}
@@ -1148,12 +1156,14 @@ export function CardStudio() {
                           <input
                             type="checkbox"
                             checked={contextLevels[level]}
-                            onChange={() =>
-                              setContextLevels((current) => ({
-                                ...current,
-                                [level]: !current[level],
-                              }))
-                            }
+                            onChange={() => {
+                              const next = {
+                                ...contextLevels,
+                                [level]: !contextLevels[level],
+                              };
+                              setContextLevels(next);
+                              updateGenerationDefaults({ contextLevels: next });
+                            }}
                           />
                           {label}
                         </label>
@@ -1265,13 +1275,13 @@ export function CardStudio() {
                       <input
                         type="checkbox"
                         checked={preferences.includes(preference)}
-                        onChange={() =>
-                          setPreferences((current) =>
-                            current.includes(preference)
-                              ? current.filter((item) => item !== preference)
-                              : [...current, preference],
-                          )
-                        }
+                        onChange={() => {
+                          const next = preferences.includes(preference)
+                            ? preferences.filter((item) => item !== preference)
+                            : [...preferences, preference];
+                          setPreferences(next);
+                          updateGenerationDefaults({ preferences: next });
+                        }}
                         className="mt-0.5 accent-violet-600"
                       />
                       {preference}
@@ -1564,8 +1574,8 @@ export function CardStudio() {
           ) : (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="mb-3 text-xs text-slate-500">
-                {settings.aiProvider} · {settings.aiModel}. Nyckeln sparas bara
-                om du väljer det nedan, i Windows Credential Manager.
+                {settings.aiProvider} · {settings.aiModel}. Hantera sparade
+                nycklar i Inställningar. Du kan också tillfälligt ersätta den här.
               </div>
               <div className="mb-3 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
                 <div className="font-medium text-foreground">

@@ -11,6 +11,7 @@ import type {
   NodeType,
   TranscriptSegment,
 } from "./types";
+import { defaultCardGenerationSettings } from "./types";
 import { uid } from "../lib/utils";
 import { db } from "./database";
 import { normalizePalette } from "./theme";
@@ -230,6 +231,7 @@ export const useAppStore = create<AppState>()(
         aiProvider: "openai",
         aiModel: "gpt-4.1-mini",
         aiBaseUrl: "https://api.openai.com/v1",
+        cardGeneration: defaultCardGenerationSettings(),
         transcriptionProvider: "local",
         localTranscriptionModel: "base",
         localTranscriptionAcceleration: "auto",

@@ -1,7 +1,7 @@
 {
   "name": "transcript-anki-app",
   "private": true,
-  "version": "0.4.10",
+  "version": "0.4.11",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,7 +12,7 @@
     "qa:browser": "pnpm lint && pnpm test && pnpm build && pnpm test:e2e",
     "qa:lighthouse": "node scripts/lighthouse-qa.mjs",
     "qa": "pnpm qa:browser && pnpm qa:lighthouse",
-    "qa:desktop": "cross-env VITE_DESKTOP_E2E=true pnpm build && cargo build --manifest-path src-tauri/Cargo.toml --release --features tauri-plugin-wdio && pnpm exec wdio run wdio.desktop.conf.ts",
+    "qa:desktop": "cross-env VITE_DESKTOP_E2E=true pnpm tauri build --no-bundle --features tauri-plugin-wdio && pnpm exec wdio run wdio.desktop.conf.ts",
     "graph:refresh": "graphify . --update --code-only --no-viz",
     "check": "pnpm lint && pnpm test && pnpm build",
     "preview": "vite preview",

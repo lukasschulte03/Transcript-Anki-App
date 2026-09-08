@@ -31,6 +31,82 @@ export async function seedLibrary(page: Page) {
   }, seededNodes);
 }
 
+/** Seeds twelve distinct local PDF assets without touching the user's library. */
+export async function seedPdfStressLibrary(page: Page) {
+  await seedLibrary(page);
+  const lectures = Array.from({ length: 12 }, (_, index) => {
+    const number = String(index + 1).padStart(2, "0");
+    return {
+      id: `pdf-lecture-${number}`,
+      title: `PDF-stress ${number}`,
+      assetId: `pdf-asset-${number}`,
+    };
+  });
+  await page.evaluate((stressLectures) => {
+    const key = "lectio-state-v1";
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
+    stored.state.nodes = [
+      ...stored.state.nodes.filter((node: { id: string }) => node.id !== "lecture"),
+      ...stressLectures.map((lecture, index) => ({
+        id: lecture.id,
+        parentId: "module",
+        type: "lecture",
+        title: lecture.title,
+        context: "",
+        createdAt: `2026-01-01T00:${String(index + 3).padStart(2, "0")}:00.000Z`,
+        settings: {},
+        sortIndex: index,
+      })),
+    ];
+    stored.state.lectures = Object.fromEntries(
+      stressLectures.map((lecture) => [
+        lecture.id,
+        {
+          lectureId: lecture.id,
+          notes: "",
+          slideAssetId: lecture.assetId,
+          slideName: `${lecture.title}.pdf`,
+        },
+      ]),
+    );
+    stored.state.selectedId = stressLectures[0].id;
+    stored.state.activeView = "workspace";
+    localStorage.setItem(key, JSON.stringify(stored));
+  }, lectures);
+  await page.reload();
+  await page.locator('input[value="PDF-stress 01"]').waitFor();
+  await page.evaluate(async (stressLectures) => {
+    const request = indexedDB.open("lectio-assets");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("assets", "readwrite");
+    const store = transaction.objectStore("assets");
+    const pdf = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF";
+    for (const lecture of stressLectures) {
+      store.put({
+        id: lecture.assetId,
+        lectureId: lecture.id,
+        kind: "slides",
+        name: `${lecture.title}.pdf`,
+        mimeType: "application/pdf",
+        blob: new Blob([pdf], { type: "application/pdf" }),
+        createdAt: "2026-01-01T00:00:00.000Z",
+      });
+    }
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+  }, lectures);
+  await page.reload();
+  await page.locator('input[value="PDF-stress 01"]').waitFor();
+  return lectures;
+}
+
 type QaFixtures = { runtimeErrors: string[] };
 
 /** Turns browser runtime errors into test failures with an attached diagnostic. */

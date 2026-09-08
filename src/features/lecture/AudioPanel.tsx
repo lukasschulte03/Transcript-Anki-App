@@ -88,9 +88,11 @@ const apiChunkCache = new Map<string, CachedApiChunk[]>();
 export function AudioPanel({
   lectureId,
   onTime,
+  mediaSuspended = false,
 }: {
   lectureId: string;
   onTime: (seconds: number) => void;
+  mediaSuspended?: boolean;
 }) {
   const lecture = useAppStore((s) => s.lectures[lectureId]);
   const nodes = useAppStore((s) => s.nodes);
@@ -120,11 +122,16 @@ export function AudioPanel({
   ]);
   const audioPartKey = audioParts.map((part) => part.assetId).join(":");
   const [activeAudioPart, setActiveAudioPart] = useState(0);
-  const assets = useLiveQuery(
-    () => db.assets.bulkGet(audioParts.map((part) => part.assetId)),
-    [audioPartKey],
+  // Keep just the playing part in renderer memory. Hydrating every split
+  // mobile recording at once can exhaust WebView2 before transcription starts.
+  const activeAudioAssetId = audioParts[activeAudioPart]?.assetId;
+  const asset = useLiveQuery(
+    () =>
+      activeAudioAssetId
+        ? db.assets.get(activeAudioAssetId)
+        : undefined,
+    [activeAudioAssetId],
   );
-  const asset = assets?.[activeAudioPart];
   const recoverableSession = useLiveQuery(async () => {
     const sessions = await db.recordingSessions
       .where("lectureId")
@@ -139,8 +146,8 @@ export function AudioPanel({
     return canRecoverRecording(session, chunkCount) ? session : undefined;
   }, [lectureId]);
   const audioUrl = useMemo(
-    () => (asset ? URL.createObjectURL(asset.blob) : ""),
-    [asset],
+    () => (!mediaSuspended && asset ? URL.createObjectURL(asset.blob) : ""),
+    [asset, mediaSuspended],
   );
   const transcriptionPrompt = useMemo(
     () =>
@@ -714,20 +721,6 @@ export function AudioPanel({
               : "Skickar ljudfilen till vald tjänst…",
         });
         try {
-          const partsWithAssets = audioParts
-            .map((part, index) => ({ part, asset: assets?.[index] }))
-            .filter(
-              (
-                entry,
-              ): entry is {
-                part: (typeof audioParts)[number];
-                asset: NonNullable<typeof asset>;
-              } => Boolean(entry.asset),
-            );
-          if (partsWithAssets.length !== audioParts.length)
-            throw new Error(
-              "En eller flera ljuddelar kunde inte hittas lokalt",
-            );
           let offset = 0;
           const mergedSegments: Parameters<typeof setSegments>[1] = [];
           const updatedParts = [...audioParts];
@@ -738,9 +731,12 @@ export function AudioPanel({
           const cachedApiChunks = apiResumeKey
             ? [...(apiChunkCache.get(apiResumeKey) ?? [])]
             : [];
-          for (const [index, entry] of partsWithAssets.entries()) {
+          for (const [index, part] of audioParts.entries()) {
             if (isActiveTranscriptionCancelled(jobId))
               throw new Error("TRANSCRIPTION_CANCELLED");
+            const partAsset = await db.assets.get(part.assetId);
+            if (!partAsset)
+              throw new Error("En eller flera ljuddelar kunde inte hittas lokalt");
             upsertJob({
               id: jobId,
               kind: "transcription",
@@ -751,20 +747,20 @@ export function AudioPanel({
               phase: "transcribing",
               status: "active",
               current: index,
-              total: partsWithAssets.length,
-              detail: `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+              total: audioParts.length,
+              detail: `Bearbetar ljuddel ${index + 1} av ${audioParts.length}…`,
             });
-            const uploadParts =
+            let uploadParts =
               transcribeMode === "api"
-                ? await prepareAudioForCloudTranscription(entry.asset.blob)
-                : [entry.asset.blob];
+                ? await prepareAudioForCloudTranscription(partAsset.blob)
+                : [partAsset.blob];
             let uploadOffset = 0;
             for (const [uploadIndex, uploadPart] of uploadParts.entries()) {
               if (isActiveTranscriptionCancelled(jobId))
                 throw new Error("TRANSCRIPTION_CANCELLED");
               const cachedChunk = cachedApiChunks.find(
                 (chunk) =>
-                  chunk.assetId === entry.part.assetId &&
+                  chunk.assetId === part.assetId &&
                   chunk.index === uploadIndex,
               );
               if (cachedChunk) {
@@ -788,11 +784,11 @@ export function AudioPanel({
                 phase: "transcribing",
                 status: "active",
                 current: index,
-                total: partsWithAssets.length,
+                total: audioParts.length,
                 detail:
                   uploadParts.length > 1
                     ? `Transkriberar uppladdningsdel ${uploadIndex + 1} av ${uploadParts.length}…`
-                    : `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+                    : `Bearbetar ljuddel ${index + 1} av ${audioParts.length}…`,
               });
               const result =
                 transcribeMode === "local"
@@ -823,7 +819,7 @@ export function AudioPanel({
                 const nextCache = [
                   ...(apiChunkCache.get(apiResumeKey) ?? []),
                   {
-                    assetId: entry.part.assetId,
+                    assetId: part.assetId,
                     index: uploadIndex,
                     duration: uploadDuration,
                     segments: result.segments,
@@ -834,12 +830,15 @@ export function AudioPanel({
               }
               uploadOffset += uploadDuration;
             }
-            const measuredDuration = entry.part.duration ?? uploadOffset;
+            // Release temporary cloud chunks before loading the next part.
+            uploadParts = [];
+            const measuredDuration = part.duration ?? uploadOffset;
             const duration =
               measuredDuration ||
-              (await measureAudioDuration(entry.asset.blob));
-            updatedParts[index] = { ...entry.part, duration };
+              (await measureAudioDuration(partAsset.blob));
+            updatedParts[index] = { ...part, duration };
             offset += duration;
+            await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
           }
           updateLecture(lectureId, {
             audioParts: updatedParts,
@@ -1049,7 +1048,7 @@ export function AudioPanel({
     );
   };
   const optimizeActiveAudio = async () => {
-    const source = assets?.[activeAudioPart];
+    const source = asset;
     const part = audioParts[activeAudioPart];
     if (!source || !part || optimizingAudio) return;
     const jobId = `audio-optimisation:${lectureId}:${part.assetId}`;
@@ -1354,7 +1353,11 @@ export function AudioPanel({
             />
           </label>
         </Button>
-        {audioUrl ? (
+        {mediaSuspended && audioParts.length > 0 ? (
+          <span className="min-w-0 flex-1 text-xs text-[var(--palette-text-muted)]">
+            Ljudspelaren pausas tillfälligt medan transkriberingen kör.
+          </span>
+        ) : audioUrl ? (
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <Button
               variant="ghost"
@@ -1752,7 +1755,7 @@ export function AudioPanel({
                   type="password"
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Klistra in för denna session"
+                  placeholder="Sparad nyckel fylls i automatiskt"
                 />
               </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
