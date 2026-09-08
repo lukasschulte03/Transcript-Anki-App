@@ -8,6 +8,7 @@ import type {
   VisualCandidate,
 } from "../core/types";
 import { netFetch } from "./platform";
+import { visualPromptLines } from "./visualIndex";
 
 export const aiModelSuggestions: Record<
   AppSettings["aiProvider"],
@@ -180,10 +181,8 @@ export function cardPromptSummary(r: CardRequest) {
   // Visual candidates are only compact local descriptions. Still reserve a
   // bounded part of the prompt so the displayed token/cost estimate is honest.
   const visuals = withinBudget(
-    (r.visualCandidates ?? [])
-      .map((candidate) => `${candidate.id} | ${candidate.description}`)
-      .join("\n"),
-    Math.floor(maximum * 0.07),
+    visualPromptLines(r.visualCandidates ?? []),
+    Math.floor(maximum * 0.14),
   );
   const omitted = [
     notes,

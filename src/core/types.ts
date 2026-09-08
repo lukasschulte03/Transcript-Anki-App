@@ -62,6 +62,8 @@ export interface Flashcard {
   duplicateOfId?: string;
   /** Optional validated reference to a locally indexed slide visual. */
   visualId?: string;
+  /** Lecture that owns the visual when it was selected from a module library. */
+  visualLectureId?: string;
 }
 
 export interface VisualCandidate {
@@ -70,6 +72,8 @@ export interface VisualCandidate {
   description: string;
   keywords: string[];
   sourceHash: string;
+  /** Stable local fingerprint for duplicate detection between slide decks. */
+  contentHash?: string;
 }
 
 export interface LectureData {
@@ -83,6 +87,8 @@ export interface LectureData {
   visualIndex?: VisualCandidate[];
   visualIndexHash?: string;
   visualIndexUpdatedAt?: string;
+  /** Candidates hidden from the reusable module library; original slides stay intact. */
+  hiddenVisualIds?: string[];
   /** Preserved before an optional terminology review is applied. */
   transcriptOriginal?: TranscriptSegment[];
   audioAssetId?: string;

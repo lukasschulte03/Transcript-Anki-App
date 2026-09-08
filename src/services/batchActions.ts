@@ -30,7 +30,11 @@ import { inheritedGlossary } from "./glossary";
 import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import { recordDiagnostic } from "./diagnostics";
-import { resolveVisualMedia, selectVisualCandidates } from "./visualIndex";
+import {
+  moduleVisualCandidates,
+  resolveVisualMedia,
+  selectVisualCandidates,
+} from "./visualIndex";
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
 export type BatchJobStatus =
@@ -260,6 +264,23 @@ async function generate(job: BatchJob) {
   const lecture = state.lectures[job.lectureId];
   if (!node || !lecture) throw new Error("Föreläsningen kunde inte hittas.");
   const chain = parentChain(state.nodes, job.lectureId);
+  const moduleId = chain.find((item) => item.type === "module")?.id;
+  const visuals = moduleId
+    ? moduleVisualCandidates(state.nodes, state.lectures, moduleId)
+    : (lecture.visualIndex ?? []).map((candidate) => ({
+        ...candidate,
+        lectureId: job.lectureId,
+        lectureTitle: node.title,
+        moduleId: "",
+      }));
+  const visualSources = new Map(
+    visuals.map((candidate) => [candidate.id, candidate.lectureId]),
+  );
+  const rankedVisuals = [...visuals].sort(
+    (left, right) =>
+      Number(right.lectureId === job.lectureId) - Number(left.lectureId === job.lectureId) ||
+      left.slidePage - right.slidePage,
+  );
   const contextFiles = await db.assets
     .where("nodeId")
     .anyOf(chain.map((item) => item.id))
@@ -309,7 +330,7 @@ async function generate(job: BatchJob) {
       ),
       slideText: lecture.slideText ?? "",
       visualCandidates: selectVisualCandidates(
-        lecture.visualIndex ?? [],
+        rankedVisuals,
         chunk.transcript.map((segment) => segment.text).join("\n"),
       ),
       density: "balanced",
@@ -328,13 +349,15 @@ async function generate(job: BatchJob) {
       })),
     });
     const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
-    const visualIds = new Set((lecture.visualIndex ?? []).map((item) => item.id));
+    const visualIds = new Set(visualSources.keys());
     const parsed = parseCardResponse(raw, job.lectureId)
       .slice(0, chunkCardCeiling(36, chunk))
       .map((card) =>
         card.visualId && !visualIds.has(card.visualId)
           ? { ...card, visualId: undefined }
-          : card,
+          : card.visualId
+            ? { ...card, visualLectureId: visualSources.get(card.visualId) }
+            : card,
       );
     generated.push(
       ...parsed.filter((card) => {
@@ -395,7 +418,10 @@ async function sync(job: BatchJob) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
       const tags = [...new Set(withoutStructuralTags(card.tags))];
-      const media = await resolveVisualMedia(card, state.lectures[card.lectureId]);
+      const media = await resolveVisualMedia(
+        card,
+        state.lectures[card.visualLectureId ?? card.lectureId],
+      );
       const ankiId = await syncCard(
         state.settings.ankiUrl,
         deck,

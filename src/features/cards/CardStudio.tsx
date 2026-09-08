@@ -59,6 +59,7 @@ import {
   formatCardGenerationCost,
 } from "../../services/cardGenerationCost";
 import {
+  moduleVisualCandidates,
   resolveVisualMedia,
   selectVisualCandidates,
 } from "../../services/visualIndex";
@@ -71,6 +72,22 @@ function courseIdForLecture(
   const visited = new Set<string>();
   while (current && !visited.has(current.id)) {
     if (current.type === "course") return current.id;
+    visited.add(current.id);
+    current = current.parentId
+      ? nodes.find((node) => node.id === current!.parentId)
+      : undefined;
+  }
+  return undefined;
+}
+
+function moduleIdForLecture(
+  nodes: ReturnType<typeof useAppStore.getState>["nodes"],
+  lectureId: string,
+) {
+  let current = nodes.find((node) => node.id === lectureId);
+  const visited = new Set<string>();
+  while (current && !visited.has(current.id)) {
+    if (current.type === "module") return current.id;
     visited.add(current.id);
     current = current.parentId
       ? nodes.find((node) => node.id === current!.parentId)
@@ -200,6 +217,35 @@ export function CardStudio() {
   }, [credentialKey, settings.aiMode]);
   const node = nodes.find((n) => n.id === lectureId);
   const lecture = lectures[lectureId];
+  const moduleId = useMemo(
+    () => moduleIdForLecture(nodes, lectureId),
+    [nodes, lectureId],
+  );
+  const moduleVisuals = useMemo(
+    () =>
+      moduleId
+        ? moduleVisualCandidates(nodes, lectures, moduleId)
+        : (lecture?.visualIndex ?? []).map((candidate) => ({
+            ...candidate,
+            lectureId,
+            lectureTitle: node?.title ?? "Föreläsning",
+            moduleId: "",
+          })),
+    [lecture?.visualIndex, lectureId, lectures, moduleId, node?.title, nodes],
+  );
+  const visualSources = useMemo(
+    () => new Map(moduleVisuals.map((candidate) => [candidate.id, candidate.lectureId])),
+    [moduleVisuals],
+  );
+  const rankedModuleVisuals = useMemo(
+    () =>
+      [...moduleVisuals].sort(
+        (left, right) =>
+          Number(right.lectureId === lectureId) - Number(left.lectureId === lectureId) ||
+          left.slidePage - right.slidePage,
+      ),
+    [lectureId, moduleVisuals],
+  );
   const courseId = useMemo(
     () => courseIdForLecture(nodes, lectureId),
     [nodes, lectureId],
@@ -516,7 +562,7 @@ export function CardStudio() {
           slideText: sources.slides ? (lecture?.slideText ?? "") : "",
           visualCandidates: sources.slides
             ? selectVisualCandidates(
-                lecture?.visualIndex ?? [],
+                rankedModuleVisuals,
                 `${chunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
               )
             : [],
@@ -567,7 +613,7 @@ export function CardStudio() {
         slideText: sources.slides ? (lecture?.slideText ?? "") : "",
         visualCandidates: sources.slides
           ? selectVisualCandidates(
-              lecture?.visualIndex ?? [],
+              rankedModuleVisuals,
               `${activeChunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
             )
           : [],
@@ -583,7 +629,7 @@ export function CardStudio() {
       density,
       lecture?.notes,
       lecture?.slideText,
-      lecture?.visualIndex,
+      rankedModuleVisuals,
       lectureId,
       markers,
       node?.title,
@@ -614,7 +660,7 @@ export function CardStudio() {
         slideText: sources.slides ? (lecture?.slideText ?? "") : "",
         visualCandidates: sources.slides
           ? selectVisualCandidates(
-              lecture?.visualIndex ?? [],
+              rankedModuleVisuals,
               `${chunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
             )
           : [],
@@ -647,7 +693,7 @@ export function CardStudio() {
     generationChunks,
     lecture?.notes,
     lecture?.slideText,
-    lecture?.visualIndex,
+    rankedModuleVisuals,
     lectureId,
     markers,
     node?.title,
@@ -669,13 +715,15 @@ export function CardStudio() {
               (total, chunk) => total + chunkCardCeiling(cardLimit, chunk),
               0,
             );
-      const visualIds = new Set((lecture?.visualIndex ?? []).map((item) => item.id));
+      const visualIds = new Set(visualSources.keys());
       const parsed = parseCardResponse(response, lectureId)
         .slice(0, importLimit)
         .map((card) =>
           card.visualId && !visualIds.has(card.visualId)
             ? { ...card, visualId: undefined }
-            : card,
+            : card.visualId
+              ? { ...card, visualLectureId: visualSources.get(card.visualId) }
+              : card,
         );
       const identity = (front: string, back: string) =>
         `${front}\u0000${back}`.replace(/\s+/g, " ").trim().toLocaleLowerCase();
@@ -850,7 +898,10 @@ export function CardStudio() {
           if (onlyPending && !needsAnkiSync(card, deck) && !card.ankiSyncError)
             continue;
           const tags = [...new Set(withoutStructuralTags(card.tags))];
-          const media = await resolveVisualMedia(card, lectures[card.lectureId]);
+          const media = await resolveVisualMedia(
+            card,
+            lectures[card.visualLectureId ?? card.lectureId],
+          );
           const id = await syncCard(
             settings.ankiUrl,
             deck,

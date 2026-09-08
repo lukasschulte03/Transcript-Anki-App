@@ -1,4 +1,9 @@
-import type { Flashcard, LectureData, VisualCandidate } from "../core/types";
+import type {
+  Flashcard,
+  LectureData,
+  LibraryNode,
+  VisualCandidate,
+} from "../core/types";
 import { db } from "../core/database";
 
 const stopWords = new Set([
@@ -11,6 +16,15 @@ const words = (value: string) =>
     .toLocaleLowerCase("sv")
     .match(/[\p{L}\p{N}]{3,}/gu)
     ?.filter((word) => !stopWords.has(word)) ?? [];
+
+const contentFingerprint = (value: string) => {
+  let hash = 2166136261;
+  for (const character of value) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+};
 
 export async function visualSourceHash(blob: Blob) {
   const bytes = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
@@ -33,6 +47,7 @@ export async function buildVisualIndex(blob: Blob, pages: string[]) {
         : `Slide ${index + 1}: visuell slide utan läsbar text.`,
       keywords: [...new Set(words(clean))].slice(0, 24),
       sourceHash,
+      contentHash: contentFingerprint(clean || `visual-slide-${index + 1}`),
     };
   });
   return { sourceHash, candidates };
@@ -42,10 +57,10 @@ export async function buildVisualIndex(blob: Blob, pages: string[]) {
 export function selectVisualCandidates(
   candidates: VisualCandidate[],
   query: string,
-  limit = 12,
+  limit = 60,
 ) {
   const queryWords = new Set(words(query));
-  if (!queryWords.size) return candidates.slice(0, Math.min(limit, 6));
+  if (!queryWords.size) return candidates.slice(0, limit);
   return candidates
     .map((candidate) => ({
       candidate,
@@ -59,8 +74,63 @@ export function selectVisualCandidates(
 
 export function visualPromptLines(candidates: VisualCandidate[]) {
   return candidates
-    .map((candidate) => `${candidate.id} | ${candidate.description}`)
+    .map(
+      (candidate) =>
+        `${candidate.id} | ${candidate.description.replace(/\s+/g, " ").slice(0, 150)}`,
+    )
     .join("\n");
+}
+
+export type ModuleVisualCandidate = VisualCandidate & {
+  lectureId: string;
+  lectureTitle: string;
+  moduleId: string;
+};
+
+/**
+ * A module library is derived from lecture-local indexes, so it stays local,
+ * incremental and does not duplicate slide blobs. Exact visual duplicates are
+ * represented once while preserving the first stable source.
+ */
+export function moduleVisualCandidates(
+  nodes: LibraryNode[],
+  lectures: Record<string, LectureData>,
+  moduleId: string,
+  options: { includeHidden?: boolean } = {},
+) {
+  const descendants = new Set<string>([moduleId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const node of nodes) {
+      if (node.parentId && descendants.has(node.parentId) && !descendants.has(node.id)) {
+        descendants.add(node.id);
+        changed = true;
+      }
+    }
+  }
+  const candidates = nodes
+    .filter((node) => node.type === "lecture" && descendants.has(node.id))
+    .flatMap((node) => {
+      const lecture = lectures[node.id];
+      const hidden = new Set(lecture?.hiddenVisualIds ?? []);
+      return (lecture?.visualIndex ?? [])
+        .filter((candidate) => options.includeHidden || !hidden.has(candidate.id))
+        .map((candidate) => ({
+          ...candidate,
+          description: `${node.title} · ${candidate.description}`,
+          lectureId: node.id,
+          lectureTitle: node.title,
+          moduleId,
+        }));
+    });
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = candidate.contentHash ?? `${candidate.sourceHash}:${candidate.slidePage}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 let pdfRuntime: Promise<typeof import("pdfjs-dist")> | undefined;
@@ -86,7 +156,10 @@ async function blobToBase64(blob: Blob) {
 const mediaCache = new Map<string, Promise<{ filename: string; data: string; caption: string } | undefined>>();
 
 /** Renders only the slide page actually used by a card, immediately before Anki sync. */
-export function resolveVisualMedia(card: Flashcard, lecture: LectureData | undefined) {
+export function resolveVisualMedia(
+  card: Pick<Flashcard, "visualId">,
+  lecture: LectureData | undefined,
+) {
   if (!card.visualId || !lecture?.slideAssetId || !lecture.visualIndex?.length)
     return Promise.resolve(undefined);
   const candidate = lecture.visualIndex.find((item) => item.id === card.visualId);

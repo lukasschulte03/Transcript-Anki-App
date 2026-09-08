@@ -25,6 +25,7 @@ import { parseTimestampedText } from "../../services/transcription";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { suggestSlideMappings } from "../../services/slideMatching";
 import { buildVisualIndex } from "../../services/visualIndex";
+import { ModuleVisualLibrary } from "../library/ModuleVisualLibrary";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "../../services/feedbackToast";
@@ -1288,6 +1289,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 )}
               </div>
             </div>
+            {node.type === "module" && <ModuleVisualLibrary moduleId={node.id} />}
             <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Settings2 className="size-4 text-violet-500" /> Egna

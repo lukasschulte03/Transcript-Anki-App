@@ -63,7 +63,11 @@ import {
   formatCardGenerationCost,
 } from "./cardGenerationCost";
 import { runExclusiveTranscription } from "./transcriptionQueue";
-import { selectVisualCandidates, visualPromptLines } from "./visualIndex";
+import {
+  moduleVisualCandidates,
+  selectVisualCandidates,
+  visualPromptLines,
+} from "./visualIndex";
 import {
   backupSourceFromState,
   normalizeLibraryBackup,
@@ -119,6 +123,34 @@ describe("biblioteksbackup", () => {
     expect(source.lectures.lecture.notes).toBe("N");
     expect(source.segments).toHaveLength(1);
     expect(source.cards).toHaveLength(1);
+  });
+});
+
+describe("modulens bildbibliotek", () => {
+  it("återanvänder bilder från flera föreläsningar och gömmer lokalt rensade kandidater", () => {
+    const nodes = [
+      { id: "module", parentId: "course", type: "module", title: "Akut", sortIndex: 0, context: "", createdAt: "now" },
+      { id: "one", parentId: "module", type: "lecture", title: "Rond", sortIndex: 0, context: "", createdAt: "now" },
+      { id: "two", parentId: "module", type: "lecture", title: "EKG", sortIndex: 1, context: "", createdAt: "now" },
+    ] as LibraryNode[];
+    const lectures = {
+      one: {
+        lectureId: "one",
+        notes: "",
+        visualIndex: [{ id: "hidden", slidePage: 1, description: "Slide 1: Rond", keywords: ["rond"], sourceHash: "one", contentHash: "same" }],
+        hiddenVisualIds: ["hidden"],
+      },
+      two: {
+        lectureId: "two",
+        notes: "",
+        visualIndex: [{ id: "ecg", slidePage: 3, description: "Slide 3: EKG med ST-höjning", keywords: ["ekg", "st"], sourceHash: "two", contentHash: "ecg" }],
+      },
+    };
+    const visible = moduleVisualCandidates(nodes, lectures, "module");
+    expect(visible.map((candidate) => candidate.id)).toEqual(["ecg"]);
+    expect(visible[0]?.description).toContain("EKG · Slide 3");
+    const all = moduleVisualCandidates(nodes, lectures, "module", { includeHidden: true });
+    expect(all.map((candidate) => candidate.id)).toEqual(["hidden", "ecg"]);
   });
 });
 
