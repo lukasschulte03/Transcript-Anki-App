@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useAppStore } from "../../core/store";
+import { useShallow } from "zustand/react/shallow";
 import { db } from "../../core/database";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -92,7 +93,25 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     setSegments,
     setActiveView,
     upsertJob,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    nodes: state.nodes,
+    lectures: state.lectures,
+    segments: state.segments,
+    markers: state.markers,
+    cards: state.cards,
+    settings: state.settings,
+    updateNode: state.updateNode,
+    updateLecture: state.updateLecture,
+    updateSegment: state.updateSegment,
+    removeSegment: state.removeSegment,
+    setSegmentQualityFlag: state.setSegmentQualityFlag,
+    updateMarker: state.updateMarker,
+    removeMarker: state.removeMarker,
+    removeSuspiciousSegments: state.removeSuspiciousSegments,
+    setSegments: state.setSegments,
+    setActiveView: state.setActiveView,
+    upsertJob: state.upsertJob,
+  })));
   const node = nodes.find((n) => n.id === lectureId)!;
   const lecture = lectures[lectureId] ?? { lectureId, notes: "" };
   const transcript = segments
@@ -1204,7 +1223,12 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
 }
 
 export function ObjectOverview({ nodeId }: { nodeId: string }) {
-  const { nodes, updateNode, removeNode, inheritedContext } = useAppStore();
+  const { nodes, updateNode, removeNode, inheritedContext } = useAppStore(useShallow((state) => ({
+    nodes: state.nodes,
+    updateNode: state.updateNode,
+    removeNode: state.removeNode,
+    inheritedContext: state.inheritedContext,
+  })));
   const node = nodes.find((n) => n.id === nodeId)!;
   const children = nodes.filter((n) => n.parentId === nodeId);
   const context = inheritedContext(nodeId);

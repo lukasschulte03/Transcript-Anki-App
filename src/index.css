@@ -360,6 +360,15 @@ body,
   margin: 0;
   overflow: hidden;
 }
+#root {
+  /* Keep the React surface pinned to the native WebView's client area while
+     Windows is resizing a frameless Tauri window. */
+  position: fixed;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  contain: layout paint;
+}
 html,
 body {
   overscroll-behavior: none;

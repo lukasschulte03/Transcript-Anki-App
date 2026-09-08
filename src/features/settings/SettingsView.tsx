@@ -22,6 +22,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useAppStore } from "../../core/store";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
@@ -175,7 +176,14 @@ const unzipAsync = (data: Uint8Array) =>
 
 export function SettingsView() {
   const glossaryFileRef = useRef<HTMLInputElement>(null);
-  const store = useAppStore();
+  const store = useAppStore(useShallow((state) => ({
+    settings: state.settings,
+    nodes: state.nodes,
+    updateSettings: state.updateSettings,
+    importLibrary: state.importLibrary,
+    restoreLibraryBackup: state.restoreLibraryBackup,
+    upsertJob: state.upsertJob,
+  })));
   const {
     settings,
     nodes,
@@ -1818,7 +1826,10 @@ function formatBytes(bytes: number) {
 }
 
 function LocalModelManager() {
-  const { settings, updateSettings } = useAppStore();
+  const { settings, updateSettings } = useAppStore(useShallow((state) => ({
+    settings: state.settings,
+    updateSettings: state.updateSettings,
+  })));
   const selected = settings.localTranscriptionModel ?? "base";
   const [statuses, setStatuses] = useState<
     Partial<Record<LocalModel, LocalModelStatus>>

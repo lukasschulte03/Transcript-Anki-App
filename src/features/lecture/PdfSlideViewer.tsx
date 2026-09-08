@@ -6,7 +6,7 @@ import {
   LoaderCircle,
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
-import type { PDFDocumentLoadingTask } from "pdfjs-dist";
+import type { PDFDocumentLoadingTask, PDFDocumentProxy, PDFPageProxy, RenderTask } from "pdfjs-dist";
 
 let pdfRuntime: Promise<typeof import("pdfjs-dist")> | undefined;
 
@@ -23,6 +23,8 @@ async function loadPdfRuntime() {
 
 export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
   const canvas = useRef<HTMLCanvasElement>(null);
+  const documentRef = useRef<PDFDocumentProxy | undefined>(undefined);
+  const renderTaskRef = useRef<RenderTask | undefined>(undefined);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -39,7 +41,7 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
   useEffect(() => {
     let cancelled = false;
     let documentTask: PDFDocumentLoadingTask | undefined;
-    const render = async () => {
+    const load = async () => {
       setLoading(true);
       setError("");
       try {
@@ -49,23 +51,9 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
         });
         const document = await documentTask.promise;
         if (cancelled) return;
+        documentRef.current = document;
         setPageCount(document.numPages);
-        const safePage = Math.min(page, document.numPages);
-        if (safePage !== page) setPage(safePage);
-        const pdfPage = await document.getPage(safePage);
-        const viewport = pdfPage.getViewport({ scale: 1.6 });
-        const target = canvas.current;
-        if (!target || cancelled) return;
-        target.width = Math.ceil(viewport.width);
-        target.height = Math.ceil(viewport.height);
-        const context = target.getContext("2d");
-        if (!context) throw new Error("Kunde inte skapa slideyta");
-        await pdfPage.render({
-          canvas: target,
-          canvasContext: context,
-          viewport,
-        }).promise;
-        if (!cancelled) setLoading(false);
+        setPage((current) => Math.min(current, document.numPages));
       } catch {
         if (!cancelled) {
           setError("PDF:en kunde inte visas. Prova att importera filen igen.");
@@ -73,12 +61,64 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
         }
       }
     };
+    void load();
+    return () => {
+      cancelled = true;
+      renderTaskRef.current?.cancel();
+      renderTaskRef.current = undefined;
+      documentRef.current = undefined;
+      void documentTask?.destroy();
+    };
+  }, [blob]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let pdfPage: PDFPageProxy | undefined;
+    const render = async () => {
+      const document = documentRef.current;
+      if (!document) return;
+      setLoading(true);
+      setError("");
+      try {
+        renderTaskRef.current?.cancel();
+        const safePage = Math.min(page, document.numPages);
+        if (safePage !== page) {
+          setPage(safePage);
+          return;
+        }
+        pdfPage = await document.getPage(safePage);
+        const viewport = pdfPage.getViewport({ scale: 1.6 });
+        const target = canvas.current;
+        if (!target || cancelled) return;
+        target.width = Math.ceil(viewport.width);
+        target.height = Math.ceil(viewport.height);
+        const context = target.getContext("2d");
+        if (!context) throw new Error("Kunde inte skapa slideyta");
+        const task = pdfPage.render({
+          canvas: target,
+          canvasContext: context,
+          viewport,
+        });
+        renderTaskRef.current = task;
+        await task.promise;
+        if (!cancelled) setLoading(false);
+      } catch {
+        if (!cancelled) {
+          setError("PDF:en kunde inte visas. Prova att importera filen igen.");
+          setLoading(false);
+        }
+      } finally {
+        // PDF.js otherwise keeps rendered page resources around until the
+        // complete document is destroyed; that becomes expensive in long decks.
+        pdfPage?.cleanup();
+      }
+    };
     void render();
     return () => {
       cancelled = true;
-      void documentTask?.destroy();
+      renderTaskRef.current?.cancel();
     };
-  }, [blob, page]);
+  }, [page, pageCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

@@ -10,6 +10,7 @@ import {
   Wand2,
 } from "lucide-react";
 import { useAppStore } from "../core/store";
+import { useShallow } from "zustand/react/shallow";
 import { cn } from "../lib/utils";
 import { APP_VERSION } from "../lib/appVersion";
 
@@ -19,7 +20,6 @@ const navigation = [
   { id: "cards", label: "Anki-kort", icon: Sparkles },
   { id: "inbox", label: "Inkorg", icon: Inbox },
   { id: "super-actions", label: "Super Actions", icon: Wand2 },
-  { id: "settings", label: "Inställningar", icon: Settings },
 ] as const;
 
 const shortcutHintClass =
@@ -27,7 +27,14 @@ const shortcutHintClass =
 
 /** Primary navigation shaped after the shadcn dashboard sidebar. */
 export function AppNavigation() {
-  const { activeView, setActiveView, settings, updateSettings } = useAppStore();
+  const { activeView, setActiveView, settings, updateSettings } = useAppStore(
+    useShallow((state) => ({
+      activeView: state.activeView,
+      setActiveView: state.setActiveView,
+      settings: state.settings,
+      updateSettings: state.updateSettings,
+    })),
+  );
   const collapsed = settings.librarySidebarCollapsed;
   const navClass = (isActive: boolean) =>
     cn(

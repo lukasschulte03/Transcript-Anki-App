@@ -21,6 +21,7 @@ import {
   canReorderLibraryNode,
   useAppStore,
 } from "../../core/store";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import {
@@ -85,7 +86,22 @@ export function LibrarySidebar() {
     reorderNode,
     selectNode,
     removeNode,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    nodes: state.nodes,
+    lectures: state.lectures,
+    segments: state.segments,
+    markers: state.markers,
+    cards: state.cards,
+    selectedId: state.selectedId,
+    settings: state.settings,
+    updateSettings: state.updateSettings,
+    addNode: state.addNode,
+    updateNode: state.updateNode,
+    moveNode: state.moveNode,
+    reorderNode: state.reorderNode,
+    selectNode: state.selectNode,
+    removeNode: state.removeNode,
+  })));
   const [query, setQuery] = useState("");
   const [createRequest, setCreateRequest] = useState<CreateRequest | null>(
     null,

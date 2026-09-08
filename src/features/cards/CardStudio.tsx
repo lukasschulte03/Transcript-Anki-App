@@ -18,6 +18,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useAppStore } from "../../core/store";
+import { useShallow } from "zustand/react/shallow";
 import { db } from "../../core/database";
 import type { CardType, Flashcard } from "../../core/types";
 import { Button } from "../../components/ui/Button";
@@ -129,7 +130,24 @@ export function CardStudio() {
     markAnkiNoteDeletionError,
     updateSettings,
     inheritedContext,
-  } = useAppStore();
+  } = useAppStore(useShallow((state) => ({
+    nodes: state.nodes,
+    lectures: state.lectures,
+    segments: state.segments,
+    markers: state.markers,
+    cards: state.cards,
+    settings: state.settings,
+    selectedId: state.selectedId,
+    addCards: state.addCards,
+    updateCard: state.updateCard,
+    updateLecture: state.updateLecture,
+    removeCard: state.removeCard,
+    pendingAnkiDeletions: state.pendingAnkiDeletions,
+    resolveAnkiNoteDeletion: state.resolveAnkiNoteDeletion,
+    markAnkiNoteDeletionError: state.markAnkiNoteDeletionError,
+    updateSettings: state.updateSettings,
+    inheritedContext: state.inheritedContext,
+  })));
   const lecturesList = nodes.filter((n) => n.type === "lecture");
   const selectedNode = nodes.find((node) => node.id === selectedId);
   const scopedLectureIds = useMemo(() => {
