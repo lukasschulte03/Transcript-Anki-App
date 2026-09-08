@@ -79,6 +79,8 @@ export interface LectureData {
     assetId: string;
     name: string;
     duration?: number;
+    /** Stable identity of an imported mobile source, used to avoid duplicates. */
+    sourceFingerprint?: string;
   }[];
   slideAssetId?: string;
   slideName?: string;
@@ -213,6 +215,8 @@ export interface StoredAsset {
   createdAt: string;
   /** Text extracted locally from a supported context file. */
   extractedText?: string;
+  /** Name, byte size and modification time of an imported source recording. */
+  sourceFingerprint?: string;
 }
 
 export interface RecordingSession {

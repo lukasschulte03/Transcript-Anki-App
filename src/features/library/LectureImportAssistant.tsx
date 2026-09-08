@@ -1,18 +1,34 @@
-import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, FileAudio, FileText, Upload } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  FileAudio,
+  FileText,
+  TriangleAlert,
+  Upload,
+  X,
+} from "lucide-react";
 import { toast } from "../../services/feedbackToast";
 import { Dialog } from "../../components/ui/Dialog";
 import { Button } from "../../components/ui/Button";
 import { Input, Label, Select } from "../../components/ui/Form";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
-import { confirmStorageForImport, uid } from "../../lib/utils";
+import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
+import {
+  audioFingerprint,
+  audioFormat,
+  audioMimeType,
+  formatAudioBytes,
+  measureAudioDuration,
+  numberedAudioWarnings,
+  sortAudioFiles,
+  validateAudioFile,
+} from "../../services/audioImport";
 
 function byName(files: File[]) {
-  return [...files].sort((left, right) =>
-    left.name.localeCompare(right.name, "sv", { numeric: true }),
-  );
+  return sortAudioFiles(files);
 }
 
 export function LectureImportAssistant({
@@ -33,6 +49,8 @@ export function LectureImportAssistant({
   const [slideFile, setSlideFile] = useState<File>();
   const [sort, setSort] = useState<"name" | "date" | "manual">("name");
   const [importing, setImporting] = useState(false);
+  const [durations, setDurations] = useState<Record<string, number>>({});
+  const importAbort = useRef<AbortController | undefined>(undefined);
 
   const fileOrder = useMemo(() => {
     if (sort === "manual") return audioFiles;
@@ -42,6 +60,22 @@ export function LectureImportAssistant({
       );
     return byName(audioFiles);
   }, [audioFiles, sort]);
+  const warnings = useMemo(() => numberedAudioWarnings(fileOrder), [fileOrder]);
+
+  useEffect(() => {
+    let active = true;
+    void Promise.all(
+      audioFiles.map(
+        async (file) =>
+          [audioFingerprint(file), await measureAudioDuration(file)] as const,
+      ),
+    ).then((measured) => {
+      if (active) setDurations(Object.fromEntries(measured));
+    });
+    return () => {
+      active = false;
+    };
+  }, [audioFiles]);
 
   const lectureLabel = (id: string) => {
     const lecture = nodes.find((node) => node.id === id);
@@ -75,9 +109,16 @@ export function LectureImportAssistant({
       toast.error("Välj modul och ange namn på den nya föreläsningen");
       return;
     }
+    const audioError = fileOrder.map(validateAudioFile).find(Boolean);
+    if (audioError) {
+      toast.error(audioError);
+      return;
+    }
     for (const file of [...fileOrder, ...(slideFile ? [slideFile] : [])]) {
       if (!(await confirmStorageForImport(file, "importen"))) return;
     }
+    const controller = new AbortController();
+    importAbort.current = controller;
     setImporting(true);
     try {
       const lectureId =
@@ -96,19 +137,44 @@ export function LectureImportAssistant({
               },
             ]
           : [];
-      const newParts = [] as { assetId: string; name: string }[];
+      const knownFingerprints = new Set(
+        (await db.assets.where("lectureId").equals(lectureId).toArray())
+          .map((asset) => asset.sourceFingerprint)
+          .filter(Boolean),
+      );
+      const newParts = [] as {
+        assetId: string;
+        name: string;
+        duration?: number;
+        sourceFingerprint?: string;
+      }[];
+      let wasAborted = false;
       for (const file of fileOrder) {
+        if (controller.signal.aborted) {
+          wasAborted = true;
+          break;
+        }
+        const sourceFingerprint = audioFingerprint(file);
+        if (knownFingerprints.has(sourceFingerprint)) continue;
         const id = uid();
+        const duration =
+          durations[sourceFingerprint] ?? (await measureAudioDuration(file));
         await db.assets.put({
           id,
           lectureId,
           kind: "audio",
           name: file.name,
-          mimeType: file.type || "audio/mpeg",
+          mimeType: audioMimeType(file),
           blob: file,
+          sourceFingerprint,
           createdAt: new Date().toISOString(),
         });
-        newParts.push({ assetId: id, name: file.name });
+        newParts.push({
+          assetId: id,
+          name: file.name,
+          duration,
+          sourceFingerprint,
+        });
       }
       const audioParts = [...existingParts, ...newParts];
       const patch: Parameters<typeof updateLecture>[1] = audioParts.length
@@ -116,9 +182,13 @@ export function LectureImportAssistant({
             audioAssetId: audioParts[0].assetId,
             audioName: audioParts[0].name,
             audioParts,
+            audioDuration: audioParts.reduce(
+              (total, part) => total + (part.duration ?? 0),
+              0,
+            ),
           }
         : {};
-      if (slideFile) {
+      if (slideFile && !wasAborted) {
         const id = uid();
         await db.assets.put({
           id,
@@ -151,11 +221,21 @@ export function LectureImportAssistant({
       setAudioFiles([]);
       setSlideFile(undefined);
       setNewTitle("");
-      toast.success("Föreläsningen importerades");
+      if (wasAborted)
+        toast.message(
+          "Importen avbröts. Sparade ljuddelar finns kvar; välj samma filer igen för att fortsätta.",
+        );
+      else
+        toast.success(
+          newParts.length
+            ? "Föreläsningen importerades"
+            : "Alla valda ljudfiler fanns redan i föreläsningen",
+        );
     } catch (error) {
       toast.error(`Importen kunde inte slutföras: ${String(error)}`);
     } finally {
       setImporting(false);
+      importAbort.current = undefined;
     }
   };
 
@@ -233,7 +313,7 @@ export function LectureImportAssistant({
             ljudfiler
             <input
               type="file"
-              accept="audio/*"
+              accept="audio/*,.m4a,.aac,.mp3,.wav,.mp4,.mpeg,.webm,.ogg,.opus,.flac"
               multiple
               className="hidden"
               onChange={(event) =>
@@ -255,7 +335,10 @@ export function LectureImportAssistant({
                     {file.name}
                   </span>
                   <span className="shrink-0 text-slate-400">
-                    {Math.round(file.size / 1024 / 1024)} MB
+                    {audioFormat(file)} · {formatAudioBytes(file.size)} ·{" "}
+                    {durations[audioFingerprint(file)]
+                      ? formatTime(durations[audioFingerprint(file)])
+                      : "läser längd…"}
                   </span>
                   <button
                     type="button"
@@ -279,6 +362,16 @@ export function LectureImportAssistant({
               ))}
             </div>
           )}
+          {warnings.length > 0 && (
+            <div className="mt-3 space-y-1 rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-900 dark:text-amber-200">
+              {warnings.map((warning) => (
+                <p key={warning}>
+                  <TriangleAlert className="mr-1 inline size-3.5" />
+                  {warning}
+                </p>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="border-t border-slate-100 pt-5">
@@ -296,8 +389,19 @@ export function LectureImportAssistant({
         </div>
       </div>
       <div className="mt-5 flex justify-end gap-2">
-        <Button variant="secondary" onClick={() => onOpenChange(false)}>
-          Avbryt
+        <Button
+          variant="secondary"
+          onClick={() =>
+            importing ? importAbort.current?.abort() : onOpenChange(false)
+          }
+        >
+          {importing ? (
+            <>
+              <X className="size-4" /> Avbryt import
+            </>
+          ) : (
+            "Avbryt"
+          )}
         </Button>
         <Button onClick={() => void importAll()} disabled={importing}>
           {importing ? (

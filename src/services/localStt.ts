@@ -3,7 +3,10 @@ import { appDataDir, join } from "@tauri-apps/api/path";
 import { mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { uid } from "../lib/utils";
 import { isTauri } from "./platform";
-import { flagTranscriptionQuality, type TranscriptionResult } from "./transcription";
+import {
+  flagTranscriptionQuality,
+  type TranscriptionResult,
+} from "./transcription";
 import type { LocalTranscriptionBenchmark } from "../core/types";
 
 export type LocalModel =
@@ -131,13 +134,18 @@ export async function transcribeWithLocalWhisper(
   if (!isTauri()) throw new Error("Lokal transkribering kräver desktopappen.");
   const directory = await join(await appDataDir(), "stt-input");
   await mkdir(directory, { recursive: true });
-  const extension = audio.type.includes("mpeg")
-    ? "mp3"
-    : audio.type.includes("ogg")
-      ? "ogg"
-      : audio.type.includes("wav")
-        ? "wav"
-        : "webm";
+  const extension =
+    audio.type.includes("mp4") || audio.type.includes("aac")
+      ? "m4a"
+      : audio.type.includes("mpeg")
+        ? "mp3"
+        : audio.type.includes("ogg")
+          ? "ogg"
+          : audio.type.includes("wav")
+            ? "wav"
+            : audio.type.includes("flac")
+              ? "flac"
+              : "webm";
   const inputPath = await join(directory, `${uid()}.${extension}`);
   await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
   try {

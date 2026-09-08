@@ -42,6 +42,38 @@ import {
   formatTranscriptionCost,
 } from "./transcriptionCost";
 import { applySyncOperations, createSyncOperations } from "./syncV2";
+import {
+  audioFingerprint,
+  audioMimeType,
+  numberedAudioWarnings,
+  sortAudioFiles,
+  validateAudioFile,
+} from "./audioImport";
+
+describe("mobil ljudimport", () => {
+  const audio = (name: string, size = 1024, lastModified = 1) =>
+    ({ name, size, lastModified, type: "" }) as File;
+
+  it("accepterar mobilformat utan pålitlig MIME-typ och sorterar naturligt", () => {
+    expect(validateAudioFile(audio("Voice 01.m4a"))).toBeUndefined();
+    expect(validateAudioFile(audio("föreläsning.mp4"))).toBeUndefined();
+    expect(audioMimeType(audio("Voice 01.m4a"))).toBe("audio/mp4");
+    expect(
+      sortAudioFiles([audio("del 10.m4a"), audio("del 2.m4a")]).map(
+        (file) => file.name,
+      ),
+    ).toEqual(["del 2.m4a", "del 10.m4a"]);
+  });
+
+  it("varnar för luckor och använder ett stabilt källfingeravtryck", () => {
+    expect(
+      numberedAudioWarnings([audio("del 1.m4a"), audio("del 3.m4a")])[0],
+    ).toContain("kan saknas");
+    expect(audioFingerprint(audio("Rond.M4A", 42, 9))).toBe(
+      audioFingerprint(audio("rond.m4a", 42, 9)),
+    );
+  });
+});
 
 describe("diagnostik", () => {
   it("rensar sökvägar, e-post och tokens innan en rapport delas", () => {

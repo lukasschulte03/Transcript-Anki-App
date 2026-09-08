@@ -58,26 +58,13 @@ import {
   writeCredential,
 } from "../../services/credentials";
 import { canRecoverRecording } from "../../services/recordingRecovery";
-
-async function measureAudioDuration(blob: Blob) {
-  const url = URL.createObjectURL(blob);
-  try {
-    return await new Promise<number>((resolve) => {
-      const probe = new Audio();
-      const finish = (value: number) => {
-        probe.removeAttribute("src");
-        probe.load();
-        resolve(Number.isFinite(value) && value > 0 ? value : 0);
-      };
-      probe.preload = "metadata";
-      probe.onloadedmetadata = () => finish(probe.duration);
-      probe.onerror = () => finish(0);
-      probe.src = url;
-    });
-  } finally {
-    URL.revokeObjectURL(url);
-  }
-}
+import {
+  audioFingerprint,
+  audioMimeType,
+  measureAudioDuration,
+  sortAudioFiles,
+  validateAudioFile,
+} from "../../services/audioImport";
 
 const playbackSpeeds = [0.75, 1, 1.25, 1.5, 2] as const;
 
@@ -133,19 +120,19 @@ export function AudioPanel({
     [audioPartKey],
   );
   const asset = assets?.[activeAudioPart];
-  const recoverableSession = useLiveQuery(
-    async () => {
-      const sessions = await db.recordingSessions
-        .where("lectureId")
-        .equals(lectureId)
-        .sortBy("createdAt");
-      const session = sessions.at(-1);
-      if (!session) return undefined;
-      const chunkCount = await db.recordingChunks.where("sessionId").equals(session.id).count();
-      return canRecoverRecording(session, chunkCount) ? session : undefined;
-    },
-    [lectureId],
-  );
+  const recoverableSession = useLiveQuery(async () => {
+    const sessions = await db.recordingSessions
+      .where("lectureId")
+      .equals(lectureId)
+      .sortBy("createdAt");
+    const session = sessions.at(-1);
+    if (!session) return undefined;
+    const chunkCount = await db.recordingChunks
+      .where("sessionId")
+      .equals(session.id)
+      .count();
+    return canRecoverRecording(session, chunkCount) ? session : undefined;
+  }, [lectureId]);
   const audioUrl = useMemo(
     () => (asset ? URL.createObjectURL(asset.blob) : ""),
     [asset],
@@ -174,7 +161,9 @@ export function AudioPanel({
     "local",
   );
   const [localInstalled, setLocalInstalled] = useState<boolean | null>(null);
-  const [localEngine, setLocalEngine] = useState<LocalEngineStatus | null>(null);
+  const [localEngine, setLocalEngine] = useState<LocalEngineStatus | null>(
+    null,
+  );
   const [downloading, setDownloading] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [rememberApiKey, setRememberApiKey] = useState(true);
@@ -214,9 +203,15 @@ export function AudioPanel({
   }, []);
   useEffect(() => {
     void refreshMicrophones();
-    navigator.mediaDevices.addEventListener?.("devicechange", refreshMicrophones);
+    navigator.mediaDevices.addEventListener?.(
+      "devicechange",
+      refreshMicrophones,
+    );
     return () =>
-      navigator.mediaDevices.removeEventListener?.("devicechange", refreshMicrophones);
+      navigator.mediaDevices.removeEventListener?.(
+        "devicechange",
+        refreshMicrophones,
+      );
   }, [refreshMicrophones]);
   useEffect(() => {
     let cancelled = false;
@@ -274,18 +269,33 @@ export function AudioPanel({
   }, [lectureId]);
   useEffect(() => {
     const importAudioFromChecklist = (event: Event) => {
-      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+      if (
+        (event as CustomEvent<{ lectureId?: string }>).detail?.lectureId ===
+        lectureId
+      )
         audioImportInput.current?.click();
     };
     const openTranscriptionFromChecklist = (event: Event) => {
-      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+      if (
+        (event as CustomEvent<{ lectureId?: string }>).detail?.lectureId ===
+        lectureId
+      )
         setTranscribeOpen(true);
     };
     window.addEventListener("lectio:import-audio", importAudioFromChecklist);
-    window.addEventListener("lectio:open-transcription", openTranscriptionFromChecklist);
+    window.addEventListener(
+      "lectio:open-transcription",
+      openTranscriptionFromChecklist,
+    );
     return () => {
-      window.removeEventListener("lectio:import-audio", importAudioFromChecklist);
-      window.removeEventListener("lectio:open-transcription", openTranscriptionFromChecklist);
+      window.removeEventListener(
+        "lectio:import-audio",
+        importAudioFromChecklist,
+      );
+      window.removeEventListener(
+        "lectio:open-transcription",
+        openTranscriptionFromChecklist,
+      );
     };
   }, [lectureId]);
   useEffect(() => {
@@ -329,7 +339,8 @@ export function AudioPanel({
   };
 
   const stopMicrophoneMonitor = () => {
-    if (microphoneMonitor.current) window.clearInterval(microphoneMonitor.current);
+    if (microphoneMonitor.current)
+      window.clearInterval(microphoneMonitor.current);
     microphoneMonitor.current = null;
     void microphoneContext.current?.close();
     microphoneContext.current = null;
@@ -348,9 +359,14 @@ export function AudioPanel({
     microphoneContext.current = context;
     microphoneMonitor.current = window.setInterval(() => {
       analyser.getByteTimeDomainData(samples);
-      const peak = samples.reduce((max, sample) => Math.max(max, Math.abs(sample - 128)), 0);
+      const peak = samples.reduce(
+        (max, sample) => Math.max(max, Math.abs(sample - 128)),
+        0,
+      );
       if (peak > 2) lastSignalAt = Date.now();
-      setMicrophoneHealth(Date.now() - lastSignalAt > 12_000 ? "silent" : "live");
+      setMicrophoneHealth(
+        Date.now() - lastSignalAt > 12_000 ? "silent" : "live",
+      );
     }, 2_000);
   };
 
@@ -477,7 +493,9 @@ export function AudioPanel({
           setRecording(false);
           setPaused(false);
           if (timer.current) clearInterval(timer.current);
-          toast.error("Mikrofonen kopplades från. Välj en mikrofon och starta igen; sparat ljud bevaras.");
+          toast.error(
+            "Mikrofonen kopplades från. Välj en mikrofon och starta igen; sparat ljud bevaras.",
+          );
         };
       });
       mr.start(1000);
@@ -570,25 +588,42 @@ export function AudioPanel({
   const importAudio = async (files?: FileList | File[]) => {
     const incoming = files ? Array.from(files) : [];
     if (!incoming.length) return;
+    const invalid = incoming.map(validateAudioFile).find(Boolean);
+    if (invalid) {
+      toast.error(invalid);
+      return;
+    }
     for (const file of incoming) {
       if (!(await confirmStorageForImport(file, "ljudfilen"))) return;
     }
-    const ordered = [...incoming].sort((left, right) =>
-      left.name.localeCompare(right.name, "sv", { numeric: true }),
+    const ordered = sortAudioFiles(incoming);
+    const existingFingerprints = new Set(
+      (await db.assets.where("lectureId").equals(lectureId).toArray())
+        .map((asset) => asset.sourceFingerprint)
+        .filter(Boolean),
     );
     const newParts: typeof audioParts = [];
     for (const file of ordered) {
+      const sourceFingerprint = audioFingerprint(file);
+      if (existingFingerprints.has(sourceFingerprint)) continue;
       const id = uid();
+      const duration = await measureAudioDuration(file);
       await db.assets.put({
         id,
         lectureId,
         kind: "audio",
         name: file.name,
-        mimeType: file.type || "audio/mpeg",
+        mimeType: audioMimeType(file),
         blob: file,
+        sourceFingerprint,
         createdAt: new Date().toISOString(),
       });
-      newParts.push({ assetId: id, name: file.name });
+      newParts.push({
+        assetId: id,
+        name: file.name,
+        duration,
+        sourceFingerprint,
+      });
     }
     const nextParts = [...audioParts, ...newParts];
     updateLecture(lectureId, {
@@ -601,9 +636,11 @@ export function AudioPanel({
       audioParts: nextParts,
     });
     toast.success(
-      ordered.length === 1
-        ? "Ljudfil importerad"
-        : `${ordered.length} ljuddelar importerades i filnamnsordning`,
+      newParts.length === 0
+        ? "Ljudfilen finns redan i föreläsningen"
+        : newParts.length === 1
+          ? "Ljudfil importerad"
+          : `${newParts.length} ljuddelar importerades i filnamnsordning`,
     );
   };
   const transcribe = async () => {
@@ -630,8 +667,7 @@ export function AudioPanel({
       phase: "queued",
       status: "queued",
       current: 0,
-      detail:
-        "Väntar på ledig transkriberingsmotor…",
+      detail: "Väntar på ledig transkriberingsmotor…",
     });
     setTranscribeOpen(false);
     setApiKey("");
@@ -655,67 +691,140 @@ export function AudioPanel({
               ? "Förbereder ljudfilen…"
               : "Skickar ljudfilen till vald tjänst…",
         });
-    try {
-      const partsWithAssets = audioParts
-        .map((part, index) => ({ part, asset: assets?.[index] }))
-        .filter(
-          (
-            entry,
-          ): entry is {
-            part: (typeof audioParts)[number];
-            asset: NonNullable<typeof asset>;
-          } => Boolean(entry.asset),
-        );
-      if (partsWithAssets.length !== audioParts.length)
-        throw new Error("En eller flera ljuddelar kunde inte hittas lokalt");
-      let offset = 0;
-      const mergedSegments: Parameters<typeof setSegments>[1] = [];
-      const updatedParts = [...audioParts];
-      const apiResumeKey =
-        transcribeMode === "api"
-          ? `${lectureId}:${settings.transcriptionProvider}:${settings.transcriptionModel}:${audioPartKey}`
-          : "";
-      const cachedApiChunks = apiResumeKey
-        ? [...(apiChunkCache.get(apiResumeKey) ?? [])]
-        : [];
-        for (const [index, entry] of partsWithAssets.entries()) {
-        if (isActiveTranscriptionCancelled(jobId)) throw new Error("TRANSCRIPTION_CANCELLED");
-        upsertJob({
-          id: jobId,
-          kind: "transcription",
-          label:
-            transcribeMode === "local"
-              ? "Lokal transkribering"
-              : "API-transkribering",
-          phase: "transcribing",
-          status: "active",
-          current: index,
-          total: partsWithAssets.length,
-          detail: `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
-        });
-        const uploadParts =
-          transcribeMode === "api"
-            ? await prepareAudioForCloudTranscription(entry.asset.blob)
-            : [entry.asset.blob];
-        let uploadOffset = 0;
-        for (const [uploadIndex, uploadPart] of uploadParts.entries()) {
-          if (isActiveTranscriptionCancelled(jobId)) throw new Error("TRANSCRIPTION_CANCELLED");
-          const cachedChunk = cachedApiChunks.find(
-            (chunk) =>
-              chunk.assetId === entry.part.assetId &&
-              chunk.index === uploadIndex,
-          );
-          if (cachedChunk) {
-            mergedSegments.push(
-              ...cachedChunk.segments.map((segment) => ({
-                ...segment,
-                start: segment.start + offset + uploadOffset,
-                end: segment.end + offset + uploadOffset,
-              })),
+        try {
+          const partsWithAssets = audioParts
+            .map((part, index) => ({ part, asset: assets?.[index] }))
+            .filter(
+              (
+                entry,
+              ): entry is {
+                part: (typeof audioParts)[number];
+                asset: NonNullable<typeof asset>;
+              } => Boolean(entry.asset),
             );
-            uploadOffset += cachedChunk.duration;
-            continue;
+          if (partsWithAssets.length !== audioParts.length)
+            throw new Error(
+              "En eller flera ljuddelar kunde inte hittas lokalt",
+            );
+          let offset = 0;
+          const mergedSegments: Parameters<typeof setSegments>[1] = [];
+          const updatedParts = [...audioParts];
+          const apiResumeKey =
+            transcribeMode === "api"
+              ? `${lectureId}:${settings.transcriptionProvider}:${settings.transcriptionModel}:${audioPartKey}`
+              : "";
+          const cachedApiChunks = apiResumeKey
+            ? [...(apiChunkCache.get(apiResumeKey) ?? [])]
+            : [];
+          for (const [index, entry] of partsWithAssets.entries()) {
+            if (isActiveTranscriptionCancelled(jobId))
+              throw new Error("TRANSCRIPTION_CANCELLED");
+            upsertJob({
+              id: jobId,
+              kind: "transcription",
+              label:
+                transcribeMode === "local"
+                  ? "Lokal transkribering"
+                  : "API-transkribering",
+              phase: "transcribing",
+              status: "active",
+              current: index,
+              total: partsWithAssets.length,
+              detail: `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+            });
+            const uploadParts =
+              transcribeMode === "api"
+                ? await prepareAudioForCloudTranscription(entry.asset.blob)
+                : [entry.asset.blob];
+            let uploadOffset = 0;
+            for (const [uploadIndex, uploadPart] of uploadParts.entries()) {
+              if (isActiveTranscriptionCancelled(jobId))
+                throw new Error("TRANSCRIPTION_CANCELLED");
+              const cachedChunk = cachedApiChunks.find(
+                (chunk) =>
+                  chunk.assetId === entry.part.assetId &&
+                  chunk.index === uploadIndex,
+              );
+              if (cachedChunk) {
+                mergedSegments.push(
+                  ...cachedChunk.segments.map((segment) => ({
+                    ...segment,
+                    start: segment.start + offset + uploadOffset,
+                    end: segment.end + offset + uploadOffset,
+                  })),
+                );
+                uploadOffset += cachedChunk.duration;
+                continue;
+              }
+              upsertJob({
+                id: jobId,
+                kind: "transcription",
+                label:
+                  transcribeMode === "local"
+                    ? "Lokal transkribering"
+                    : "API-transkribering",
+                phase: "transcribing",
+                status: "active",
+                current: index,
+                total: partsWithAssets.length,
+                detail:
+                  uploadParts.length > 1
+                    ? `Transkriberar uppladdningsdel ${uploadIndex + 1} av ${uploadParts.length}…`
+                    : `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+              });
+              const result =
+                transcribeMode === "local"
+                  ? await transcribeWithLocalWhisper(
+                      uploadPart,
+                      settings.localTranscriptionModel ?? "base",
+                      settings.localTranscriptionAcceleration ?? "auto",
+                      jobId,
+                      transcriptionPrompt,
+                    )
+                  : await cloudApiTranscription.transcribe(
+                      uploadPart,
+                      settings,
+                      apiKey,
+                      transcriptionPrompt,
+                    );
+              mergedSegments.push(
+                ...result.segments.map((segment) => ({
+                  ...segment,
+                  start: segment.start + offset + uploadOffset,
+                  end: segment.end + offset + uploadOffset,
+                })),
+              );
+              const uploadDuration =
+                (await measureAudioDuration(uploadPart)) ||
+                Math.max(0, ...result.segments.map((segment) => segment.end));
+              if (apiResumeKey) {
+                const nextCache = [
+                  ...(apiChunkCache.get(apiResumeKey) ?? []),
+                  {
+                    assetId: entry.part.assetId,
+                    index: uploadIndex,
+                    duration: uploadDuration,
+                    segments: result.segments,
+                  },
+                ];
+                apiChunkCache.set(apiResumeKey, nextCache);
+                cachedApiChunks.push(nextCache.at(-1)!);
+              }
+              uploadOffset += uploadDuration;
+            }
+            const measuredDuration = entry.part.duration ?? uploadOffset;
+            const duration =
+              measuredDuration ||
+              (await measureAudioDuration(entry.asset.blob));
+            updatedParts[index] = { ...entry.part, duration };
+            offset += duration;
           }
+          updateLecture(lectureId, {
+            audioParts: updatedParts,
+            audioDuration: offset,
+          });
+          setSegments(lectureId, mergedSegments);
+          if (apiResumeKey) apiChunkCache.delete(apiResumeKey);
           upsertJob({
             id: jobId,
             kind: "transcription",
@@ -723,103 +832,33 @@ export function AudioPanel({
               transcribeMode === "local"
                 ? "Lokal transkribering"
                 : "API-transkribering",
-            phase: "transcribing",
-            status: "active",
-            current: index,
-            total: partsWithAssets.length,
-            detail:
-              uploadParts.length > 1
-                ? `Transkriberar uppladdningsdel ${uploadIndex + 1} av ${uploadParts.length}…`
-                : `Bearbetar ljuddel ${index + 1} av ${partsWithAssets.length}…`,
+            phase: "complete",
+            status: "complete",
+            current: 0,
+            detail: `${mergedSegments.length} segment är klara.`,
           });
-          const result =
-            transcribeMode === "local"
-              ? await transcribeWithLocalWhisper(
-                  uploadPart,
-                  settings.localTranscriptionModel ?? "base",
-                  settings.localTranscriptionAcceleration ?? "auto",
-                  jobId,
-                  transcriptionPrompt,
-                )
-              : await cloudApiTranscription.transcribe(
-                  uploadPart,
-                  settings,
-                  apiKey,
-                  transcriptionPrompt,
-                );
-          mergedSegments.push(
-            ...result.segments.map((segment) => ({
-              ...segment,
-              start: segment.start + offset + uploadOffset,
-              end: segment.end + offset + uploadOffset,
-            })),
-          );
-          const uploadDuration =
-            (await measureAudioDuration(uploadPart)) ||
-            Math.max(0, ...result.segments.map((segment) => segment.end));
-          if (apiResumeKey) {
-            const nextCache = [
-              ...(apiChunkCache.get(apiResumeKey) ?? []),
-              {
-                assetId: entry.part.assetId,
-                index: uploadIndex,
-                duration: uploadDuration,
-                segments: result.segments,
-              },
-            ];
-            apiChunkCache.set(apiResumeKey, nextCache);
-            cachedApiChunks.push(nextCache.at(-1)!);
-          }
-          uploadOffset += uploadDuration;
+          toast.success(`${mergedSegments.length} segment transkriberades`);
+        } catch (e) {
+          const cancelled = String(e).includes("TRANSCRIPTION_CANCELLED");
+          upsertJob({
+            id: jobId,
+            kind: "transcription",
+            label:
+              transcribeMode === "local"
+                ? "Lokal transkribering"
+                : "API-transkribering",
+            phase: cancelled ? "cancelled" : "error",
+            status: cancelled ? "cancelled" : "error",
+            current: 0,
+            detail: cancelled
+              ? "Transkriberingen avbröts."
+              : transcribeMode === "api"
+                ? "Försök igen för att fortsätta från redan klara API-delar."
+                : "Transkriberingen kunde inte slutföras.",
+          });
+          if (cancelled) toast.message("Transkriberingen avbröts");
+          else toast.error(String(e));
         }
-        const measuredDuration = entry.part.duration ?? uploadOffset;
-        const duration =
-          measuredDuration ||
-          (await measureAudioDuration(entry.asset.blob));
-        updatedParts[index] = { ...entry.part, duration };
-        offset += duration;
-      }
-      updateLecture(lectureId, {
-        audioParts: updatedParts,
-        audioDuration: offset,
-      });
-      setSegments(lectureId, mergedSegments);
-      if (apiResumeKey) apiChunkCache.delete(apiResumeKey);
-      upsertJob({
-        id: jobId,
-        kind: "transcription",
-        label:
-          transcribeMode === "local"
-            ? "Lokal transkribering"
-            : "API-transkribering",
-        phase: "complete",
-        status: "complete",
-        current: 0,
-        detail: `${mergedSegments.length} segment är klara.`,
-      });
-      toast.success(`${mergedSegments.length} segment transkriberades`);
-    } catch (e) {
-      const cancelled = String(e).includes("TRANSCRIPTION_CANCELLED");
-      upsertJob({
-        id: jobId,
-        kind: "transcription",
-        label:
-          transcribeMode === "local"
-            ? "Lokal transkribering"
-            : "API-transkribering",
-        phase: cancelled ? "cancelled" : "error",
-        status: cancelled ? "cancelled" : "error",
-        current: 0,
-        detail:
-          cancelled
-            ? "Transkriberingen avbröts."
-            : transcribeMode === "api"
-            ? "Försök igen för att fortsätta från redan klara API-delar."
-            : "Transkriberingen kunde inte slutföras.",
-      });
-      if (cancelled) toast.message("Transkriberingen avbröts");
-      else toast.error(String(e));
-    }
       },
     });
     toast.success("Transkriberingen lades till i kön");
@@ -853,14 +892,19 @@ export function AudioPanel({
     [knownDuration, localEngine, settings.localTranscriptionBenchmarks],
   );
   const transcriptionCostEstimate = useMemo(
-    () => settings.transcriptionProvider === "local"
-      ? undefined
-      : estimateTranscriptionCost(
-          settings.transcriptionProvider,
-          settings.transcriptionModel,
-          knownDuration,
-        ),
-    [knownDuration, settings.transcriptionModel, settings.transcriptionProvider],
+    () =>
+      settings.transcriptionProvider === "local"
+        ? undefined
+        : estimateTranscriptionCost(
+            settings.transcriptionProvider,
+            settings.transcriptionModel,
+            knownDuration,
+          ),
+    [
+      knownDuration,
+      settings.transcriptionModel,
+      settings.transcriptionProvider,
+    ],
   );
   const formattedTranscriptionCost = transcriptionCostEstimate
     ? formatTranscriptionCost(transcriptionCostEstimate)
@@ -989,11 +1033,15 @@ export function AudioPanel({
   }, [addMarker, lectureId, current]);
   useEffect(() => {
     const markFromChecklist = (event: Event) => {
-      if ((event as CustomEvent<{ lectureId?: string }>).detail?.lectureId === lectureId)
+      if (
+        (event as CustomEvent<{ lectureId?: string }>).detail?.lectureId ===
+        lectureId
+      )
         markMoment();
     };
     window.addEventListener("lectio:mark-moment", markFromChecklist);
-    return () => window.removeEventListener("lectio:mark-moment", markFromChecklist);
+    return () =>
+      window.removeEventListener("lectio:mark-moment", markFromChecklist);
   }, [lectureId, markMoment]);
   const handleKeyboardShortcut = useEffectEvent((event: KeyboardEvent) => {
     const target = event.target as HTMLElement | null;
@@ -1092,7 +1140,9 @@ export function AudioPanel({
                 : "Kontrollerar att mikrofonen tar emot ljud."
             }
           >
-            {microphoneHealth === "silent" ? "Kontrollera mikrofonen" : "Kontrollerar mikrofon…"}
+            {microphoneHealth === "silent"
+              ? "Kontrollera mikrofonen"
+              : "Kontrollerar mikrofon…"}
           </span>
         )}
         {!recording && recoverableSession && !savingRecording && (
@@ -1124,7 +1174,7 @@ export function AudioPanel({
             <input
               ref={audioImportInput}
               type="file"
-              accept="audio/*"
+              accept="audio/*,.m4a,.aac,.mp3,.wav,.mp4,.mpeg,.webm,.ogg,.opus,.flac"
               multiple
               className="hidden"
               onChange={(e) => void importAudio(e.target.files ?? undefined)}
@@ -1384,7 +1434,8 @@ export function AudioPanel({
               </div>
               <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
                 <div className="font-semibold">
-                  Ingen API-kostnad · Whisper {settings.localTranscriptionModel ?? "base"}
+                  Ingen API-kostnad · Whisper{" "}
+                  {settings.localTranscriptionModel ?? "base"}
                 </div>
                 <div className="mt-1">
                   Ljudet lämnar aldrig datorn. Motorn använder
@@ -1395,7 +1446,11 @@ export function AudioPanel({
                       : " NVIDIA när stödet är installerat, annars CPU"}
                   .
                 </div>
-                {knownDuration > 0 && <div className="mt-1">Ljudlängd: {formatTime(knownDuration)}</div>}
+                {knownDuration > 0 && (
+                  <div className="mt-1">
+                    Ljudlängd: {formatTime(knownDuration)}
+                  </div>
+                )}
                 {localInstalled === false && (
                   <Button
                     className="mt-3"
@@ -1421,21 +1476,27 @@ export function AudioPanel({
                 Manager.
               </div>
               <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-3 text-xs leading-5 text-[var(--palette-text-muted)]">
-                <div className="font-semibold text-[var(--palette-text)]">Uppskattad API-kostnad</div>
+                <div className="font-semibold text-[var(--palette-text)]">
+                  Uppskattad API-kostnad
+                </div>
                 {knownDuration > 0 ? (
                   formattedTranscriptionCost ? (
                     <p className="mt-1">
-                      Ljudlängd: {formatTime(knownDuration)} · ungefär {formattedTranscriptionCost}.
-                      Beloppet är en uppskattning och kan skilja från leverantörens fakturering.
+                      Ljudlängd: {formatTime(knownDuration)} · ungefär{" "}
+                      {formattedTranscriptionCost}. Beloppet är en uppskattning
+                      och kan skilja från leverantörens fakturering.
                     </p>
                   ) : (
                     <p className="mt-1">
-                      Ljudlängd: {formatTime(knownDuration)}. Lectio saknar prisuppgift för
-                      {" "}{settings.transcriptionProvider} / {settings.transcriptionModel}.
+                      Ljudlängd: {formatTime(knownDuration)}. Lectio saknar
+                      prisuppgift för {settings.transcriptionProvider} /{" "}
+                      {settings.transcriptionModel}.
                     </p>
                   )
                 ) : (
-                  <p className="mt-1">Ljudlängden fastställs när ljudfilens metadata har lästs.</p>
+                  <p className="mt-1">
+                    Ljudlängden fastställs när ljudfilens metadata har lästs.
+                  </p>
                 )}
               </div>
               <div>
@@ -1491,9 +1552,7 @@ export function AudioPanel({
           )}
           <Button
             className="w-full"
-            disabled={
-              transcribeMode === "local" ? !localInstalled : !apiKey
-            }
+            disabled={transcribeMode === "local" ? !localInstalled : !apiKey}
             onClick={transcribe}
           >
             Lägg till i transkriptionskön
