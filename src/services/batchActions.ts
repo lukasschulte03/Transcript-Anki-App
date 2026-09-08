@@ -27,6 +27,7 @@ import {
   cloudApiTranscription,
 } from "./transcription";
 import { inheritedGlossary } from "./glossary";
+import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
 export type BatchJobStatus =
@@ -266,46 +267,66 @@ async function generate(job: BatchJob) {
       courseId(state.nodes, card.lectureId) ===
       courseId(state.nodes, job.lectureId),
   );
-  const prompt = createCardPrompt({
-    lectureId: job.lectureId,
-    title: node.title,
-    context,
-    sourceStatus:
-      "Använd transkript, slides, anteckningar och context självständigt.",
-    notes: lecture.notes,
-    transcript: lectureSegments,
-    markers: state.markers.filter(
-      (marker) => marker.lectureId === job.lectureId,
-    ),
-    slideText: lecture.slideText ?? "",
-    density: "balanced",
-    count: 36,
-    types: ["basic", "concept"] satisfies CardType[],
-    preferences: [
-      "Undvik triviala kort",
-      "Ett koncept per kort",
-      "Prioritera examinationsrelevant förståelse",
-    ],
-    cardStyle: Object.assign({}, ...chain.map((item) => item.settings))
-      .cardStyle,
-    existingCards: existing.map(({ front, back }) => ({ front, back })),
-  });
-  const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
-  if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-  const parsed = parseCardResponse(raw, job.lectureId).slice(0, 36);
+  const chunks = planGenerationChunks(lectureSegments);
   const known = new Set(
     existing.map((card) =>
       `${card.front}\0${card.back}`.toLocaleLowerCase("sv"),
     ),
   );
-  const unique = parsed.filter((card) => {
-    const key = `${card.front}\0${card.back}`.toLocaleLowerCase("sv");
-    if (known.has(key)) return false;
-    known.add(key);
-    return true;
-  });
-  useAppStore.getState().addCards(unique);
-  return `${unique.length} nya kort skapades för granskning.`;
+  const generated = [] as ReturnType<typeof parseCardResponse>;
+  for (const chunk of chunks) {
+    if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
+    patchJob(job.id, {
+      detail:
+        chunks.length > 1
+          ? `Skapar kort · del ${chunk.index + 1} av ${chunk.total}…`
+          : "Skapar kort…",
+    });
+    const prompt = createCardPrompt({
+      lectureId: job.lectureId,
+      title: node.title,
+      context,
+      sourceStatus:
+        chunks.length > 1
+          ? `Använd transkriptets del ${chunk.index + 1} av ${chunk.total}, samt slides, anteckningar och context självständigt.`
+          : "Använd transkript, slides, anteckningar och context självständigt.",
+      notes: lecture.notes,
+      transcript: chunk.transcript,
+      markers: state.markers.filter(
+        (marker) => marker.lectureId === job.lectureId,
+      ),
+      slideText: lecture.slideText ?? "",
+      density: "balanced",
+      count: chunkCardCeiling(36, chunk),
+      types: ["basic", "concept"] satisfies CardType[],
+      preferences: [
+        "Undvik triviala kort",
+        "Ett koncept per kort",
+        "Prioritera examinationsrelevant förståelse",
+      ],
+      cardStyle: Object.assign({}, ...chain.map((item) => item.settings))
+        .cardStyle,
+      existingCards: [...existing, ...generated].map(({ front, back }) => ({
+        front,
+        back,
+      })),
+    });
+    const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
+    const parsed = parseCardResponse(raw, job.lectureId).slice(
+      0,
+      chunkCardCeiling(36, chunk),
+    );
+    generated.push(
+      ...parsed.filter((card) => {
+        const key = `${card.front}\0${card.back}`.toLocaleLowerCase("sv");
+        if (known.has(key)) return false;
+        known.add(key);
+        return true;
+      }),
+    );
+  }
+  useAppStore.getState().addCards(generated);
+  return `${generated.length} nya kort skapades för granskning.`;
 }
 
 async function approve(job: BatchJob) {

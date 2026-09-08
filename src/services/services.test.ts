@@ -56,6 +56,24 @@ import {
   suggestGlossaryFromSlides,
   suggestTerminologyCorrections,
 } from "./glossary";
+import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
+
+describe("Anki-chunkning", () => {
+  it("behåller segment och delar bara vid segmentgränser", () => {
+    const chunks = planGenerationChunks(
+      [
+        { id: "one", lectureId: "lecture", start: 10, end: 20, text: "a".repeat(30) },
+        { id: "two", lectureId: "lecture", start: 20, end: 30, text: "b".repeat(30) },
+      ],
+      10,
+    );
+
+    expect(chunks).toHaveLength(2);
+    expect(chunks[0].transcript.map((segment) => segment.id)).toEqual(["one"]);
+    expect(chunks[1].transcript.map((segment) => segment.id)).toEqual(["two"]);
+    expect(chunkCardCeiling(36, chunks[0])).toBe(18);
+  });
+});
 
 describe("fraslexikon", () => {
   it("ärver termer och föreslår inte ändringar av korrekt text", () => {

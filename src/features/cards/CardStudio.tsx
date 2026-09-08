@@ -47,6 +47,11 @@ import {
   writeCredential,
 } from "../../services/credentials";
 import { toast } from "../../services/feedbackToast";
+import {
+  chunkCardCeiling,
+  planGenerationChunks,
+  type GenerationChunk,
+} from "../../services/ankiChunking";
 
 function courseIdForLecture(
   nodes: ReturnType<typeof useAppStore.getState>["nodes"],
@@ -158,6 +163,11 @@ export function CardStudio() {
   const [rememberApiKey, setRememberApiKey] = useState(true);
   const [savedApiKey, setSavedApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [generationProgress, setGenerationProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
+  const [clipboardChunkIndex, setClipboardChunkIndex] = useState(0);
   const [filter, setFilter] = useState<
     "all" | "generated" | "approved" | "synced"
   >("all");
@@ -420,6 +430,22 @@ export function CardStudio() {
     (item) => contextLevels[item.type as keyof typeof contextLevels],
   );
   const cardLimit = density === "few" ? 16 : density === "balanced" ? 36 : 64;
+  const selectedTranscript = useMemo(
+    () =>
+      sources.transcript
+        ? segments.filter((segment) => segment.lectureId === lectureId)
+        : [],
+    [lectureId, segments, sources.transcript],
+  );
+  const generationChunks = useMemo(
+    () => planGenerationChunks(selectedTranscript),
+    [selectedTranscript],
+  );
+  const activeChunk =
+    generationChunks[Math.min(clipboardChunkIndex, generationChunks.length - 1)];
+  useEffect(() => {
+    setClipboardChunkIndex(0);
+  }, [lectureId, sources.transcript]);
   const sourceStatus = useMemo(() => {
     const lectureTranscript = segments.filter(
       (segment) => segment.lectureId === lectureId,
@@ -458,43 +484,41 @@ export function CardStudio() {
     segments,
     sources,
   ]);
+  const promptForChunk = (chunk: GenerationChunk) =>
+    node
+      ? createCardPrompt({
+          lectureId,
+          title: node.title,
+          context: sources.context
+            ? selectedContextPreview
+                .map((item) => `${item.title}: ${item.context}`)
+                .join("\n\n")
+            : "",
+          sourceStatus:
+            chunk.total > 1
+              ? `${sourceStatus}\nBearbeta del ${chunk.index + 1} av ${chunk.total}. Skapa bara kort från denna transkriptdel, men använd slides och anteckningar för sammanhang.`
+              : sourceStatus,
+          notes: sources.notes ? (lecture?.notes ?? "") : "",
+          transcript: chunk.transcript,
+          markers: sources.markers
+            ? markers.filter((x) => x.lectureId === lectureId)
+            : [],
+          slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+          density,
+          count: chunkCardCeiling(cardLimit, chunk),
+          types,
+          preferences,
+          cardStyle: inheritedSettings.cardStyle,
+          existingCards: courseCards.map(({ front, back }) => ({ front, back })),
+        })
+      : "";
   const prompt = useMemo(
-    () =>
-      node
-        ? createCardPrompt({
-            lectureId,
-            title: node.title,
-            context: sources.context
-              ? selectedContextPreview
-                  .map((item) => `${item.title}: ${item.context}`)
-                  .join("\n\n")
-              : "",
-            sourceStatus,
-            notes: sources.notes ? (lecture?.notes ?? "") : "",
-            transcript: sources.transcript
-              ? segments.filter((x) => x.lectureId === lectureId)
-              : [],
-            markers: sources.markers
-              ? markers.filter((x) => x.lectureId === lectureId)
-              : [],
-            slideText: sources.slides ? (lecture?.slideText ?? "") : "",
-            density,
-            count: cardLimit,
-            types,
-            preferences,
-            cardStyle: inheritedSettings.cardStyle,
-            existingCards: courseCards.map(({ front, back }) => ({
-              front,
-              back,
-            })),
-          })
-        : "",
+    () => promptForChunk(activeChunk),
     [
       node,
       lectureId,
       lecture?.notes,
       lecture?.slideText,
-      segments,
       markers,
       density,
       types,
@@ -505,6 +529,7 @@ export function CardStudio() {
       courseCards,
       cardLimit,
       sourceStatus,
+      activeChunk,
     ],
   );
   const promptBudget = useMemo(
@@ -519,15 +544,13 @@ export function CardStudio() {
           : "",
         sourceStatus,
         notes: sources.notes ? (lecture?.notes ?? "") : "",
-        transcript: sources.transcript
-          ? segments.filter((item) => item.lectureId === lectureId)
-          : [],
+        transcript: activeChunk.transcript,
         markers: sources.markers
           ? markers.filter((item) => item.lectureId === lectureId)
           : [],
         slideText: sources.slides ? (lecture?.slideText ?? "") : "",
         density,
-        count: cardLimit,
+        count: chunkCardCeiling(cardLimit, activeChunk),
         types,
         preferences,
         existingCards: courseCards.map(({ front, back }) => ({ front, back })),
@@ -542,16 +565,23 @@ export function CardStudio() {
       markers,
       node?.title,
       preferences,
-      segments,
       selectedContextPreview,
       sourceStatus,
       sources,
       types,
+      activeChunk,
     ],
   );
   const importResponse = () => {
     try {
-      const parsed = parseCardResponse(response, lectureId).slice(0, cardLimit);
+      const importLimit =
+        settings.aiMode === "clipboard"
+          ? chunkCardCeiling(cardLimit, activeChunk)
+          : generationChunks.reduce(
+              (total, chunk) => total + chunkCardCeiling(cardLimit, chunk),
+              0,
+            );
+      const parsed = parseCardResponse(response, lectureId).slice(0, importLimit);
       const identity = (front: string, back: string) =>
         `${front}\u0000${back}`.replace(/\s+/g, " ").trim().toLocaleLowerCase();
       const known = new Set(
@@ -587,11 +617,21 @@ export function CardStudio() {
         });
       });
       setResponse("");
-      setPromptOpen(false);
       const skipped = parsed.length - unique.length;
       toast.success(
         `${unique.length} kort importerade${skipped ? ` · ${skipped} exakta dubbletter hoppades över` : ""}`,
       );
+      if (
+        settings.aiMode === "clipboard" &&
+        activeChunk.index < activeChunk.total - 1
+      ) {
+        setClipboardChunkIndex((current) => current + 1);
+        toast.message(
+          `Fortsätt med del ${activeChunk.index + 2} av ${activeChunk.total}.`,
+        );
+      } else {
+        setPromptOpen(false);
+      }
     } catch (e) {
       toast.error(`Svaret kunde inte läsas: ${String(e)}`);
     }
@@ -621,13 +661,30 @@ export function CardStudio() {
         await deleteCredential(credentialKey);
         setSavedApiKey(false);
       }
-      const raw = await generateCardsWithApi(prompt, settings, apiKey);
-      setResponse(raw);
-      toast.success("AI-svaret är klart – granska och importera");
+      const responses: string[] = [];
+      for (const chunk of generationChunks) {
+        setGenerationProgress({ current: chunk.index + 1, total: chunk.total });
+        const raw = await generateCardsWithApi(
+          promptForChunk(chunk),
+          settings,
+          apiKey,
+        );
+        responses.push(raw);
+      }
+      const generatedCards = responses.flatMap((raw) =>
+        parseCardResponse(raw, lectureId),
+      );
+      setResponse(JSON.stringify({ cards: generatedCards }, null, 2));
+      toast.success(
+        generationChunks.length > 1
+          ? `Alla ${generationChunks.length} delar är klara – granska korten.`
+          : "AI-svaret är klart – granska och importera",
+      );
     } catch (e) {
       toast.error(String(e));
     } finally {
       setBusy(false);
+      setGenerationProgress(null);
     }
   };
   const syncApproved = async (
@@ -1254,7 +1311,11 @@ export function CardStudio() {
         open={promptOpen}
         onOpenChange={setPromptOpen}
         title="Generera Anki-kort"
-        description="Copy/paste och API använder samma validerade kortformat."
+        description={
+          generationChunks.length > 1
+            ? `Långa föreläsningar behandlas automatiskt del för del. Del ${activeChunk.index + 1} av ${activeChunk.total}.`
+            : "Copy/paste och API använder samma validerade kortformat."
+        }
       >
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-2">
@@ -1283,6 +1344,14 @@ export function CardStudio() {
           </div>
           {settings.aiMode === "clipboard" ? (
             <>
+              {generationChunks.length > 1 && (
+                <div className="flex items-center justify-between rounded-lg border border-border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+                  <span>
+                    Bearbetar del {activeChunk.index + 1} av {activeChunk.total}
+                  </span>
+                  <span>Slides och anteckningar följer med i varje del.</span>
+                </div>
+              )}
               <div className="rounded-lg border border-border bg-muted/40 p-4">
                 <p className="text-sm font-semibold text-foreground">
                   1. Skicka underlaget till din AI
@@ -1348,9 +1417,16 @@ export function CardStudio() {
                   ) : (
                     <Sparkles className="size-4" />
                   )}{" "}
-                  Generera
+                  {generationProgress
+                    ? `Bearbetar del ${generationProgress.current} av ${generationProgress.total}`
+                    : "Generera"}
                 </Button>
               </div>
+              {generationProgress && (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Delarna bearbetas en i taget så att hela föreläsningen får plats.
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
                 <label className="flex cursor-pointer items-center gap-2">
                   <input
