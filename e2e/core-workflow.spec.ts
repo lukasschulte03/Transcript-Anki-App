@@ -1,30 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
-
-const seededNodes = [
-  { id: "workspace-main", parentId: null, type: "workspace", title: "Mina studier", context: "", createdAt: "2026-01-01T00:00:00.000Z", settings: { language: "sv" } },
-  { id: "course", parentId: "workspace-main", type: "course", title: "Kirurgi", context: "Kursens testcontext", createdAt: "2026-01-01T00:00:01.000Z", settings: {}, sortIndex: 0 },
-  { id: "module", parentId: "course", type: "module", title: "Akut kirurgi", context: "", createdAt: "2026-01-01T00:00:02.000Z", settings: {}, sortIndex: 0 },
-  { id: "lecture", parentId: "module", type: "lecture", title: "Akut buk", context: "", createdAt: "2026-01-01T00:00:03.000Z", settings: {}, sortIndex: 0 },
-];
-
-async function seedLibrary(page: Page) {
-  await page.evaluate((nodes: typeof seededNodes) => {
-    const key = "lectio-state-v1";
-    const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
-    stored.state = {
-      ...stored.state,
-      nodes,
-      lectures: { lecture: { lectureId: "lecture", notes: "Buksmärta och differentialdiagnoser." } },
-      segments: [{ id: "segment", lectureId: "lecture", start: 0, end: 5, text: "Akut buk kräver snabb bedömning." }],
-      markers: [],
-      cards: [{ id: "approved-card", lectureId: "lecture", type: "basic", front: "Vad betyder akut buk?", back: "Buksmärta som kräver snabb bedömning.", tags: [], status: "approved" }],
-      selectedId: "lecture",
-      activeView: "workspace",
-    };
-    stored.version ??= 9;
-    localStorage.setItem(key, JSON.stringify(stored));
-  }, seededNodes);
-}
+import { expect, seedLibrary, test } from "./qa-fixtures";
 
 test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-synk", async ({ page }) => {
   await page.goto("/");
@@ -32,7 +6,7 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
   await page.reload();
 
   await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
-  await page.locator('input[accept="audio/*"]').setInputFiles({
+  await page.locator('input[accept^="audio/*"]').setInputFiles({
     name: "forelasning.wav",
     mimeType: "audio/wav",
     buffer: Buffer.from("RIFF0000WAVEfmt "),
@@ -68,7 +42,7 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
   await expect(page.getByText("Inga kort här ännu")).toBeVisible();
 
   await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
-  await page.getByRole("button", { name: "Akut buk" }).click();
+  await page.getByRole("button", { name: "Akut buk", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Ta bort ljudfil från föreläsningen" }).evaluate(
     (button: HTMLButtonElement) => button.click(),
@@ -80,7 +54,7 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
   await page.goto("/");
   await seedLibrary(page);
   await page.reload();
-  await page.locator('input[accept="audio/*"]').setInputFiles({
+  await page.locator('input[accept^="audio/*"]').setInputFiles({
     name: "kursmaterial.wav",
     mimeType: "audio/wav",
     buffer: Buffer.from("RIFF0000WAVEfmt "),

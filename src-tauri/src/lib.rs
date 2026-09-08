@@ -1955,10 +1955,16 @@ async fn prepare_api_audio(app: AppHandle, input_path: String) -> Result<Vec<Str
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_fs::init());
+    // Included only in the separate QA binary. Production builds neither
+    // contain the WebDriver bridge nor grant its test-only permissions.
+    #[cfg(feature = "tauri-plugin-wdio")]
+    let builder = builder.plugin(tauri_plugin_wdio::init());
+
+    builder
         .invoke_handler(tauri::generate_handler![
             cancel_download,
             read_credential,

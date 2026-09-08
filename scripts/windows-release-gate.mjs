@@ -29,7 +29,5 @@ for (const permission of ["opener:allow-open-url", "core:window:allow-close", "c
   if (!permissions.includes(permission)) fail(`Tauri-behörighet saknas: ${permission}.`);
 
 console.log("Windows release-gate: versionsnummer, resurser och Tauri-behörigheter godkända.");
-run("pnpm", ["lint"]);
-run("pnpm", ["test"]);
-run("pnpm", ["build"]);
+run("pnpm", ["qa:browser"]);
 console.log("\nAutomatiska kontroller godkända. Följ docs/WINDOWS_RELEASE_CHECKLIST.md innan extern publicering.");

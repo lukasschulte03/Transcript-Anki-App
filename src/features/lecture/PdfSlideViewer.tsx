@@ -27,6 +27,7 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
   const renderTaskRef = useRef<RenderTask | undefined>(undefined);
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState<number | null>(null);
+  const [documentVersion, setDocumentVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const previousPage = useCallback(
@@ -50,10 +51,15 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
           data: new Uint8Array(await blob.arrayBuffer()),
         });
         const document = await documentTask.promise;
-        if (cancelled) return;
+        if (cancelled) {
+          document.cleanup();
+          void (document as unknown as { destroy?: () => Promise<void> }).destroy?.();
+          return;
+        }
         documentRef.current = document;
         setPageCount(document.numPages);
-        setPage((current) => Math.min(current, document.numPages));
+        setPage(1);
+        setDocumentVersion((version) => version + 1);
       } catch {
         if (!cancelled) {
           setError("PDF:en kunde inte visas. Prova att importera filen igen.");
@@ -66,7 +72,10 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
       cancelled = true;
       renderTaskRef.current?.cancel();
       renderTaskRef.current = undefined;
+      const activeDocument = documentRef.current;
       documentRef.current = undefined;
+      activeDocument?.cleanup();
+      void (activeDocument as unknown as { destroy?: () => Promise<void> } | undefined)?.destroy?.();
       void documentTask?.destroy();
     };
   }, [blob]);
@@ -102,7 +111,8 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
         renderTaskRef.current = task;
         await task.promise;
         if (!cancelled) setLoading(false);
-      } catch {
+      } catch (renderError) {
+        if (cancelled || (renderError as { name?: string }).name === "RenderingCancelledException") return;
         if (!cancelled) {
           setError("PDF:en kunde inte visas. Prova att importera filen igen.");
           setLoading(false);
@@ -118,7 +128,7 @@ export function PdfSlideViewer({ blob, name }: { blob: Blob; name: string }) {
       cancelled = true;
       renderTaskRef.current?.cancel();
     };
-  }, [page, pageCount]);
+  }, [documentVersion, page, pageCount]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {

@@ -610,7 +610,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
             {slideUrl ? (
               slideAsset?.mimeType === "application/pdf" ||
               slideAsset?.name.toLowerCase().endsWith(".pdf") ? (
-                <PdfSlideViewer blob={slideAsset.blob} name={slideAsset.name} />
+                <PdfSlideViewer
+                  key={`${lectureId}:${slideAsset.id}`}
+                  blob={slideAsset.blob}
+                  name={slideAsset.name}
+                />
               ) : (
                 <img
                   src={slideUrl}
