@@ -124,6 +124,28 @@ export async function prepareAudioForCloudTranscription(audio: Blob) {
   }
 }
 
+export async function optimizeAudioForStorage(audio: Blob) {
+  if (!isTauri())
+    throw new Error("Ljudoptimering kräver desktopappen.");
+  const directory = await join(await appDataDir(), "audio-optimisation-input");
+  await mkdir(directory, { recursive: true });
+  const inputPath = await join(directory, `${uid()}.source`);
+  await writeFile(inputPath, new Uint8Array(await audio.arrayBuffer()));
+  let outputPath = "";
+  try {
+    const result = await invoke<{ path: string; bytes: number }>(
+      "optimize_audio_for_storage",
+      { inputPath },
+    );
+    outputPath = result.path;
+    const bytes = await readFile(result.path);
+    return new Blob([bytes.buffer as ArrayBuffer], { type: "audio/mp4" });
+  } finally {
+    await remove(inputPath).catch(() => undefined);
+    if (outputPath) await remove(outputPath).catch(() => undefined);
+  }
+}
+
 export async function transcribeWithLocalWhisper(
   audio: Blob,
   model: LocalModel,

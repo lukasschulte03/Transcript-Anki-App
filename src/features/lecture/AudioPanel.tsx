@@ -8,6 +8,7 @@ import {
 } from "react";
 import {
   AlertTriangle,
+  Archive,
   ArrowDown,
   ArrowUp,
   CircleStop,
@@ -40,6 +41,7 @@ import {
   getLocalEngineStatus,
   getLocalModelStatus,
   prepareAudioForCloudTranscription,
+  optimizeAudioForStorage,
   transcribeWithLocalWhisper,
 } from "../../services/localStt";
 import type { LocalEngineStatus } from "../../services/localStt";
@@ -61,6 +63,7 @@ import { canRecoverRecording } from "../../services/recordingRecovery";
 import { inheritedGlossary } from "../../services/glossary";
 import {
   audioFingerprint,
+  formatAudioBytes,
   audioMimeType,
   measureAudioDuration,
   sortAudioFiles,
@@ -178,6 +181,16 @@ export function AudioPanel({
   const [rememberApiKey, setRememberApiKey] = useState(true);
   const [savedApiKey, setSavedApiKey] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
+  const [optimizingAudio, setOptimizingAudio] = useState(false);
+  const [optimizationResult, setOptimizationResult] = useState<{
+    index: number;
+    originalAssetId: string;
+    originalName: string;
+    originalBytes: number;
+    optimized: Blob;
+  } | null>(null);
+  const [keepOriginalAfterOptimization, setKeepOriginalAfterOptimization] =
+    useState(true);
   const [microphones, setMicrophones] = useState<MediaDeviceInfo[]>([]);
   const [selectedMicrophoneId, setSelectedMicrophoneId] = useState("");
   const [microphoneHealth, setMicrophoneHealth] = useState<
@@ -1026,10 +1039,161 @@ export function AudioPanel({
       audioParts: nextParts,
     });
     setActiveAudioPart(nextActivePart);
-    await db.assets.delete(part.assetId);
+    await db.assets.bulkDelete(
+      [part.assetId, part.originalAssetId].filter(
+        (assetId): assetId is string => Boolean(assetId),
+      ),
+    );
     toast.success(
       audioParts.length === 1 ? "Ljudfilen togs bort" : "Ljuddelen togs bort",
     );
+  };
+  const optimizeActiveAudio = async () => {
+    const source = assets?.[activeAudioPart];
+    const part = audioParts[activeAudioPart];
+    if (!source || !part || optimizingAudio) return;
+    const jobId = `audio-optimisation:${lectureId}:${part.assetId}`;
+    setOptimizingAudio(true);
+    upsertJob({
+      id: jobId,
+      kind: "library",
+      label: "Optimerar ljud",
+      phase: "encoding",
+      status: "active",
+      current: 0,
+      total: 1,
+      detail: "Konverterar i bakgrunden…",
+    });
+    try {
+      const optimized = await optimizeAudioForStorage(source.blob);
+      if (optimized.size >= source.blob.size) {
+        upsertJob({
+          id: jobId,
+          kind: "library",
+          label: "Optimerar ljud",
+          phase: "complete",
+          status: "complete",
+          current: 1,
+          total: 1,
+          detail: "Originalet är redan lika litet eller mindre.",
+        });
+        toast.message("Originalet är redan lika litet eller mindre.");
+        return;
+      }
+      setOptimizationResult({
+        index: activeAudioPart,
+        originalAssetId: source.id,
+        originalName: part.name,
+        originalBytes: source.blob.size,
+        optimized,
+      });
+      setKeepOriginalAfterOptimization(true);
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Optimerar ljud",
+        phase: "ready",
+        status: "complete",
+        current: 1,
+        total: 1,
+        detail: "Optimerad kopia är klar för granskning.",
+      });
+    } catch (error) {
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Optimerar ljud",
+        phase: "error",
+        status: "error",
+        current: 0,
+        total: 1,
+        detail: String(error),
+      });
+      toast.error(`Ljudoptimering misslyckades: ${String(error)}`);
+    } finally {
+      setOptimizingAudio(false);
+    }
+  };
+  const applyOptimization = async () => {
+    if (!optimizationResult) return;
+    const result = optimizationResult;
+    const currentPart = audioParts[result.index];
+    if (!currentPart || currentPart.assetId !== result.originalAssetId) {
+      toast.error("Ljuddelen ändrades medan optimeringen kördes. Försök igen.");
+      setOptimizationResult(null);
+      return;
+    }
+    const extensionless = result.originalName.replace(/\.[^.]+$/, "");
+    const assetId = uid();
+    const optimizedName = `${extensionless} · optimerad.m4a`;
+    const retainedOriginalId =
+      currentPart.originalAssetId ?? result.originalAssetId;
+    await db.assets.put({
+      id: assetId,
+      lectureId,
+      kind: "audio",
+      name: optimizedName,
+      mimeType: "audio/mp4",
+      blob: result.optimized,
+      createdAt: new Date().toISOString(),
+    });
+    const nextParts = audioParts.map((part, index) =>
+      index === result.index
+        ? {
+            ...part,
+            assetId,
+            name: optimizedName,
+            originalAssetId: keepOriginalAfterOptimization
+              ? retainedOriginalId
+              : undefined,
+          }
+        : part,
+    );
+    updateLecture(lectureId, {
+      audioAssetId: nextParts[0]?.assetId,
+      audioName: nextParts[0]?.name,
+      audioParts: nextParts,
+    });
+    const staleAssetIds = keepOriginalAfterOptimization
+      ? currentPart.originalAssetId
+        ? [result.originalAssetId]
+        : []
+      : [result.originalAssetId, currentPart.originalAssetId].filter(
+          (assetId): assetId is string => Boolean(assetId),
+        );
+    if (staleAssetIds.length) await db.assets.bulkDelete(staleAssetIds);
+    setOptimizationResult(null);
+    toast.success(
+      keepOriginalAfterOptimization
+        ? "Optimerad ljudkopia används. Originalet behålls lokalt."
+        : "Ljudet har optimerats och originalet togs bort.",
+    );
+  };
+  const restoreOriginalAudio = async () => {
+    const part = audioParts[activeAudioPart];
+    if (!part?.originalAssetId) return;
+    const original = await db.assets.get(part.originalAssetId);
+    if (!original) {
+      toast.error("Originalfilen kunde inte hittas lokalt.");
+      return;
+    }
+    const nextParts = audioParts.map((item, index) =>
+      index === activeAudioPart
+        ? {
+            ...item,
+            assetId: original.id,
+            name: original.name,
+            originalAssetId: undefined,
+          }
+        : item,
+    );
+    updateLecture(lectureId, {
+      audioAssetId: nextParts[0]?.assetId,
+      audioName: nextParts[0]?.name,
+      audioParts: nextParts,
+    });
+    await db.assets.delete(part.assetId);
+    toast.success("Originalfilen återställdes.");
   };
   const togglePlayback = useCallback(() => {
     if (!audio.current) return;
@@ -1296,6 +1460,26 @@ export function AudioPanel({
             <Button
               variant="ghost"
               size="icon-sm"
+              onClick={() => void optimizeActiveAudio()}
+              disabled={optimizingAudio}
+              title="Optimera ljud för mindre lagring och synk"
+              aria-label="Optimera ljud för mindre lagring och synk"
+            >
+              <Archive className="size-3.5" />
+            </Button>
+            {audioParts[activeAudioPart]?.originalAssetId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => void restoreOriginalAudio()}
+                title="Återställ den sparade originalfilen"
+              >
+                <RotateCcw className="size-3.5" /> Återställ original
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-sm"
               onClick={() => void deleteAudioPart(activeAudioPart)}
               title={
                 audioParts.length === 1
@@ -1380,6 +1564,60 @@ export function AudioPanel({
           ))}
         </div>
       )}
+      <Dialog
+        open={Boolean(optimizationResult)}
+        onOpenChange={(open) => !open && setOptimizationResult(null)}
+        title="Optimerad ljudkopia klar"
+        description="Talet sparas som mono AAC med 64 kbit/s, anpassat för taligenkänning och mindre synk."
+      >
+        {optimizationResult && (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground">
+              <div className="font-medium">{optimizationResult.originalName}</div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {formatAudioBytes(optimizationResult.originalBytes)} →{" "}
+                {formatAudioBytes(optimizationResult.optimized.size)} · sparar{" "}
+                {formatAudioBytes(
+                  optimizationResult.originalBytes -
+                    optimizationResult.optimized.size,
+                )}
+              </p>
+            </div>
+            <label className="flex items-start gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                checked={keepOriginalAfterOptimization}
+                onChange={(event) =>
+                  setKeepOriginalAfterOptimization(event.target.checked)
+                }
+                className="mt-0.5"
+              />
+              <span>
+                Behåll originalfilen lokalt
+                <span className="mt-0.5 block text-xs text-muted-foreground">
+                  Säkrast, men den fortsätter använda extra lagring och synk.
+                </span>
+              </span>
+            </label>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setOptimizationResult(null)}
+              >
+                Avbryt
+              </Button>
+              <Button
+                variant={keepOriginalAfterOptimization ? "secondary" : "destructive"}
+                onClick={() => void applyOptimization()}
+              >
+                {keepOriginalAfterOptimization
+                  ? "Använd optimerad kopia"
+                  : "Använd optimerad och radera original"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Dialog>
       <Dialog
         open={transcribeOpen}
         onOpenChange={setTranscribeOpen}

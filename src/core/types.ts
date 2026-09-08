@@ -83,6 +83,8 @@ export interface LectureData {
     assetId: string;
     name: string;
     duration?: number;
+    /** Retained only when the user explicitly keeps the pre-optimised source. */
+    originalAssetId?: string;
     /** Stable identity of an imported mobile source, used to avoid duplicates. */
     sourceFingerprint?: string;
   }[];

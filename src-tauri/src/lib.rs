@@ -1753,6 +1753,47 @@ async fn transcribe_local(
     Ok(json)
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OptimizedAudio {
+    path: String,
+    bytes: u64,
+}
+
+/// Re-encodes a local recording for compact archival. The caller owns both
+/// input and output cleanup, so a failed conversion can never replace audio.
+#[tauri::command]
+async fn optimize_audio_for_storage(app: AppHandle, input_path: String) -> Result<OptimizedAudio, String> {
+    let app_data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let input = PathBuf::from(&input_path);
+    if !input.starts_with(&app_data) || !input.is_file() {
+        return Err("Ljudfilen kunde inte hittas i Lectios lokala lagring".into());
+    }
+    let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
+    let ffmpeg = resource_dir.join("ffmpeg").join("ffmpeg.exe");
+    if !ffmpeg.exists() {
+        return Err("FFmpeg saknas i Lectios installation".into());
+    }
+    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let output_dir = app_data.join("audio-optimisation");
+    fs::create_dir_all(&output_dir).await.map_err(|error| error.to_string())?;
+    let output = output_dir.join(format!("{stamp}.m4a"));
+    let result = Command::new(&ffmpeg)
+        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+        .arg(&input)
+        .args(["-map", "0:a:0", "-vn", "-ac", "1", "-ar", "32000", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"])
+        .arg(&output)
+        .output()
+        .await
+        .map_err(|error| format!("Kunde inte starta ljudkonverteraren: {error}"))?;
+    if !result.status.success() || !output.is_file() {
+        let _ = fs::remove_file(&output).await;
+        return Err(format!("Ljudoptimering misslyckades: {}", String::from_utf8_lossy(&result.stderr)));
+    }
+    let bytes = fs::metadata(&output).await.map_err(|error| error.to_string())?.len();
+    Ok(OptimizedAudio { path: output.to_string_lossy().into_owned(), bytes })
+}
+
 /// Converts oversized recordings into conservative, provider-safe API chunks.
 /// The originals remain in the library; these are temporary upload artefacts.
 #[tauri::command]
@@ -1871,7 +1912,8 @@ pub fn run() {
             remove_local_model,
             open_anki_desktop,
             transcribe_local,
-            prepare_api_audio
+            prepare_api_audio,
+            optimize_audio_for_storage
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
