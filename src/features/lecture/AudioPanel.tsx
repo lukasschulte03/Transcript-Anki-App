@@ -58,6 +58,7 @@ import {
   writeCredential,
 } from "../../services/credentials";
 import { canRecoverRecording } from "../../services/recordingRecovery";
+import { inheritedGlossary } from "../../services/glossary";
 import {
   audioFingerprint,
   audioMimeType,
@@ -89,6 +90,7 @@ export function AudioPanel({
   onTime: (seconds: number) => void;
 }) {
   const lecture = useAppStore((s) => s.lectures[lectureId]);
+  const nodes = useAppStore((s) => s.nodes);
   const updateLecture = useAppStore((s) => s.updateLecture);
   const addMarker = useAppStore((s) => s.addMarker);
   const settings = useAppStore((s) => s.settings);
@@ -138,8 +140,15 @@ export function AudioPanel({
     [asset],
   );
   const transcriptionPrompt = useMemo(
-    () => buildTranscriptionPrompt(settings.transcriptionPrompt),
-    [settings.transcriptionPrompt],
+    () =>
+      buildTranscriptionPrompt(
+        inheritedGlossary(
+          nodes,
+          lectureId,
+          settings.transcriptionPrompt,
+        ).terms.join(", "),
+      ),
+    [lectureId, nodes, settings.transcriptionPrompt],
   );
   const [recording, setRecording] = useState(false);
   const [paused, setPaused] = useState(false);

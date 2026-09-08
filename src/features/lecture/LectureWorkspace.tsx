@@ -11,6 +11,7 @@ import {
   Plus,
   Settings2,
   Star,
+  Wand2,
   Trash2,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
@@ -26,15 +27,23 @@ import { suggestSlideMappings } from "../../services/slideMatching";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "../../services/feedbackToast";
+import {
+  formatGlossary,
+  inheritedGlossary,
+  suggestGlossaryFromSlides,
+  suggestTerminologyCorrections,
+} from "../../services/glossary";
 
 function qualityFlagLabel(flag: string) {
-  return {
-    empty: "tomt segment",
-    "very-short": "extremt kort",
-    duplicate: "upprepad rad",
-    "repeated-phrase": "upprepad fras",
-    "needs-review": "möjlig avkodningsartefakt",
-  }[flag] ?? "att granska";
+  return (
+    {
+      empty: "tomt segment",
+      "very-short": "extremt kort",
+      duplicate: "upprepad rad",
+      "repeated-phrase": "upprepad fras",
+      "needs-review": "möjlig avkodningsartefakt",
+    }[flag] ?? "att granska"
+  );
 }
 
 function escapedSearchPattern(value: string) {
@@ -44,7 +53,9 @@ function escapedSearchPattern(value: string) {
 function highlightedTranscriptText(text: string, query: string) {
   const needle = query.trim();
   if (!needle) return text;
-  const parts = text.split(new RegExp(`(${escapedSearchPattern(needle)})`, "gi"));
+  const parts = text.split(
+    new RegExp(`(${escapedSearchPattern(needle)})`, "gi"),
+  );
   return parts.map((part, index) =>
     index % 2 ? (
       <mark
@@ -53,7 +64,9 @@ function highlightedTranscriptText(text: string, query: string) {
       >
         {part}
       </mark>
-    ) : part,
+    ) : (
+      part
+    ),
   );
 }
 
@@ -64,6 +77,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     segments,
     markers,
     cards,
+    settings,
     updateNode,
     updateLecture,
     updateSegment,
@@ -85,13 +99,37 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     .sort((a, b) => a.time - b.time);
   const lectureCards = cards.filter((card) => card.lectureId === lectureId);
   const statusItems = [
-    { label: "Ljud", ready: Boolean(lecture.audioAssetId || lecture.audioParts?.length), action: "Importera eller spela in" },
-    { label: "Slides", ready: Boolean(lecture.slideAssetId), action: "Lägg till slides" },
-    { label: "Transkript", ready: transcript.length > 0, action: "Transkribera" },
-    { label: "Anteckningar", ready: Boolean(lecture.notes?.trim()), action: "Skriv en kort anteckning" },
-    { label: "Markeringar", ready: marks.length > 0, action: "Markera viktiga moment" },
+    {
+      label: "Ljud",
+      ready: Boolean(lecture.audioAssetId || lecture.audioParts?.length),
+      action: "Importera eller spela in",
+    },
+    {
+      label: "Slides",
+      ready: Boolean(lecture.slideAssetId),
+      action: "Lägg till slides",
+    },
+    {
+      label: "Transkript",
+      ready: transcript.length > 0,
+      action: "Transkribera",
+    },
+    {
+      label: "Anteckningar",
+      ready: Boolean(lecture.notes?.trim()),
+      action: "Skriv en kort anteckning",
+    },
+    {
+      label: "Markeringar",
+      ready: marks.length > 0,
+      action: "Markera viktiga moment",
+    },
     { label: "Kort", ready: lectureCards.length > 0, action: "Skapa kort" },
-    { label: "Anki", ready: lectureCards.some((card) => card.status === "synced"), action: "Godkänn och synka kort" },
+    {
+      label: "Anki",
+      ready: lectureCards.some((card) => card.status === "synced"),
+      action: "Godkänn och synka kort",
+    },
   ];
   const slideAsset = useLiveQuery(
     () =>
@@ -113,6 +151,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   const [showOnlySuspicious, setShowOnlySuspicious] = useState(false);
   const [lectureSettingsOpen, setLectureSettingsOpen] = useState(false);
   const [qualityReviewOpen, setQualityReviewOpen] = useState(false);
+  const [terminologyReviewOpen, setTerminologyReviewOpen] = useState(false);
   const transcriptPane = useRef<HTMLDivElement>(null);
   const slideImportInput = useRef<HTMLInputElement>(null);
   useEffect(
@@ -133,17 +172,31 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     const normalizedQuery = query.trim().toLocaleLowerCase("sv");
     if (!normalizedQuery) return null;
     return source
-      .filter((segment) =>
-        (!suspiciousOnly || segment.suspicious) &&
-        segment.text.toLocaleLowerCase("sv").includes(normalizedQuery),
+      .filter(
+        (segment) =>
+          (!suspiciousOnly || segment.suspicious) &&
+          segment.text.toLocaleLowerCase("sv").includes(normalizedQuery),
       )
       .map((segment) => segment.id);
   };
-  const visibleTranscript = useMemo(() => transcript.filter((segment) =>
-    (!showOnlySuspicious || segment.suspicious) &&
-    (!transcriptQuery.trim() || searchResultIds?.includes(segment.id)),
-  ), [showOnlySuspicious, transcript, transcriptQuery, searchResultIds]);
+  const visibleTranscript = useMemo(
+    () =>
+      transcript.filter(
+        (segment) =>
+          (!showOnlySuspicious || segment.suspicious) &&
+          (!transcriptQuery.trim() || searchResultIds?.includes(segment.id)),
+      ),
+    [showOnlySuspicious, transcript, transcriptQuery, searchResultIds],
+  );
   const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
+  const glossary = useMemo(
+    () => inheritedGlossary(nodes, lectureId, settings.transcriptionPrompt),
+    [lectureId, nodes, settings.transcriptionPrompt],
+  );
+  const terminologySuggestions = useMemo(
+    () => suggestTerminologyCorrections(transcript, glossary.terms),
+    [glossary.terms, transcript],
+  );
   const qualitySummary = suspiciousSegments.reduce<Record<string, number>>(
     (summary, segment) => {
       (segment.qualityFlags?.length
@@ -251,17 +304,23 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
   };
   const runStatusAction = (label: string) => {
     if (label === "Ljud") {
-      window.dispatchEvent(new CustomEvent("lectio:import-audio", { detail: { lectureId } }));
+      window.dispatchEvent(
+        new CustomEvent("lectio:import-audio", { detail: { lectureId } }),
+      );
     } else if (label === "Slides") {
       slideImportInput.current?.click();
     } else if (label === "Transkript") {
-      window.dispatchEvent(new CustomEvent("lectio:open-transcription", { detail: { lectureId } }));
+      window.dispatchEvent(
+        new CustomEvent("lectio:open-transcription", { detail: { lectureId } }),
+      );
     } else if (label === "Anteckningar") {
       document
         .querySelector<HTMLTextAreaElement>("[data-lectio-notes]")
         ?.focus();
     } else if (label === "Markeringar") {
-      window.dispatchEvent(new CustomEvent("lectio:mark-moment", { detail: { lectureId } }));
+      window.dispatchEvent(
+        new CustomEvent("lectio:mark-moment", { detail: { lectureId } }),
+      );
     } else {
       setActiveView("cards");
     }
@@ -274,10 +333,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     const updatedTranscript = transcript.map((segment) => {
       if (!replacedIds.has(segment.id)) return segment;
       const text = segment.text.replace(matcher, transcriptReplacement);
-      updateSegment(
-        segment.id,
-        text,
-      );
+      updateSegment(segment.id, text);
       return { ...segment, text };
     });
     setSearchResultIds(matchingSegmentIds(transcriptQuery, updatedTranscript));
@@ -334,7 +390,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
         </div>
       </header>
       <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-card px-6 py-2">
-        <span className="mr-1 text-xs font-medium text-muted-foreground">Nästa steg</span>
+        <span className="mr-1 text-xs font-medium text-muted-foreground">
+          Nästa steg
+        </span>
         {statusItems.map((item) => (
           <button
             key={item.label}
@@ -346,7 +404,11 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
             {item.ready ? "✓" : "○"} {item.label}
           </button>
         ))}
-        {!statusItems.every((item) => item.ready) && <span className="ml-auto shrink-0 text-xs text-muted-foreground">{statusItems.find((item) => !item.ready)?.action}</span>}
+        {!statusItems.every((item) => item.ready) && (
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+            {statusItems.find((item) => !item.ready)?.action}
+          </span>
+        )}
       </div>
       <main className="ui-app-bg grid min-h-0 flex-1 grid-cols-[minmax(320px,1fr)_minmax(360px,0.9fr)] gap-3 overflow-hidden p-3">
         <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)]">
@@ -437,11 +499,15 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                     onClick={() => {
                       const next = !showOnlySuspicious;
                       setShowOnlySuspicious(next);
-                      setSearchResultIds(matchingSegmentIds(transcriptQuery, transcript, next));
+                      setSearchResultIds(
+                        matchingSegmentIds(transcriptQuery, transcript, next),
+                      );
                     }}
                     aria-pressed={showOnlySuspicious}
                   >
-                    {showOnlySuspicious ? "Visa alla" : `Granska ${suspiciousSegments.length}`}
+                    {showOnlySuspicious
+                      ? "Visa alla"
+                      : `Granska ${suspiciousSegments.length}`}
                   </Button>
                 )}
                 <Button
@@ -508,9 +574,14 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                         <textarea
                           autoFocus
                           value={segmentDraft}
-                          onChange={(event) => setSegmentDraft(event.target.value)}
+                          onChange={(event) =>
+                            setSegmentDraft(event.target.value)
+                          }
                           onBlur={() => finishSegmentEdit(s)}
-                          rows={Math.min(5, Math.max(1, Math.ceil(segmentDraft.length / 65)))}
+                          rows={Math.min(
+                            5,
+                            Math.max(1, Math.ceil(segmentDraft.length / 65)),
+                          )}
                           className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
                         />
                       ) : (
@@ -642,6 +713,71 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       </main>
       <AudioPanel lectureId={lectureId} onTime={setTime} />
       <Dialog
+        open={terminologyReviewOpen}
+        onOpenChange={setTerminologyReviewOpen}
+        title="Granska terminologiförslag"
+        description="Förslagen görs lokalt mot ditt fraslexikon. Siffror, doser och kliniska påståenden ändras aldrig automatiskt."
+      >
+        <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+          {terminologySuggestions.map((suggestion) => (
+            <div
+              key={suggestion.segmentId}
+              className="rounded-lg border border-border p-3 text-sm"
+            >
+              <p className="text-muted-foreground">{suggestion.original}</p>
+              <p className="mt-1 font-medium text-foreground">
+                {suggestion.suggested}
+              </p>
+              <div className="mt-2 flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    updateSegment(suggestion.segmentId, suggestion.suggested)
+                  }
+                >
+                  Godkänn
+                </Button>
+              </div>
+            </div>
+          ))}
+          {!terminologySuggestions.length && (
+            <p className="py-6 text-center text-sm text-muted-foreground">
+              Inga säkra terminologiförslag hittades.
+            </p>
+          )}
+        </div>
+        <div className="mt-3 flex justify-between border-t border-border pt-3">
+          {lecture.transcriptOriginal && (
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSegments(lectureId, lecture.transcriptOriginal ?? []);
+                updateLecture(lectureId, { transcriptOriginal: undefined });
+                toast.success("Originaltranskriptet återställdes");
+              }}
+            >
+              Återställ original
+            </Button>
+          )}
+          <Button
+            onClick={() => {
+              if (!terminologySuggestions.length) return;
+              updateLecture(lectureId, {
+                transcriptOriginal: lecture.transcriptOriginal ?? transcript,
+              });
+              terminologySuggestions.forEach((item) =>
+                updateSegment(item.segmentId, item.suggested),
+              );
+              toast.success(
+                `${terminologySuggestions.length} förslag tillämpades`,
+              );
+            }}
+          >
+            Godkänn alla
+          </Button>
+        </div>
+      </Dialog>
+      <Dialog
         open={qualityReviewOpen}
         onOpenChange={setQualityReviewOpen}
         title="Granska transkriptkvalitet"
@@ -650,37 +786,81 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
         <div className="space-y-4">
           <div className="flex flex-wrap gap-2 text-xs text-[var(--palette-text-muted)]">
             {Object.entries(qualitySummary).map(([flag, count]) => (
-              <span key={flag} className="rounded-md bg-[var(--palette-warning-muted)] px-2 py-1 text-[var(--palette-warning)]">
+              <span
+                key={flag}
+                className="rounded-md bg-[var(--palette-warning-muted)] px-2 py-1 text-[var(--palette-warning)]"
+              >
                 {count} {qualityFlagLabel(flag)}
               </span>
             ))}
           </div>
           <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
             {suspiciousSegments.map((segment) => (
-              <div key={segment.id} className="rounded-lg border border-[var(--palette-border)] p-3">
+              <div
+                key={segment.id}
+                className="rounded-lg border border-[var(--palette-border)] p-3"
+              >
                 <div className="flex items-start gap-3">
-                  <span className="shrink-0 text-xs font-medium text-[var(--palette-accent)]">{formatTime(segment.start)}</span>
-                  <p className="min-w-0 flex-1 text-sm leading-5 text-[var(--palette-text)]">{segment.text || "(tomt segment)"}</p>
+                  <span className="shrink-0 text-xs font-medium text-[var(--palette-accent)]">
+                    {formatTime(segment.start)}
+                  </span>
+                  <p className="min-w-0 flex-1 text-sm leading-5 text-[var(--palette-text)]">
+                    {segment.text || "(tomt segment)"}
+                  </p>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  {(segment.qualityFlags?.length ? segment.qualityFlags : ["needs-review"]).map((flag) => (
-                    <span key={flag} className="text-xs text-[var(--palette-text-subtle)]">{qualityFlagLabel(flag)}</span>
+                  {(segment.qualityFlags?.length
+                    ? segment.qualityFlags
+                    : ["needs-review"]
+                  ).map((flag) => (
+                    <span
+                      key={flag}
+                      className="text-xs text-[var(--palette-text-subtle)]"
+                    >
+                      {qualityFlagLabel(flag)}
+                    </span>
                   ))}
                   <span className="flex-1" />
-                  <Button variant="ghost" size="sm" onClick={() => setSegmentQualityFlag(segment.id, false)}>Behåll</Button>
-                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => removeSegment(segment.id)}>Ta bort</Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSegmentQualityFlag(segment.id, false)}
+                  >
+                    Behåll
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="text-destructive hover:text-destructive"
+                    onClick={() => removeSegment(segment.id)}
+                  >
+                    Ta bort
+                  </Button>
                 </div>
               </div>
             ))}
           </div>
           <div className="flex items-center justify-between gap-3 border-t border-[var(--palette-border)] pt-3">
-            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => {
-              if (confirm(`Ta bort ${suspiciousSegments.length} flaggade segment? Detta kan inte ångras.`)) {
-                removeSuspiciousSegments(lectureId);
-                setQualityReviewOpen(false);
-              }
-            }}>Rensa alla flaggade</Button>
-            <Button size="sm" onClick={() => setQualityReviewOpen(false)}>Klar</Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive"
+              onClick={() => {
+                if (
+                  confirm(
+                    `Ta bort ${suspiciousSegments.length} flaggade segment? Detta kan inte ångras.`,
+                  )
+                ) {
+                  removeSuspiciousSegments(lectureId);
+                  setQualityReviewOpen(false);
+                }
+              }}
+            >
+              Rensa alla flaggade
+            </Button>
+            <Button size="sm" onClick={() => setQualityReviewOpen(false)}>
+              Klar
+            </Button>
           </div>
         </div>
       </Dialog>
@@ -719,6 +899,65 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 slidekopplingar.
               </p>
             ) : null}
+          </div>
+          <div>
+            <Label>Fraslexikon för transkribering</Label>
+            <Textarea
+              className="min-h-20"
+              value={node.settings.transcriptionGlossary ?? ""}
+              onChange={(event) =>
+                updateNode(node.id, {
+                  settings: {
+                    ...node.settings,
+                    transcriptionGlossary: event.target.value || undefined,
+                  },
+                })
+              }
+              placeholder="Exempel: ileus, kolecystit, ABCDE, CRP"
+            />
+            <div className="mt-2 flex flex-wrap gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const suggestions = suggestGlossaryFromSlides(
+                    lecture.slideText ?? "",
+                  );
+                  updateNode(node.id, {
+                    settings: {
+                      ...node.settings,
+                      transcriptionGlossary: formatGlossary([
+                        ...(node.settings.transcriptionGlossary
+                          ? node.settings.transcriptionGlossary.split(/[,;\n]/)
+                          : []),
+                        ...suggestions,
+                      ]),
+                    },
+                  });
+                  toast.success(
+                    `${suggestions.length} förslag från slide-text lades till för granskning`,
+                  );
+                }}
+                disabled={!lecture.slideText?.trim()}
+              >
+                Föreslå från slides
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setTerminologyReviewOpen(true)}
+                disabled={!transcript.length}
+              >
+                <Wand2 className="size-3.5" /> Granska transkript
+              </Button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Ärvt lexikon:{" "}
+              {glossary.sources
+                .map((source) => `${source.source} (${source.terms.length})`)
+                .join(" · ") || "inget"}
+              . PDF-text används först; OCR används bara när text saknas.
+            </p>
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
@@ -850,7 +1089,9 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
     }
     if (contextFileInput.current) contextFileInput.current.value = "";
     toast.success(
-      files.length === 1 ? "Contextfil tillagd" : `${files.length} contextfiler tillagda`,
+      files.length === 1
+        ? "Contextfil tillagd"
+        : `${files.length} contextfiler tillagda`,
     );
   };
   const removeContextFile = async (id: string, name: string) => {
@@ -934,7 +1175,9 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                         multiple
                         className="hidden"
                         onChange={(event) =>
-                          void importContextFiles(event.target.files ?? undefined)
+                          void importContextFiles(
+                            event.target.files ?? undefined,
+                          )
                         }
                       />
                     </label>
@@ -959,7 +1202,9 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                         <Button
                           variant="ghost"
                           size="icon-xs"
-                          onClick={() => void removeContextFile(file.id, file.name)}
+                          onClick={() =>
+                            void removeContextFile(file.id, file.name)
+                          }
                           aria-label={`Ta bort ${file.name}`}
                           title="Ta bort contextfil"
                         >
@@ -1018,6 +1263,26 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                     }
                     placeholder="Exempel: korta svar, betona härledningar och exempel"
                   />
+                </div>
+                <div className="col-span-2">
+                  <Label>Fraslexikon för transkribering</Label>
+                  <Textarea
+                    className="min-h-20"
+                    value={node.settings.transcriptionGlossary ?? ""}
+                    onChange={(event) =>
+                      updateNode(node.id, {
+                        settings: {
+                          ...node.settings,
+                          transcriptionGlossary:
+                            event.target.value || undefined,
+                        },
+                      })
+                    }
+                    placeholder="Termer och förkortningar, separerade med komma eller radbrytning"
+                  />
+                  <p className="mt-1 text-xs text-slate-400">
+                    Ärvs av underliggande moduler, ämnen och föreläsningar.
+                  </p>
                 </div>
               </div>
               <p className="mt-4 px-1 text-xs leading-5 text-slate-500">

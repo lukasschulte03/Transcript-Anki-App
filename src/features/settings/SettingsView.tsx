@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
   AudioLines,
@@ -29,7 +29,12 @@ import { getDecks, testAnki } from "../../services/anki";
 import { toast } from "../../services/feedbackToast";
 import { strFromU8, strToU8, unzip, zip } from "fflate";
 import { db } from "../../core/database";
-import { confirmStorageForImport, downloadBlob } from "../../lib/utils";
+import {
+  confirmStorageForImport,
+  downloadBlob,
+  downloadText,
+} from "../../lib/utils";
+import { formatGlossary, glossaryTerms } from "../../services/glossary";
 import type {
   LibraryBackup,
   StoredAsset,
@@ -162,6 +167,7 @@ const unzipAsync = (data: Uint8Array) =>
   });
 
 export function SettingsView() {
+  const glossaryFileRef = useRef<HTMLInputElement>(null);
   const store = useAppStore();
   const {
     settings,
@@ -1385,11 +1391,55 @@ export function SettingsView() {
                     placeholder="Exempel: Medicinska termer: ileus, kolecystit, peritonit. Förkortningar: ABCDE, CRP."
                   />
                 </Field>
+                <div className="flex flex-wrap gap-2">
+                  <input
+                    ref={glossaryFileRef}
+                    type="file"
+                    accept="text/plain,.txt,text/csv,.csv"
+                    className="hidden"
+                    onChange={async (event) => {
+                      const file = event.target.files?.[0];
+                      if (!file) return;
+                      const imported = glossaryTerms(await file.text());
+                      updateSettings({
+                        transcriptionPrompt: formatGlossary([
+                          ...glossaryTerms(settings.transcriptionPrompt),
+                          ...imported,
+                        ]),
+                      });
+                      toast.success(
+                        `${imported.length} termer importerades till den globala ordlistan`,
+                      );
+                      event.currentTarget.value = "";
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => glossaryFileRef.current?.click()}
+                  >
+                    <FileUp className="size-3.5" /> Importera TXT/CSV
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      downloadText(
+                        "lectio-fraslexikon.txt",
+                        glossaryTerms(settings.transcriptionPrompt).join("\n"),
+                        "text/plain",
+                      )
+                    }
+                  >
+                    <FileDown className="size-3.5" /> Exportera
+                  </Button>
+                </div>
                 <p className="text-xs leading-5 text-slate-500">
                   Håll detta kort och termfokuserat. När en föreläsning
-                  transkriberas kombineras det med context från kurs, modul och
-                  föreläsning. Lokala Whisper använder prompten på datorn;
-                  OpenAI och Groq får den som API-prompt.
+                  transkriberas kombineras det med ärvda fraslexikon från kurs,
+                  modul och föreläsning — inte med vanligt context. Lokala
+                  Whisper använder prompten på datorn; OpenAI och Groq får den
+                  som API-prompt.
                 </p>
               </Section>
             )}

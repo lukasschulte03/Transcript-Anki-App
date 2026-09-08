@@ -2,7 +2,11 @@ import type { CardType, LibraryNode, StoredAsset } from "../core/types";
 import { db } from "../core/database";
 import { useAppStore } from "../core/store";
 import { uid } from "../lib/utils";
-import { createCardPrompt, generateCardsWithApi, parseCardResponse } from "./ai";
+import {
+  createCardPrompt,
+  generateCardsWithApi,
+  parseCardResponse,
+} from "./ai";
 import {
   deleteNote,
   ensureDeck,
@@ -18,16 +22,15 @@ import {
   prepareAudioForCloudTranscription,
   transcribeWithLocalWhisper,
 } from "./localStt";
-import { buildTranscriptionPrompt, cloudApiTranscription } from "./transcription";
+import {
+  buildTranscriptionPrompt,
+  cloudApiTranscription,
+} from "./transcription";
+import { inheritedGlossary } from "./glossary";
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
 export type BatchJobStatus =
-  | "queued"
-  | "running"
-  | "waiting"
-  | "complete"
-  | "error"
-  | "cancelled";
+  "queued" | "running" | "waiting" | "complete" | "error" | "cancelled";
 
 export type BatchJob = {
   id: string;
@@ -52,7 +55,9 @@ function load() {
   if (loaded) return;
   loaded = true;
   try {
-    const parsed = JSON.parse(localStorage.getItem(storageKey) ?? "[]") as BatchJob[];
+    const parsed = JSON.parse(
+      localStorage.getItem(storageKey) ?? "[]",
+    ) as BatchJob[];
     jobs = Array.isArray(parsed)
       ? parsed.map((job) =>
           job.status === "running"
@@ -98,7 +103,13 @@ function audioParts(lectureId: string) {
   const lecture = useAppStore.getState().lectures[lectureId];
   if (lecture?.audioParts?.length) return lecture.audioParts;
   return lecture?.audioAssetId
-    ? [{ assetId: lecture.audioAssetId, name: lecture.audioName ?? "Ljud", duration: lecture.audioDuration }]
+    ? [
+        {
+          assetId: lecture.audioAssetId,
+          name: lecture.audioName ?? "Ljud",
+          duration: lecture.audioDuration,
+        },
+      ]
     : [];
 }
 
@@ -107,7 +118,8 @@ async function duration(blob: Blob) {
   try {
     return await new Promise<number>((resolve) => {
       const audio = new Audio();
-      audio.onloadedmetadata = () => resolve(Number.isFinite(audio.duration) ? audio.duration : 0);
+      audio.onloadedmetadata = () =>
+        resolve(Number.isFinite(audio.duration) ? audio.duration : 0);
       audio.onerror = () => resolve(0);
       audio.src = url;
     });
@@ -121,28 +133,55 @@ async function transcribe(job: BatchJob) {
   const parts = audioParts(job.lectureId);
   if (!parts.length) throw new Error("Föreläsningen saknar ljud.");
   const assets = await db.assets.bulkGet(parts.map((part) => part.assetId));
-  if (assets.some((asset) => !asset)) throw new Error("En ljuddel saknas lokalt.");
+  if (assets.some((asset) => !asset))
+    throw new Error("En ljuddel saknas lokalt.");
   const apiMode = state.settings.transcriptionProvider !== "local";
   if (state.settings.transcriptionProvider === "manual")
-    throw new Error("Välj lokal transkribering eller en API-provider i inställningarna.");
+    throw new Error(
+      "Välj lokal transkribering eller en API-provider i inställningarna.",
+    );
   const apiKey = apiMode
-    ? await readCredential(`transcription:${state.settings.transcriptionProvider === "groq" ? "groq" : "openai"}`)
+    ? await readCredential(
+        `transcription:${state.settings.transcriptionProvider === "groq" ? "groq" : "openai"}`,
+      )
     : "";
-  if (apiMode && !apiKey) throw new Error("API-nyckeln för transkribering saknas.");
-  const prompt = buildTranscriptionPrompt(state.settings.transcriptionPrompt);
-  const segments: Array<{ start: number; end: number; text: string; speaker?: string; confidence?: number }> = [];
+  if (apiMode && !apiKey)
+    throw new Error("API-nyckeln för transkribering saknas.");
+  const prompt = buildTranscriptionPrompt(
+    inheritedGlossary(
+      state.nodes,
+      job.lectureId,
+      state.settings.transcriptionPrompt,
+    ).terms.join(", "),
+  );
+  const segments: Array<{
+    start: number;
+    end: number;
+    text: string;
+    speaker?: string;
+    confidence?: number;
+  }> = [];
   const updatedParts = [...parts];
   let offset = 0;
   for (let index = 0; index < parts.length; index++) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-    patchJob(job.id, { detail: `Transkriberar ljuddel ${index + 1} av ${parts.length}…` });
+    patchJob(job.id, {
+      detail: `Transkriberar ljuddel ${index + 1} av ${parts.length}…`,
+    });
     const asset = assets[index] as StoredAsset;
-    const uploads = apiMode ? await prepareAudioForCloudTranscription(asset.blob) : [asset.blob];
+    const uploads = apiMode
+      ? await prepareAudioForCloudTranscription(asset.blob)
+      : [asset.blob];
     let partOffset = 0;
     for (const upload of uploads) {
       if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
       const result = apiMode
-        ? await cloudApiTranscription.transcribe(upload, state.settings, apiKey!, prompt)
+        ? await cloudApiTranscription.transcribe(
+            upload,
+            state.settings,
+            apiKey!,
+            prompt,
+          )
         : await transcribeWithLocalWhisper(
             upload,
             state.settings.localTranscriptionModel ?? "base",
@@ -157,14 +196,20 @@ async function transcribe(job: BatchJob) {
           end: segment.end + offset + partOffset,
         })),
       );
-      partOffset += (await duration(upload)) || Math.max(0, ...result.segments.map((segment) => segment.end));
+      partOffset +=
+        (await duration(upload)) ||
+        Math.max(0, ...result.segments.map((segment) => segment.end));
     }
-    const partDuration = parts[index].duration || partOffset || (await duration(asset.blob));
+    const partDuration =
+      parts[index].duration || partOffset || (await duration(asset.blob));
     updatedParts[index] = { ...parts[index], duration: partDuration };
     offset += partDuration;
   }
   const latest = useAppStore.getState();
-  latest.updateLecture(job.lectureId, { audioParts: updatedParts, audioDuration: offset });
+  latest.updateLecture(job.lectureId, {
+    audioParts: updatedParts,
+    audioDuration: offset,
+  });
   latest.setSegments(job.lectureId, segments);
   return `${segments.length} segment skapades.`;
 }
@@ -174,20 +219,26 @@ function parentChain(nodes: LibraryNode[], id: string) {
   let current = nodes.find((node) => node.id === id);
   while (current) {
     result.unshift(current);
-    current = current.parentId ? nodes.find((node) => node.id === current?.parentId) : undefined;
+    current = current.parentId
+      ? nodes.find((node) => node.id === current?.parentId)
+      : undefined;
   }
   return result;
 }
 
 function courseId(nodes: LibraryNode[], lectureId: string) {
-  return parentChain(nodes, lectureId).find((node) => node.type === "course")?.id;
+  return parentChain(nodes, lectureId).find((node) => node.type === "course")
+    ?.id;
 }
 
 async function generate(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   const state = useAppStore.getState();
   if (state.settings.aiMode !== "api") {
-    patchJob(job.id, { status: "waiting", detail: "Öppna föreläsningen och slutför copy/paste-flödet." });
+    patchJob(job.id, {
+      status: "waiting",
+      detail: "Öppna föreläsningen och slutför copy/paste-flödet.",
+    });
     return "WAITING";
   }
   const apiKey = await readCredential(`ai:${state.settings.aiProvider}`);
@@ -196,34 +247,57 @@ async function generate(job: BatchJob) {
   const lecture = state.lectures[job.lectureId];
   if (!node || !lecture) throw new Error("Föreläsningen kunde inte hittas.");
   const chain = parentChain(state.nodes, job.lectureId);
-  const contextFiles = await db.assets.where("nodeId").anyOf(chain.map((item) => item.id)).toArray();
+  const contextFiles = await db.assets
+    .where("nodeId")
+    .anyOf(chain.map((item) => item.id))
+    .toArray();
   const context = [
     state.settings.userContext,
     ...chain.map((item) => item.context),
     ...contextFiles.map((file) => file.extractedText ?? ""),
-  ].filter((text) => text.trim()).join("\n\n");
-  const lectureSegments = state.segments.filter((segment) => segment.lectureId === job.lectureId);
-  const existing = state.cards.filter((card) => courseId(state.nodes, card.lectureId) === courseId(state.nodes, job.lectureId));
+  ]
+    .filter((text) => text.trim())
+    .join("\n\n");
+  const lectureSegments = state.segments.filter(
+    (segment) => segment.lectureId === job.lectureId,
+  );
+  const existing = state.cards.filter(
+    (card) =>
+      courseId(state.nodes, card.lectureId) ===
+      courseId(state.nodes, job.lectureId),
+  );
   const prompt = createCardPrompt({
     lectureId: job.lectureId,
     title: node.title,
     context,
-    sourceStatus: "Använd transkript, slides, anteckningar och context självständigt.",
+    sourceStatus:
+      "Använd transkript, slides, anteckningar och context självständigt.",
     notes: lecture.notes,
     transcript: lectureSegments,
-    markers: state.markers.filter((marker) => marker.lectureId === job.lectureId),
+    markers: state.markers.filter(
+      (marker) => marker.lectureId === job.lectureId,
+    ),
     slideText: lecture.slideText ?? "",
     density: "balanced",
     count: 36,
     types: ["basic", "concept"] satisfies CardType[],
-    preferences: ["Undvik triviala kort", "Ett koncept per kort", "Prioritera examinationsrelevant förståelse"],
-    cardStyle: Object.assign({}, ...chain.map((item) => item.settings)).cardStyle,
+    preferences: [
+      "Undvik triviala kort",
+      "Ett koncept per kort",
+      "Prioritera examinationsrelevant förståelse",
+    ],
+    cardStyle: Object.assign({}, ...chain.map((item) => item.settings))
+      .cardStyle,
     existingCards: existing.map(({ front, back }) => ({ front, back })),
   });
   const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   const parsed = parseCardResponse(raw, job.lectureId).slice(0, 36);
-  const known = new Set(existing.map((card) => `${card.front}\0${card.back}`.toLocaleLowerCase("sv")));
+  const known = new Set(
+    existing.map((card) =>
+      `${card.front}\0${card.back}`.toLocaleLowerCase("sv"),
+    ),
+  );
   const unique = parsed.filter((card) => {
     const key = `${card.front}\0${card.back}`.toLocaleLowerCase("sv");
     if (known.has(key)) return false;
@@ -237,7 +311,9 @@ async function generate(job: BatchJob) {
 async function approve(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   const state = useAppStore.getState();
-  const cards = state.cards.filter((card) => card.lectureId === job.lectureId && card.status === "generated");
+  const cards = state.cards.filter(
+    (card) => card.lectureId === job.lectureId && card.status === "generated",
+  );
   cards.forEach((card) => state.updateCard(card.id, { status: "approved" }));
   return `${cards.length} kort godkändes.`;
 }
@@ -246,7 +322,9 @@ async function sync(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   let state = useAppStore.getState();
   await testAnki(state.settings.ankiUrl);
-  const deletions = state.pendingAnkiDeletions.filter((item) => item.lectureId === job.lectureId);
+  const deletions = state.pendingAnkiDeletions.filter(
+    (item) => item.lectureId === job.lectureId,
+  );
   const failures: string[] = [];
   for (const deletion of deletions) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
@@ -255,7 +333,9 @@ async function sync(job: BatchJob) {
       useAppStore.getState().resolveAnkiNoteDeletion(deletion.ankiId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      useAppStore.getState().markAnkiNoteDeletionError(deletion.ankiId, message);
+      useAppStore
+        .getState()
+        .markAnkiNoteDeletionError(deletion.ankiId, message);
       failures.push(message);
     }
   }
@@ -274,10 +354,17 @@ async function sync(job: BatchJob) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
       const tags = [...new Set(withoutStructuralTags(card.tags))];
-      const ankiId = await syncCard(state.settings.ankiUrl, deck, { ...card, tags });
+      const ankiId = await syncCard(state.settings.ankiUrl, deck, {
+        ...card,
+        tags,
+      });
       useAppStore.getState().updateCard(card.id, {
-        status: "synced", ankiId, ankiDeck: deck, tags,
-        ankiSyncError: undefined, ankiSyncErrorAt: undefined,
+        status: "synced",
+        ankiId,
+        ankiDeck: deck,
+        tags,
+        ankiSyncError: undefined,
+        ankiSyncErrorAt: undefined,
         ankiSyncedAt: new Date().toISOString(),
       });
     } catch (error) {
@@ -289,8 +376,13 @@ async function sync(job: BatchJob) {
       failures.push(message);
     }
   }
-  if (failures.length) throw new Error(`${failures.length} Anki-ändringar misslyckades: ${failures[0]}`);
-  useAppStore.getState().updateLecture(job.lectureId, { ankiLastSyncedAt: new Date().toISOString() });
+  if (failures.length)
+    throw new Error(
+      `${failures.length} Anki-ändringar misslyckades: ${failures[0]}`,
+    );
+  useAppStore.getState().updateLecture(job.lectureId, {
+    ankiLastSyncedAt: new Date().toISOString(),
+  });
   return `${cards.length} kort synkades${deletions.length ? ` och ${deletions.length} raderades` : ""}.`;
 }
 
@@ -314,10 +406,15 @@ async function drain() {
         if (detail === "WAITING") break;
         patchJob(job.id, { status: "complete", detail });
       } catch (error) {
-        const wasCancelled = cancelled.has(job.id) || String(error).includes("BATCH_CANCELLED");
+        const wasCancelled =
+          cancelled.has(job.id) || String(error).includes("BATCH_CANCELLED");
         patchJob(job.id, {
           status: wasCancelled ? "cancelled" : "error",
-          detail: wasCancelled ? "Avbruten." : error instanceof Error ? error.message : String(error),
+          detail: wasCancelled
+            ? "Avbruten."
+            : error instanceof Error
+              ? error.message
+              : String(error),
         });
       } finally {
         cancelled.delete(job.id);
@@ -328,7 +425,11 @@ async function drain() {
   }
 }
 
-export function enqueueBatch(action: BatchAction, lectures: Array<{ id: string; title: string }>, overwrite = false) {
+export function enqueueBatch(
+  action: BatchAction,
+  lectures: Array<{ id: string; title: string }>,
+  overwrite = false,
+) {
   load();
   const now = new Date().toISOString();
   const created = lectures.map((lecture) => ({
@@ -354,14 +455,18 @@ export function retryBatchJob(id: string) {
 }
 
 export function completeWaitingBatchJob(id: string) {
-  patchJob(id, { status: "complete", detail: "Copy/paste-flödet markerades som klart." });
+  patchJob(id, {
+    status: "complete",
+    detail: "Copy/paste-flödet markerades som klart.",
+  });
   void drain();
 }
 
 export async function cancelBatchJob(id: string) {
   cancelled.add(id);
   const job = jobs.find((item) => item.id === id);
-  if (job?.action === "transcribe") await cancelLocalTranscription(id).catch(() => undefined);
+  if (job?.action === "transcribe")
+    await cancelLocalTranscription(id).catch(() => undefined);
   if (job?.status === "queued" || job?.status === "waiting") {
     patchJob(id, { status: "cancelled", detail: "Avbruten." });
     void drain();
@@ -370,7 +475,12 @@ export async function cancelBatchJob(id: string) {
 
 export function clearFinishedBatchJobs() {
   load();
-  jobs = jobs.filter((job) => job.status === "queued" || job.status === "running" || job.status === "waiting");
+  jobs = jobs.filter(
+    (job) =>
+      job.status === "queued" ||
+      job.status === "running" ||
+      job.status === "waiting",
+  );
   publish();
 }
 

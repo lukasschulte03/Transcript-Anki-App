@@ -51,6 +51,58 @@ import {
   sortAudioFiles,
   validateAudioFile,
 } from "./audioImport";
+import {
+  inheritedGlossary,
+  suggestGlossaryFromSlides,
+  suggestTerminologyCorrections,
+} from "./glossary";
+
+describe("fraslexikon", () => {
+  it("ärver termer och föreslår inte ändringar av korrekt text", () => {
+    const nodes = [
+      {
+        id: "course",
+        parentId: null,
+        type: "course",
+        title: "Kurs",
+        context: "",
+        createdAt: "",
+        settings: { transcriptionGlossary: "ileus" },
+      },
+      {
+        id: "lecture",
+        parentId: "course",
+        type: "lecture",
+        title: "Föreläsning",
+        context: "",
+        createdAt: "",
+        settings: { transcriptionGlossary: "peritonit" },
+      },
+    ] as any;
+    expect(inheritedGlossary(nodes, "lecture", "ABCDE").terms).toEqual([
+      "ABCDE",
+      "ileus",
+      "peritonit",
+    ]);
+    expect(
+      suggestTerminologyCorrections(
+        [
+          {
+            id: "s",
+            lectureId: "lecture",
+            start: 0,
+            end: 1,
+            text: "peritonit",
+          },
+        ],
+        ["peritonit"],
+      ),
+    ).toEqual([]);
+    expect(suggestGlossaryFromSlides("ABCDE vid kolecystit")).toContain(
+      "ABCDE",
+    );
+  });
+});
 
 describe("mobil ljudimport", () => {
   const audio = (name: string, size = 1024, lastModified = 1) =>

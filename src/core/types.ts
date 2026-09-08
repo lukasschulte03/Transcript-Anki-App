@@ -13,6 +13,8 @@ export interface LibraryNode {
     language?: string;
     ankiDeck?: string;
     cardStyle?: string;
+    /** Short, term-focused Whisper lexicon inherited by child objects. */
+    transcriptionGlossary?: string;
   };
 }
 
@@ -67,6 +69,8 @@ export interface LectureData {
   /** Extracted locally, one entry per PDF page, for source-aware slide use. */
   slidePages?: string[];
   slideMappings?: Record<string, { page: number; confidence: number }>;
+  /** Preserved before an optional terminology review is applied. */
+  transcriptOriginal?: TranscriptSegment[];
   audioAssetId?: string;
   audioName?: string;
   /**
