@@ -24,8 +24,9 @@ import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { parseTimestampedText } from "../../services/transcription";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { suggestSlideMappings } from "../../services/slideMatching";
-import { buildVisualIndex } from "../../services/visualIndex";
+import { buildPptxVisualIndex, buildVisualIndex } from "../../services/visualIndex";
 import { ModuleVisualLibrary } from "../library/ModuleVisualLibrary";
+import { extractPptxImages } from "../../services/pptx";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "../../services/feedbackToast";
@@ -335,6 +336,68 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       } catch {
         toast.success("Slides importerade · text kan läggas till manuellt");
       }
+    } else if (
+      file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      file.name.toLowerCase().endsWith(".pptx")
+    ) {
+      const jobId = `visual-index:${lectureId}:${id}`;
+      upsertJob({
+        id: jobId,
+        kind: "library",
+        label: "Extraherar PowerPoint-bilder",
+        phase: "queued",
+        status: "queued",
+        current: 0,
+        detail: "Letar efter lokala bilder i presentationen…",
+      });
+      window.setTimeout(() => {
+        void (async () => {
+          const extracted = await extractPptxImages(file);
+          if (!extracted.length) throw new Error("PowerPointen innehåller inga inbäddade bildfiler.");
+          const images = await Promise.all(
+            extracted.map(async (image) => {
+              const assetId = uid();
+              await db.assets.put({
+                id: assetId,
+                lectureId,
+                kind: "file",
+                name: `PPTX-bild · ${image.name}`,
+                mimeType: image.blob.type,
+                blob: image.blob,
+                createdAt: new Date().toISOString(),
+              });
+              return { ...image, assetId };
+            }),
+          );
+          const { sourceHash, candidates } = await buildPptxVisualIndex(file, images);
+          updateLecture(lectureId, {
+            visualIndex: candidates,
+            visualIndexHash: sourceHash,
+            visualIndexUpdatedAt: new Date().toISOString(),
+          });
+          upsertJob({
+            id: jobId,
+            kind: "library",
+            label: "Extraherar PowerPoint-bilder",
+            phase: "complete",
+            status: "complete",
+            current: candidates.length,
+            total: candidates.length,
+            detail: `${candidates.length} lokala bildkandidater är klara.`,
+          });
+        })().catch((error) =>
+          upsertJob({
+            id: jobId,
+            kind: "library",
+            label: "Extraherar PowerPoint-bilder",
+            phase: "error",
+            status: "error",
+            current: 0,
+            detail: String(error),
+          }),
+        );
+      }, 0);
+      toast.success("PowerPoint importerad · bilder indexeras lokalt");
     } else if (file.type.startsWith("image/")) {
       const pages = [`Bild: ${file.name}`];
       const jobId = `visual-index:${lectureId}:${id}`;
@@ -536,7 +599,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 <input
                   ref={slideImportInput}
                   type="file"
-                  accept="application/pdf,image/*"
+                  accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,image/*"
                   className="hidden"
                   onChange={(e) => importSlides(e.target.files?.[0])}
                 />
@@ -568,7 +631,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 </div>
                 <input
                   type="file"
-                  accept="application/pdf,image/*"
+                  accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,image/*"
                   className="hidden"
                   onChange={(e) => importSlides(e.target.files?.[0])}
                 />

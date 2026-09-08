@@ -53,6 +53,27 @@ export async function buildVisualIndex(blob: Blob, pages: string[]) {
   return { sourceHash, candidates };
 }
 
+/** Builds candidates for raster images extracted locally from a PPTX archive. */
+export async function buildPptxVisualIndex(
+  presentation: Blob,
+  images: Array<{ assetId: string; name: string; blob: Blob }>,
+) {
+  const sourceHash = await visualSourceHash(presentation);
+  const fingerprints = await Promise.all(
+    images.map((image) => visualSourceHash(image.blob)),
+  );
+  const candidates: VisualCandidate[] = images.map((image, index) => ({
+    id: `visual-${sourceHash}-pptx-${index + 1}`,
+    slidePage: index + 1,
+    description: `PPTX-bild ${index + 1}: ${image.name}`,
+    keywords: [...new Set(words(image.name))].slice(0, 24),
+    sourceHash,
+    contentHash: fingerprints[index],
+    assetId: image.assetId,
+  }));
+  return { sourceHash, candidates };
+}
+
 /** Local lexical retrieval keeps visual metadata out of the general AI prompt. */
 export function selectVisualCandidates(
   candidates: VisualCandidate[],
@@ -163,7 +184,8 @@ async function renderVisualPng(
   candidate: VisualCandidate,
   scale: number,
 ) {
-  const asset = await db.assets.get(lecture.slideAssetId!);
+  const sourceAssetId = candidate.assetId ?? lecture.slideAssetId!;
+  const asset = await db.assets.get(sourceAssetId);
   if (asset?.mimeType.startsWith("image/")) return asset.blob;
   if (
     !asset ||
@@ -194,7 +216,8 @@ export async function resolveVisualThumbnail(
   lecture: LectureData | undefined,
 ) {
   if (!lecture?.slideAssetId) return undefined;
-  const id = `visual-thumbnail:${lecture.slideAssetId}:${candidate.id}`;
+  const sourceAssetId = candidate.assetId ?? lecture.slideAssetId;
+  const id = `visual-thumbnail:${sourceAssetId}:${candidate.id}`;
   const cached = await db.visualThumbnails.get(id);
   if (cached) return cached.blob;
   try {
@@ -202,7 +225,7 @@ export async function resolveVisualThumbnail(
     if (!blob) return undefined;
     await db.visualThumbnails.put({
       id,
-      assetId: lecture.slideAssetId,
+      assetId: sourceAssetId,
       visualId: candidate.id,
       blob,
       createdAt: new Date().toISOString(),
@@ -224,7 +247,7 @@ export function resolveVisualMedia(
     return Promise.resolve(undefined);
   const candidate = lecture.visualIndex.find((item) => item.id === card.visualId);
   if (!candidate) return Promise.resolve(undefined);
-  const key = `${lecture.slideAssetId}:${candidate.id}`;
+  const key = `${candidate.assetId ?? lecture.slideAssetId}:${candidate.id}`;
   if (!mediaCache.has(key)) {
     mediaCache.set(key, (async () => {
       try {

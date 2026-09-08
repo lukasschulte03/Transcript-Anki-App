@@ -16,7 +16,8 @@ import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
-import { buildVisualIndex } from "../../services/visualIndex";
+import { buildPptxVisualIndex, buildVisualIndex } from "../../services/visualIndex";
+import { extractPptxImages } from "../../services/pptx";
 import {
   audioFingerprint,
   audioFormat,
@@ -220,6 +221,36 @@ export function LectureImportAssistant({
           }
         } else if (slideFile.type.startsWith("image/")) {
           visualPages = [`Bild: ${slideFile.name}`];
+        } else if (
+          slideFile.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+          slideFile.name.toLowerCase().endsWith(".pptx")
+        ) {
+          try {
+            const extracted = await extractPptxImages(slideFile);
+            const images = await Promise.all(
+              extracted.map(async (image) => {
+                const assetId = uid();
+                await db.assets.put({
+                  id: assetId,
+                  lectureId,
+                  kind: "file",
+                  name: `PPTX-bild · ${image.name}`,
+                  mimeType: image.blob.type,
+                  blob: image.blob,
+                  createdAt: new Date().toISOString(),
+                });
+                return { ...image, assetId };
+              }),
+            );
+            if (images.length) {
+              const visual = await buildPptxVisualIndex(slideFile, images);
+              patch.visualIndex = visual.candidates;
+              patch.visualIndexHash = visual.sourceHash;
+              patch.visualIndexUpdatedAt = new Date().toISOString();
+            }
+          } catch {
+            toast.message("PowerPointen importerades utan extraherade bilder.");
+          }
         }
       }
       updateLecture(lectureId, patch);
@@ -445,7 +476,7 @@ export function LectureImportAssistant({
             {slideFile?.name ?? "Välj PDF eller bild"}
             <input
               type="file"
-              accept="application/pdf,image/*"
+              accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,.pptx,image/*"
               className="hidden"
               onChange={(event) => setSlideFile(event.target.files?.[0])}
             />

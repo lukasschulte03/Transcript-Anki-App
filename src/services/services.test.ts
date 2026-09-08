@@ -72,6 +72,8 @@ import {
   backupSourceFromState,
   normalizeLibraryBackup,
 } from "./libraryBackup";
+import { extractPptxImages } from "./pptx";
+import { zipSync } from "fflate";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -151,6 +153,24 @@ describe("modulens bildbibliotek", () => {
     expect(visible[0]?.description).toContain("EKG · Slide 3");
     const all = moduleVisualCandidates(nodes, lectures, "module", { includeHidden: true });
     expect(all.map((candidate) => candidate.id)).toEqual(["hidden", "ecg"]);
+  });
+});
+
+describe("PowerPoint-bilder", () => {
+  it("extraherar bara lokala rasterbilder ur en PPTX", async () => {
+    const archive = zipSync({
+      "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71]),
+      "ppt/slides/slide1.xml": new Uint8Array([60, 112, 58, 115, 62]),
+      "docProps/core.xml": new Uint8Array([60, 99, 111, 114, 101, 62]),
+    });
+    const images = await extractPptxImages(
+      new Blob([archive.buffer as ArrayBuffer], {
+        type: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      }),
+    );
+    expect(images).toHaveLength(1);
+    expect(images[0]?.name).toBe("image1.png");
+    expect(images[0]?.blob.type).toBe("image/png");
   });
 });
 

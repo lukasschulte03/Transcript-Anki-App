@@ -74,6 +74,8 @@ export interface VisualCandidate {
   sourceHash: string;
   /** Stable local fingerprint for duplicate detection between slide decks. */
   contentHash?: string;
+  /** Separate local image extracted from a PPTX, when present. */
+  assetId?: string;
 }
 
 export interface LectureData {
