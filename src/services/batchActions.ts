@@ -1,4 +1,4 @@
-import type { CardType, LibraryNode, StoredAsset } from "../core/types";
+import type { CardType, LibraryNode } from "../core/types";
 import { db } from "../core/database";
 import { useAppStore } from "../core/store";
 import { uid } from "../lib/utils";
@@ -28,6 +28,8 @@ import {
 } from "./transcription";
 import { inheritedGlossary } from "./glossary";
 import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
+import { runExclusiveTranscription } from "./transcriptionQueue";
+import { recordDiagnostic } from "./diagnostics";
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
 export type BatchJobStatus =
@@ -119,9 +121,14 @@ async function duration(blob: Blob) {
   try {
     return await new Promise<number>((resolve) => {
       const audio = new Audio();
+      const finish = (value: number) => {
+        audio.removeAttribute("src");
+        audio.load();
+        resolve(value);
+      };
       audio.onloadedmetadata = () =>
-        resolve(Number.isFinite(audio.duration) ? audio.duration : 0);
-      audio.onerror = () => resolve(0);
+        finish(Number.isFinite(audio.duration) ? audio.duration : 0);
+      audio.onerror = () => finish(0);
       audio.src = url;
     });
   } finally {
@@ -130,12 +137,10 @@ async function duration(blob: Blob) {
 }
 
 async function transcribe(job: BatchJob) {
+  if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
   const state = useAppStore.getState();
   const parts = audioParts(job.lectureId);
   if (!parts.length) throw new Error("Föreläsningen saknar ljud.");
-  const assets = await db.assets.bulkGet(parts.map((part) => part.assetId));
-  if (assets.some((asset) => !asset))
-    throw new Error("En ljuddel saknas lokalt.");
   const apiMode = state.settings.transcriptionProvider !== "local";
   if (state.settings.transcriptionProvider === "manual")
     throw new Error(
@@ -169,8 +174,9 @@ async function transcribe(job: BatchJob) {
     patchJob(job.id, {
       detail: `Transkriberar ljuddel ${index + 1} av ${parts.length}…`,
     });
-    const asset = assets[index] as StoredAsset;
-    const uploads = apiMode
+    const asset = await db.assets.get(parts[index].assetId);
+    if (!asset) throw new Error("En ljuddel saknas lokalt.");
+    let uploads = apiMode
       ? await prepareAudioForCloudTranscription(asset.blob)
       : [asset.blob];
     let partOffset = 0;
@@ -201,10 +207,15 @@ async function transcribe(job: BatchJob) {
         (await duration(upload)) ||
         Math.max(0, ...result.segments.map((segment) => segment.end));
     }
+    // Drop large API blobs before the next recording is fetched from IndexedDB.
+    uploads = [];
     const partDuration =
       parts[index].duration || partOffset || (await duration(asset.blob));
     updatedParts[index] = { ...parts[index], duration: partDuration };
     offset += partDuration;
+    // Give Chromium and the native process bridge a turn to release media
+    // decoders and buffers before the next lecture/part starts.
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
   const latest = useAppStore.getState();
   latest.updateLecture(job.lectureId, {
@@ -408,7 +419,8 @@ async function sync(job: BatchJob) {
 }
 
 async function execute(job: BatchJob) {
-  if (job.action === "transcribe") return transcribe(job);
+  if (job.action === "transcribe")
+    return runExclusiveTranscription(job.id, () => transcribe(job));
   if (job.action === "generate") return generate(job);
   if (job.action === "approve") return approve(job);
   return sync(job);
@@ -427,6 +439,7 @@ async function drain() {
         if (detail === "WAITING") break;
         patchJob(job.id, { status: "complete", detail });
       } catch (error) {
+        recordDiagnostic("batch-transcription", error);
         const wasCancelled =
           cancelled.has(job.id) || String(error).includes("BATCH_CANCELLED");
         patchJob(job.id, {

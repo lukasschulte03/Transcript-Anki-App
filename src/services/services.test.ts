@@ -62,6 +62,7 @@ import {
   estimateCardOutputTokens,
   formatCardGenerationCost,
 } from "./cardGenerationCost";
+import { runExclusiveTranscription } from "./transcriptionQueue";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -97,6 +98,32 @@ describe("Anki-kostnad", () => {
     expect(
       estimateCardGenerationCost("groq", "egen-modell", 10_000, 1_000).usd,
     ).toBeUndefined();
+  });
+});
+
+describe("gemensam transkriptionskö", () => {
+  it("kör batch- och vanliga arbeten en i taget", async () => {
+    const order: string[] = [];
+    let concurrent = 0;
+    let peak = 0;
+    const task = (name: string) =>
+      runExclusiveTranscription(name, async () => {
+        concurrent += 1;
+        peak = Math.max(peak, concurrent);
+        order.push(`start:${name}`);
+        await Promise.resolve();
+        order.push(`end:${name}`);
+        concurrent -= 1;
+      });
+
+    await Promise.all([task("foreground"), task("batch")]);
+    expect(peak).toBe(1);
+    expect(order).toEqual([
+      "start:foreground",
+      "end:foreground",
+      "start:batch",
+      "end:batch",
+    ]);
   });
 });
 

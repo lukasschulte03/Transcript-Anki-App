@@ -38,6 +38,30 @@ export function enqueueTranscription(task: QueuedTask) {
   return pending.length;
 }
 
+/**
+ * Lets every transcription entry point share the same single-worker queue.
+ * Super Actions must use this too: a separate sequential queue can still run
+ * alongside a foreground transcription and exhaust Whisper's GPU/RAM budget.
+ */
+export function runExclusiveTranscription<T>(
+  id: string,
+  run: () => Promise<T>,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    pending.push({
+      id,
+      run: async () => {
+        try {
+          resolve(await run());
+        } catch (error) {
+          reject(error);
+        }
+      },
+    });
+    void drain();
+  });
+}
+
 export function cancelQueuedTranscription(id: string) {
   const index = pending.findIndex((task) => task.id === id);
   if (index < 0) return false;
