@@ -108,11 +108,13 @@ function validateCardForAnki(card: Flashcard) {
 }
 
 type AnkiNoteInfo = { modelName?: string; tags?: string[] };
+export type AnkiCardMedia = { filename: string; data: string; caption: string };
 
 async function fieldsForCard(
   url: string,
   modelName: "Basic" | "Cloze",
   card: Flashcard,
+  media?: AnkiCardMedia,
 ) {
   const names = (await invoke(url, "modelFieldNames", {
     modelName,
@@ -127,15 +129,21 @@ async function fieldsForCard(
     if (!text) throw new Error("Korttypen Cloze saknar fältet Text");
     // Extra is optional in custom Cloze note types. Text is the only required
     // field for Anki to create a cloze card.
+    const back = media
+      ? `${card.back}<br><img src="${media.filename}"><div><small>${media.caption}</small></div>`
+      : card.back;
     return extra
-      ? { [text]: card.front, [extra]: card.back }
+      ? { [text]: card.front, [extra]: back }
       : { [text]: card.front };
   }
   const front = names.includes("Front") ? "Front" : names[0];
   const back = names.includes("Back") ? "Back" : names[1];
   if (!front || !back)
     throw new Error("Korttypen Basic saknar förväntade fält");
-  return { [front]: card.front, [back]: card.back };
+  const backValue = media
+    ? `${card.back}<br><img src="${media.filename}"><div><small>${media.caption}</small></div>`
+    : card.back;
+  return { [front]: card.front, [back]: backValue };
 }
 
 async function addCardNote(
@@ -157,10 +165,20 @@ async function addCardNote(
   }) as Promise<number>;
 }
 
-export async function syncCard(url: string, deck: string, card: Flashcard) {
+export async function syncCard(
+  url: string,
+  deck: string,
+  card: Flashcard,
+  media?: AnkiCardMedia,
+) {
   const modelName = card.type === "cloze" ? "Cloze" : "Basic";
   validateCardForAnki(card);
-  const fields = await fieldsForCard(url, modelName, card);
+  if (media)
+    await invoke(url, "storeMediaFile", {
+      filename: media.filename,
+      data: media.data,
+    });
+  const fields = await fieldsForCard(url, modelName, card, media);
   const tags = withoutStructuralTags(card.tags);
   if (card.ankiId) {
     const notes = (await invoke(url, "notesInfo", {

@@ -63,6 +63,7 @@ import {
   formatCardGenerationCost,
 } from "./cardGenerationCost";
 import { runExclusiveTranscription } from "./transcriptionQueue";
+import { selectVisualCandidates, visualPromptLines } from "./visualIndex";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -200,6 +201,30 @@ describe("mobil ljudimport", () => {
 });
 
 describe("Anki-promptens budget och dubblettskydd", () => {
+  it("skickar bara lokalt relevanta bildbeskrivningar till prompten", () => {
+    const candidates = selectVisualCandidates(
+      [
+        {
+          id: "ecg",
+          slidePage: 4,
+          description: "Slide 4: EKG med ST-höjning vid inferior STEMI.",
+          keywords: ["ekg", "st", "höjning", "inferior", "stemi"],
+          sourceHash: "slide",
+        },
+        {
+          id: "kidney",
+          slidePage: 5,
+          description: "Slide 5: Njurens anatomi.",
+          keywords: ["njure", "anatomi"],
+          sourceHash: "slide",
+        },
+      ],
+      "Vilka EKG-avledningar visar ST-höjning vid inferior STEMI?",
+    );
+    expect(candidates.map((candidate) => candidate.id)).toEqual(["ecg"]);
+    expect(visualPromptLines(candidates)).toContain("ecg | Slide 4");
+  });
+
   it("skickar bara lexikalt relevanta befintliga kort", () => {
     const cards = selectRelevantExistingCards(
       [
@@ -883,7 +908,7 @@ describe("kortformat", () => {
     });
     expect(prompt).toContain("NÄRLIGGANDE BEFINTLIGA KORT");
     expect(prompt).toContain("Vad är peritonit?");
-    expect(prompt).toContain("Promptversion: 1");
+    expect(prompt).toContain("Promptversion: 2");
     expect(prompt).toContain("Använd endast uttryckligt källstöd");
     expect(prompt).toContain('"type":"basic|concept"');
     expect(prompt).toContain("basic: en tydlig fråga");
@@ -1057,6 +1082,56 @@ describe("kortformat", () => {
         fields: {
           Text: "Blodets pH hålls stabilt av {{c1::buffertsystem}}.",
           Extra: "Viktig princip.",
+        },
+      },
+    });
+  });
+
+  it("skickar en vald slidebild först när kortet synkas", async () => {
+    const requests: Array<{ action: string; params: Record<string, unknown> }> =
+      [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          params: Record<string, unknown>;
+        };
+        requests.push(body);
+        const result =
+          body.action === "modelFieldNames" ? ["Front", "Back"] : 456;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
+      }),
+    );
+    await syncCard(
+      "http://127.0.0.1:8765",
+      "Kirurgi - Lectio",
+      {
+        id: "card-with-slide",
+        lectureId: "lecture",
+        type: "basic",
+        front: "Fråga",
+        back: "Svar",
+        tags: [],
+        status: "approved",
+      },
+      {
+        filename: "lectio-slide.png",
+        data: "base64-data",
+        caption: "Bild från slide 4",
+      },
+    );
+    expect(requests.map((request) => request.action)).toEqual([
+      "storeMediaFile",
+      "modelFieldNames",
+      "addNote",
+    ]);
+    expect(requests[2].params).toMatchObject({
+      note: {
+        fields: {
+          Back: expect.stringContaining('<img src="lectio-slide.png">'),
         },
       },
     });

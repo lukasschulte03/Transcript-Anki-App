@@ -60,6 +60,16 @@ export interface Flashcard {
   ankiSyncedAt?: string;
   duplicateWarning?: string;
   duplicateOfId?: string;
+  /** Optional validated reference to a locally indexed slide visual. */
+  visualId?: string;
+}
+
+export interface VisualCandidate {
+  id: string;
+  slidePage: number;
+  description: string;
+  keywords: string[];
+  sourceHash: string;
 }
 
 export interface LectureData {
@@ -69,6 +79,10 @@ export interface LectureData {
   /** Extracted locally, one entry per PDF page, for source-aware slide use. */
   slidePages?: string[];
   slideMappings?: Record<string, { page: number; confidence: number }>;
+  /** Local, text-grounded visual candidates derived from the lecture slides. */
+  visualIndex?: VisualCandidate[];
+  visualIndexHash?: string;
+  visualIndexUpdatedAt?: string;
   /** Preserved before an optional terminology review is applied. */
   transcriptOriginal?: TranscriptSegment[];
   audioAssetId?: string;

@@ -7,6 +7,7 @@ import {
   Cloud,
   ExternalLink,
   FileJson,
+  Image,
   Layers3,
   Loader2,
   Pencil,
@@ -57,6 +58,10 @@ import {
   estimateCardOutputTokens,
   formatCardGenerationCost,
 } from "../../services/cardGenerationCost";
+import {
+  resolveVisualMedia,
+  selectVisualCandidates,
+} from "../../services/visualIndex";
 
 function courseIdForLecture(
   nodes: ReturnType<typeof useAppStore.getState>["nodes"],
@@ -509,6 +514,12 @@ export function CardStudio() {
             ? markers.filter((x) => x.lectureId === lectureId)
             : [],
           slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+          visualCandidates: sources.slides
+            ? selectVisualCandidates(
+                lecture?.visualIndex ?? [],
+                `${chunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
+              )
+            : [],
           density,
           count: chunkCardCeiling(cardLimit, chunk),
           types,
@@ -554,6 +565,12 @@ export function CardStudio() {
           ? markers.filter((item) => item.lectureId === lectureId)
           : [],
         slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+        visualCandidates: sources.slides
+          ? selectVisualCandidates(
+              lecture?.visualIndex ?? [],
+              `${activeChunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
+            )
+          : [],
         density,
         count: chunkCardCeiling(cardLimit, activeChunk),
         types,
@@ -566,6 +583,7 @@ export function CardStudio() {
       density,
       lecture?.notes,
       lecture?.slideText,
+      lecture?.visualIndex,
       lectureId,
       markers,
       node?.title,
@@ -594,6 +612,12 @@ export function CardStudio() {
           ? markers.filter((item) => item.lectureId === lectureId)
           : [],
         slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+        visualCandidates: sources.slides
+          ? selectVisualCandidates(
+              lecture?.visualIndex ?? [],
+              `${chunk.transcript.map((segment) => segment.text).join("\n")}\n${lecture?.notes ?? ""}`,
+            )
+          : [],
         density,
         count: chunkCardCeiling(cardLimit, chunk),
         types,
@@ -623,6 +647,7 @@ export function CardStudio() {
     generationChunks,
     lecture?.notes,
     lecture?.slideText,
+    lecture?.visualIndex,
     lectureId,
     markers,
     node?.title,
@@ -644,7 +669,14 @@ export function CardStudio() {
               (total, chunk) => total + chunkCardCeiling(cardLimit, chunk),
               0,
             );
-      const parsed = parseCardResponse(response, lectureId).slice(0, importLimit);
+      const visualIds = new Set((lecture?.visualIndex ?? []).map((item) => item.id));
+      const parsed = parseCardResponse(response, lectureId)
+        .slice(0, importLimit)
+        .map((card) =>
+          card.visualId && !visualIds.has(card.visualId)
+            ? { ...card, visualId: undefined }
+            : card,
+        );
       const identity = (front: string, back: string) =>
         `${front}\u0000${back}`.replace(/\s+/g, " ").trim().toLocaleLowerCase();
       const known = new Set(
@@ -818,7 +850,13 @@ export function CardStudio() {
           if (onlyPending && !needsAnkiSync(card, deck) && !card.ankiSyncError)
             continue;
           const tags = [...new Set(withoutStructuralTags(card.tags))];
-          const id = await syncCard(settings.ankiUrl, deck, { ...card, tags });
+          const media = await resolveVisualMedia(card, lectures[card.lectureId]);
+          const id = await syncCard(
+            settings.ankiUrl,
+            deck,
+            { ...card, tags },
+            media,
+          );
           updateCard(card.id, {
             status: "synced",
             ankiId: id,
@@ -1715,6 +1753,11 @@ function CardRow({
             <span className="text-xs font-medium text-slate-500">
               {card.type}
             </span>
+            {card.visualId && (
+              <span className="inline-flex items-center gap-1 text-xs text-[var(--palette-accent)]">
+                <Image className="size-3" /> Bild från slides
+              </span>
+            )}
             {card.tags.map((t) => (
               <span key={t} className="text-xs text-slate-400">
                 #{t}

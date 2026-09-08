@@ -24,6 +24,7 @@ import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { parseTimestampedText } from "../../services/transcription";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { suggestSlideMappings } from "../../services/slideMatching";
+import { buildVisualIndex } from "../../services/visualIndex";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "../../services/feedbackToast";
@@ -88,6 +89,7 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
     removeSuspiciousSegments,
     setSegments,
     setActiveView,
+    upsertJob,
   } = useAppStore();
   const node = nodes.find((n) => n.id === lectureId)!;
   const lecture = lectures[lectureId] ?? { lectureId, notes: "" };
@@ -256,6 +258,9 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
       slideName: file.name,
       slideText: undefined,
       slidePages: undefined,
+      visualIndex: undefined,
+      visualIndexHash: undefined,
+      visualIndexUpdatedAt: undefined,
     });
     if (
       file.type === "application/pdf" ||
@@ -267,6 +272,59 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
           slideText: formatSlideText(pages),
           slidePages: pages,
         });
+        const jobId = `visual-index:${lectureId}:${id}`;
+        upsertJob({
+          id: jobId,
+          kind: "library",
+          label: "Indexerar slidebilder",
+          phase: "queued",
+          status: "queued",
+          current: 0,
+          total: pages.length,
+          detail: "Förbereder lokala bildbeskrivningar…",
+        });
+        window.setTimeout(() => {
+          upsertJob({
+            id: jobId,
+            kind: "library",
+            label: "Indexerar slidebilder",
+            phase: "indexing",
+            status: "active",
+            current: 0,
+            total: pages.length,
+            detail: "Bygger lokala bildbeskrivningar…",
+          });
+          void buildVisualIndex(file, pages)
+            .then(({ sourceHash, candidates }) => {
+              updateLecture(lectureId, {
+                visualIndex: candidates,
+                visualIndexHash: sourceHash,
+                visualIndexUpdatedAt: new Date().toISOString(),
+              });
+              upsertJob({
+                id: jobId,
+                kind: "library",
+                label: "Indexerar slidebilder",
+                phase: "complete",
+                status: "complete",
+                current: candidates.length,
+                total: pages.length,
+                detail: `${candidates.length} lokala bildkandidater är klara.`,
+              });
+            })
+            .catch((error) => {
+              upsertJob({
+                id: jobId,
+                kind: "library",
+                label: "Indexerar slidebilder",
+                phase: "error",
+                status: "error",
+                current: 0,
+                total: pages.length,
+                detail: String(error),
+              });
+            });
+        }, 0);
         const foundText = pages.filter(Boolean).length;
         toast.success(
           foundText
@@ -897,6 +955,16 @@ export function LectureWorkspace({ lectureId }: { lectureId: string }) {
                 Texten extraherades lokalt från {lecture.slidePages.length}{" "}
                 slides. Sidindelningen behålls lokalt och används för framtida
                 slidekopplingar.
+              </p>
+            ) : null}
+            {lecture.visualIndex?.length ? (
+              <p className="mt-1 text-xs leading-5 text-[var(--palette-accent)]">
+                {lecture.visualIndex.length} lokala bildkandidater är indexerade.
+                De skickas aldrig som bilder till AI:n.
+              </p>
+            ) : lecture.slideAssetId ? (
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                Bildindex byggs lokalt i bakgrunden när slide-text finns.
               </p>
             ) : null}
           </div>

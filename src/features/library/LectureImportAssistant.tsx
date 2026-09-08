@@ -16,6 +16,7 @@ import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
+import { buildVisualIndex } from "../../services/visualIndex";
 import {
   audioFingerprint,
   audioFormat,
@@ -38,7 +39,7 @@ export function LectureImportAssistant({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const { nodes, lectures, addNode, updateLecture, selectNode, setActiveView } =
+  const { nodes, lectures, addNode, updateLecture, selectNode, setActiveView, upsertJob } =
     useAppStore();
   const lectureNodes = nodes.filter((node) => node.type === "lecture");
   const modules = nodes.filter((node) => node.type === "module");
@@ -177,6 +178,7 @@ export function LectureImportAssistant({
         });
       }
       const audioParts = [...existingParts, ...newParts];
+      let visualPages: string[] | undefined;
       const patch: Parameters<typeof updateLecture>[1] = audioParts.length
         ? {
             audioAssetId: audioParts[0].assetId,
@@ -201,12 +203,16 @@ export function LectureImportAssistant({
         });
         patch.slideAssetId = id;
         patch.slideName = slideFile.name;
+        patch.visualIndex = undefined;
+        patch.visualIndexHash = undefined;
+        patch.visualIndexUpdatedAt = undefined;
         if (
           slideFile.type === "application/pdf" ||
           slideFile.name.toLowerCase().endsWith(".pdf")
         ) {
           try {
             const pages = await extractPdfPages(slideFile);
+            visualPages = pages;
             patch.slidePages = pages;
             patch.slideText = formatSlideText(pages);
           } catch {
@@ -215,6 +221,62 @@ export function LectureImportAssistant({
         }
       }
       updateLecture(lectureId, patch);
+      if (slideFile && visualPages) {
+        const jobId = `visual-index:${lectureId}:${patch.slideAssetId}`;
+        upsertJob({
+          id: jobId,
+          kind: "library",
+          label: "Indexerar slidebilder",
+          phase: "queued",
+          status: "queued",
+          current: 0,
+          total: visualPages.length,
+          detail: "Förbereder lokala bildbeskrivningar…",
+        });
+        const pagesForIndex = visualPages;
+        window.setTimeout(() => {
+          upsertJob({
+            id: jobId,
+            kind: "library",
+            label: "Indexerar slidebilder",
+            phase: "indexing",
+            status: "active",
+            current: 0,
+            total: pagesForIndex.length,
+            detail: "Bygger lokala bildbeskrivningar…",
+          });
+          void buildVisualIndex(slideFile, pagesForIndex)
+            .then(({ sourceHash, candidates }) => {
+              updateLecture(lectureId, {
+                visualIndex: candidates,
+                visualIndexHash: sourceHash,
+                visualIndexUpdatedAt: new Date().toISOString(),
+              });
+              upsertJob({
+                id: jobId,
+                kind: "library",
+                label: "Indexerar slidebilder",
+                phase: "complete",
+                status: "complete",
+                current: candidates.length,
+                total: pagesForIndex.length,
+                detail: `${candidates.length} lokala bildkandidater är klara.`,
+              });
+            })
+            .catch((error) =>
+              upsertJob({
+                id: jobId,
+                kind: "library",
+                label: "Indexerar slidebilder",
+                phase: "error",
+                status: "error",
+                current: 0,
+                total: pagesForIndex.length,
+                detail: String(error),
+              }),
+            );
+        }, 0);
+      }
       selectNode(lectureId);
       setActiveView("workspace");
       onOpenChange(false);

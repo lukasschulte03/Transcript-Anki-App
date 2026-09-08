@@ -5,6 +5,7 @@ import type {
   Flashcard,
   Marker,
   TranscriptSegment,
+  VisualCandidate,
 } from "../core/types";
 import { netFetch } from "./platform";
 
@@ -26,6 +27,7 @@ const cardSchema = z.object({
   front: z.string().min(1),
   back: z.string().min(1),
   tags: z.array(z.string()).default([]),
+  visualId: z.string().min(1).optional(),
 });
 const responseSchema = z.object({ cards: z.array(cardSchema) });
 
@@ -74,6 +76,8 @@ export interface CardRequest {
   cardStyle?: string;
   /** Compact course-level reference to prevent near-duplicate cards. */
   existingCards?: Array<Pick<Flashcard, "front" | "back">>;
+  /** Locally retrieved visual descriptions; never image bytes. */
+  visualCandidates?: VisualCandidate[];
   /** A hard, approximate input ceiling. The default fits inexpensive models. */
   contextBudget?: number;
 }
@@ -87,7 +91,7 @@ export function transcriptTextForCardGeneration(segments: TranscriptSegment[]) {
 }
 
 /** Keep this deliberately compact: inherited context and source material are the expensive parts. */
-const CARD_PROMPT_VERSION = "1";
+const CARD_PROMPT_VERSION = "2";
 const cardTypeInstructions: Record<CardType, string> = {
   basic: "basic: en tydlig fråga och ett kort, exakt svar.",
   cloze:
@@ -173,6 +177,14 @@ export function cardPromptSummary(r: CardRequest) {
     relevantCards.map((card) => card.front).join("\n"),
     Math.floor(maximum * 0.05),
   );
+  // Visual candidates are only compact local descriptions. Still reserve a
+  // bounded part of the prompt so the displayed token/cost estimate is honest.
+  const visuals = withinBudget(
+    (r.visualCandidates ?? [])
+      .map((candidate) => `${candidate.id} | ${candidate.description}`)
+      .join("\n"),
+    Math.floor(maximum * 0.07),
+  );
   const omitted = [
     notes,
     slides,
@@ -180,6 +192,7 @@ export function cardPromptSummary(r: CardRequest) {
     context,
     markers,
     existing,
+    visuals,
   ].filter((item) => item.omitted).length;
   return {
     budgetTokens,
@@ -189,6 +202,7 @@ export function cardPromptSummary(r: CardRequest) {
     context: context.text,
     markers: markers.text,
     existing: existing.text,
+    visuals: visuals.text,
     relevantCardCount: relevantCards.length,
     omitted,
     estimatedTokens: Math.ceil(
@@ -197,7 +211,8 @@ export function cardPromptSummary(r: CardRequest) {
         transcript.text.length +
         context.text.length +
         markers.text.length +
-        existing.text.length) /
+        existing.text.length +
+        visuals.text.length) /
         4,
     ),
   };
@@ -235,7 +250,7 @@ KORTTYPER (använd endast dessa)
 - ${allowedTypes}
 
 FORMAT
-Svara endast med giltig JSON: {"cards":[{"type":"${r.types.join("|")}","front":"...","back":"...","tags":["..."]}]}
+Svara endast med giltig JSON: {"cards":[{"type":"${r.types.join("|")}","front":"...","back":"...","tags":["..."],"visualId":"valfritt-id"}]}
 ${extraRules ? `\nEXTRA PREFERENSER\n${extraRules}\n` : ""}
 FÖRELÄSNING: ${r.title}
 
@@ -256,6 +271,10 @@ ${summary.markers || "(inga)"}
 
 TEXT FRÅN SLIDES:
 ${summary.slides || "(ingen slide-text)"}
+
+TILLGÄNGLIGA BILDER:
+${summary.visuals || "(inga säkra bildkandidater)"}
+Välj endast ett visualId från listan när bilden materiellt förbättrar förståelse. Välj ingen bild vid osäkerhet; hitta aldrig på ett ID.
 
 TRANSKRIPT:
 ${summary.transcript || "(inget transcript)"}`;

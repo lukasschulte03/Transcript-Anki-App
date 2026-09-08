@@ -30,6 +30,7 @@ import { inheritedGlossary } from "./glossary";
 import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import { recordDiagnostic } from "./diagnostics";
+import { resolveVisualMedia, selectVisualCandidates } from "./visualIndex";
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
 export type BatchJobStatus =
@@ -307,6 +308,10 @@ async function generate(job: BatchJob) {
         (marker) => marker.lectureId === job.lectureId,
       ),
       slideText: lecture.slideText ?? "",
+      visualCandidates: selectVisualCandidates(
+        lecture.visualIndex ?? [],
+        chunk.transcript.map((segment) => segment.text).join("\n"),
+      ),
       density: "balanced",
       count: chunkCardCeiling(36, chunk),
       types: ["basic", "concept"] satisfies CardType[],
@@ -323,10 +328,14 @@ async function generate(job: BatchJob) {
       })),
     });
     const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
-    const parsed = parseCardResponse(raw, job.lectureId).slice(
-      0,
-      chunkCardCeiling(36, chunk),
-    );
+    const visualIds = new Set((lecture.visualIndex ?? []).map((item) => item.id));
+    const parsed = parseCardResponse(raw, job.lectureId)
+      .slice(0, chunkCardCeiling(36, chunk))
+      .map((card) =>
+        card.visualId && !visualIds.has(card.visualId)
+          ? { ...card, visualId: undefined }
+          : card,
+      );
     generated.push(
       ...parsed.filter((card) => {
         const key = `${card.front}\0${card.back}`.toLocaleLowerCase("sv");
@@ -386,10 +395,13 @@ async function sync(job: BatchJob) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
       const tags = [...new Set(withoutStructuralTags(card.tags))];
-      const ankiId = await syncCard(state.settings.ankiUrl, deck, {
-        ...card,
-        tags,
-      });
+      const media = await resolveVisualMedia(card, state.lectures[card.lectureId]);
+      const ankiId = await syncCard(
+        state.settings.ankiUrl,
+        deck,
+        { ...card, tags },
+        media,
+      );
       useAppStore.getState().updateCard(card.id, {
         status: "synced",
         ankiId,
