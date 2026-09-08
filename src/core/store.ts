@@ -366,10 +366,16 @@ export const useAppStore = create<AppState>()(
             await db.transaction(
               "rw",
               db.assets,
+              db.visualThumbnails,
               db.recordingSessions,
               db.recordingChunks,
               async () => {
                 await db.assets.bulkDelete(affectedAssets.map((asset) => asset.id));
+                if (affectedAssets.length)
+                  await db.visualThumbnails
+                    .where("assetId")
+                    .anyOf(affectedAssets.map((asset) => asset.id))
+                    .delete();
                 const sessions = await db.recordingSessions
                   .where("lectureId")
                   .anyOf(removedIds)

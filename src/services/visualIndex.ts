@@ -59,9 +59,13 @@ export function selectVisualCandidates(
   query: string,
   limit = 60,
 ) {
+  // A modest module library is cheap enough to expose in full. This avoids
+  // missing a useful diagram merely because the transcript uses different
+  // wording than the slide.
+  if (candidates.length <= limit) return candidates;
   const queryWords = new Set(words(query));
   if (!queryWords.size) return candidates.slice(0, limit);
-  return candidates
+  const matches = candidates
     .map((candidate) => ({
       candidate,
       score: candidate.keywords.filter((keyword) => queryWords.has(keyword)).length,
@@ -70,6 +74,7 @@ export function selectVisualCandidates(
     .sort((left, right) => right.score - left.score || left.candidate.slidePage - right.candidate.slidePage)
     .slice(0, limit)
     .map(({ candidate }) => candidate);
+  return matches.length ? matches : candidates.slice(0, Math.min(limit, 20));
 }
 
 export function visualPromptLines(candidates: VisualCandidate[]) {
@@ -153,6 +158,60 @@ async function blobToBase64(blob: Blob) {
   return btoa(binary);
 }
 
+async function renderVisualPng(
+  lecture: LectureData,
+  candidate: VisualCandidate,
+  scale: number,
+) {
+  const asset = await db.assets.get(lecture.slideAssetId!);
+  if (
+    !asset ||
+    (!/pdf/i.test(asset.mimeType) && !asset.name.toLowerCase().endsWith(".pdf"))
+  )
+    return undefined;
+  const { getDocument } = await loadPdfRuntime();
+  const task = getDocument({ data: new Uint8Array(await asset.blob.arrayBuffer()) });
+  try {
+    const pdfDocument = await task.promise;
+    const page = await pdfDocument.getPage(candidate.slidePage);
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const context = canvas.getContext("2d");
+    if (!context) return undefined;
+    await page.render({ canvas, canvasContext: context, viewport }).promise;
+    return new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+  } finally {
+    await task.destroy();
+  }
+}
+
+/** Persisted local thumbnails keep module libraries responsive without syncing previews. */
+export async function resolveVisualThumbnail(
+  candidate: VisualCandidate,
+  lecture: LectureData | undefined,
+) {
+  if (!lecture?.slideAssetId) return undefined;
+  const id = `visual-thumbnail:${lecture.slideAssetId}:${candidate.id}`;
+  const cached = await db.visualThumbnails.get(id);
+  if (cached) return cached.blob;
+  try {
+    const blob = await renderVisualPng(lecture, candidate, 0.35);
+    if (!blob) return undefined;
+    await db.visualThumbnails.put({
+      id,
+      assetId: lecture.slideAssetId,
+      visualId: candidate.id,
+      blob,
+      createdAt: new Date().toISOString(),
+    });
+    return blob;
+  } catch {
+    return undefined;
+  }
+}
+
 const mediaCache = new Map<string, Promise<{ filename: string; data: string; caption: string } | undefined>>();
 
 /** Renders only the slide page actually used by a card, immediately before Anki sync. */
@@ -168,30 +227,13 @@ export function resolveVisualMedia(
   if (!mediaCache.has(key)) {
     mediaCache.set(key, (async () => {
       try {
-        const asset = await db.assets.get(lecture.slideAssetId!);
-        if (!asset || (!/pdf/i.test(asset.mimeType) && !asset.name.toLowerCase().endsWith(".pdf"))) return undefined;
-        const { getDocument } = await loadPdfRuntime();
-        const task = getDocument({ data: new Uint8Array(await asset.blob.arrayBuffer()) });
-        try {
-          const pdfDocument = await task.promise;
-          const page = await pdfDocument.getPage(candidate.slidePage);
-          const viewport = page.getViewport({ scale: 1.35 });
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.ceil(viewport.width);
-          canvas.height = Math.ceil(viewport.height);
-          const context = canvas.getContext("2d");
-          if (!context) return undefined;
-          await page.render({ canvas, canvasContext: context, viewport }).promise;
-          const image = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
-          if (!image) return undefined;
-          return {
-            filename: `lectio-${candidate.id}.png`,
-            data: await blobToBase64(image),
-            caption: `Bild från slide ${candidate.slidePage}`,
-          };
-        } finally {
-          await task.destroy();
-        }
+        const image = await renderVisualPng(lecture, candidate, 1.35);
+        if (!image) return undefined;
+        return {
+          filename: `lectio-${candidate.id}.png`,
+          data: await blobToBase64(image),
+          caption: `Bild från slide ${candidate.slidePage}`,
+        };
       } catch {
         return undefined;
       }

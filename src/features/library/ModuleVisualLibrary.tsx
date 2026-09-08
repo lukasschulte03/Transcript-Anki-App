@@ -4,7 +4,7 @@ import { useAppStore } from "../../core/store";
 import { Button } from "../../components/ui/Button";
 import {
   moduleVisualCandidates,
-  resolveVisualMedia,
+  resolveVisualThumbnail,
 } from "../../services/visualIndex";
 
 export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
@@ -24,21 +24,27 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
 
   useEffect(() => {
     let active = true;
+    let previewUrl: string | undefined;
     if (!selected) {
       setPreview(undefined);
       return;
     }
     setLoadingPreview(true);
-    void resolveVisualMedia(
-      { visualId: selected.id },
+    void resolveVisualThumbnail(
+      selected,
       lectures[selected.lectureId],
-    ).then((media) => {
-      if (!active) return;
-      setPreview(media ? `data:image/png;base64,${media.data}` : undefined);
+    ).then((thumbnail) => {
+      previewUrl = thumbnail ? URL.createObjectURL(thumbnail) : undefined;
+      if (!active) {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        return;
+      }
+      setPreview(previewUrl);
       setLoadingPreview(false);
     });
     return () => {
       active = false;
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
   }, [lectures, selected]);
 

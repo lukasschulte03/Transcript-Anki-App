@@ -293,7 +293,7 @@ describe("Anki-promptens budget och dubblettskydd", () => {
       ],
       "Vilka EKG-avledningar visar ST-höjning vid inferior STEMI?",
     );
-    expect(candidates.map((candidate) => candidate.id)).toEqual(["ecg"]);
+    expect(candidates.map((candidate) => candidate.id)).toEqual(["ecg", "kidney"]);
     expect(visualPromptLines(candidates)).toContain("ecg | Slide 4");
   });
 

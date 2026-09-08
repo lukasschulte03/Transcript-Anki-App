@@ -13,6 +13,14 @@ export type InboxImportReceipt = {
   lectureId: string;
 };
 
+export type VisualThumbnail = {
+  id: string;
+  assetId: string;
+  visualId: string;
+  blob: Blob;
+  createdAt: string;
+};
+
 export const db = new Dexie("lectio-assets") as Dexie & {
   assets: EntityTable<StoredAsset, "id">;
   recordingSessions: EntityTable<RecordingSession, "id">;
@@ -20,6 +28,7 @@ export const db = new Dexie("lectio-assets") as Dexie & {
   backups: EntityTable<LibraryBackup, "id">;
   syncV2States: EntityTable<SyncV2State, "id">;
   inboxImports: EntityTable<InboxImportReceipt, "id">;
+  visualThumbnails: EntityTable<VisualThumbnail, "id">;
 };
 db.version(1).stores({ assets: "id, lectureId, kind, createdAt" });
 db.version(2).stores({
@@ -71,4 +80,14 @@ db.version(8).stores({
   syncBases: null,
   syncV2States: "id, libraryId, updatedAt",
   inboxImports: "id, importedAt, lectureId",
+});
+db.version(9).stores({
+  assets: "id, lectureId, nodeId, kind, createdAt",
+  recordingSessions: "id, lectureId, status, createdAt",
+  recordingChunks: "id, sessionId, [sessionId+sequence]",
+  backups: "id, createdAt, reason",
+  syncBases: null,
+  syncV2States: "id, libraryId, updatedAt",
+  inboxImports: "id, importedAt, lectureId",
+  visualThumbnails: "id, assetId, visualId, createdAt",
 });
