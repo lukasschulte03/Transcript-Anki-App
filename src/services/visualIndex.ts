@@ -56,21 +56,33 @@ export async function buildVisualIndex(blob: Blob, pages: string[]) {
 /** Builds candidates for raster images extracted locally from a PPTX archive. */
 export async function buildPptxVisualIndex(
   presentation: Blob,
-  images: Array<{ assetId: string; name: string; blob: Blob }>,
+  images: Array<{
+    assetId: string;
+    name: string;
+    blob: Blob;
+    slidePage?: number;
+    nearbyText?: string;
+  }>,
 ) {
   const sourceHash = await visualSourceHash(presentation);
   const fingerprints = await Promise.all(
     images.map((image) => visualSourceHash(image.blob)),
   );
-  const candidates: VisualCandidate[] = images.map((image, index) => ({
-    id: `visual-${sourceHash}-pptx-${index + 1}`,
-    slidePage: index + 1,
-    description: `PPTX-bild ${index + 1}: ${image.name}`,
-    keywords: [...new Set(words(image.name))].slice(0, 24),
-    sourceHash,
-    contentHash: fingerprints[index],
-    assetId: image.assetId,
-  }));
+  const candidates: VisualCandidate[] = images.map((image, index) => {
+    const slidePage = image.slidePage ?? index + 1;
+    const context = image.nearbyText?.replace(/\s+/g, " ").trim();
+    return {
+      id: `visual-${sourceHash}-pptx-${index + 1}`,
+      slidePage,
+      description: context
+        ? `Slide ${slidePage} · PPTX-bild: ${context.slice(0, 340)}`
+        : `Slide ${slidePage} · PPTX-bild: ${image.name}`,
+      keywords: [...new Set(words(`${image.name} ${context ?? ""}`))].slice(0, 24),
+      sourceHash,
+      contentHash: fingerprints[index],
+      assetId: image.assetId,
+    };
+  });
   return { sourceHash, candidates };
 }
 

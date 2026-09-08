@@ -160,7 +160,12 @@ describe("PowerPoint-bilder", () => {
   it("extraherar bara lokala rasterbilder ur en PPTX", async () => {
     const archive = zipSync({
       "ppt/media/image1.png": new Uint8Array([137, 80, 78, 71]),
-      "ppt/slides/slide1.xml": new Uint8Array([60, 112, 58, 115, 62]),
+      "ppt/slides/slide1.xml": new TextEncoder().encode(
+        '<p:sld xmlns:a="a" xmlns:r="r"><a:t>ST-höjning på EKG</a:t><a:blip r:embed="rId1" /></p:sld>',
+      ),
+      "ppt/slides/_rels/slide1.xml.rels": new TextEncoder().encode(
+        '<Relationships><Relationship Id="rId1" Target="../media/image1.png" /></Relationships>',
+      ),
       "docProps/core.xml": new Uint8Array([60, 99, 111, 114, 101, 62]),
     });
     const images = await extractPptxImages(
@@ -171,6 +176,8 @@ describe("PowerPoint-bilder", () => {
     expect(images).toHaveLength(1);
     expect(images[0]?.name).toBe("image1.png");
     expect(images[0]?.blob.type).toBe("image/png");
+    expect(images[0]?.slidePage).toBe(1);
+    expect(images[0]?.nearbyText).toContain("ST-höjning");
   });
 });
 
