@@ -5,7 +5,6 @@ import {
   useEffect,
   useState,
 } from "react";
-import { useShallow } from "zustand/react/shallow";
 import { useAppStore } from "./core/store";
 import { AppNavigation } from "./components/AppNavigation";
 import { ProgressCenter } from "./components/ProgressCenter";
@@ -68,18 +67,11 @@ function ViewLoader() {
 }
 
 export default function App() {
-  const { nodes, selectedId, activeView, settings, libraryOperation } = useAppStore(
-    useShallow((state) => ({
-      nodes: state.nodes,
-      selectedId: state.selectedId,
-      activeView: state.activeView,
-      settings: state.settings,
-      libraryOperation: state.jobs.find(
-        (job) => job.kind === "library" && job.status === "active",
-      ),
-    })),
-  );
+  const { nodes, selectedId, activeView, settings, jobs } = useAppStore();
   const selected = nodes.find((n) => n.id === selectedId) ?? nodes[0];
+  const libraryOperation = jobs.find(
+    (job) => job.kind === "library" && job.status === "active",
+  );
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
