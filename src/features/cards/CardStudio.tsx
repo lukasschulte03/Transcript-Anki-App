@@ -52,6 +52,11 @@ import {
   planGenerationChunks,
   type GenerationChunk,
 } from "../../services/ankiChunking";
+import {
+  estimateCardGenerationCost,
+  estimateCardOutputTokens,
+  formatCardGenerationCost,
+} from "../../services/cardGenerationCost";
 
 function courseIdForLecture(
   nodes: ReturnType<typeof useAppStore.getState>["nodes"],
@@ -572,6 +577,64 @@ export function CardStudio() {
       activeChunk,
     ],
   );
+  const generationCostEstimate = useMemo(() => {
+    const summaries = generationChunks.map((chunk) =>
+      cardPromptSummary({
+        lectureId,
+        title: node?.title ?? "",
+        context: sources.context
+          ? selectedContextPreview
+              .map((item) => `${item.title}: ${item.context}`)
+              .join("\n\n")
+          : "",
+        sourceStatus,
+        notes: sources.notes ? (lecture?.notes ?? "") : "",
+        transcript: chunk.transcript,
+        markers: sources.markers
+          ? markers.filter((item) => item.lectureId === lectureId)
+          : [],
+        slideText: sources.slides ? (lecture?.slideText ?? "") : "",
+        density,
+        count: chunkCardCeiling(cardLimit, chunk),
+        types,
+        preferences,
+        existingCards: courseCards.map(({ front, back }) => ({ front, back })),
+      }),
+    );
+    const inputTokens = summaries.reduce(
+      (total, summary) => total + summary.estimatedTokens + 700,
+      0,
+    );
+    const outputTokens = generationChunks.reduce(
+      (total, chunk) =>
+        total + estimateCardOutputTokens(chunkCardCeiling(cardLimit, chunk)),
+      0,
+    );
+    return estimateCardGenerationCost(
+      settings.aiProvider,
+      settings.aiModel,
+      inputTokens,
+      outputTokens,
+    );
+  }, [
+    cardLimit,
+    courseCards,
+    density,
+    generationChunks,
+    lecture?.notes,
+    lecture?.slideText,
+    lectureId,
+    markers,
+    node?.title,
+    preferences,
+    selectedContextPreview,
+    settings.aiModel,
+    settings.aiProvider,
+    sourceStatus,
+    sources,
+    types,
+  ]);
+  const formattedGenerationCost = formatCardGenerationCost(generationCostEstimate);
   const importResponse = () => {
     try {
       const importLimit =
@@ -1090,6 +1153,18 @@ export function CardStudio() {
                   ? ` ${promptBudget.omitted} källa${promptBudget.omitted === 1 ? " är" : "or är"} förkortad enligt budgeten.`
                   : ""}
               </p>
+              {generationChunks.length > 1 && (
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Hela föreläsningen behandlas i {generationChunks.length} delar
+                  så att inget transkript behöver tappas bort.
+                </p>
+              )}
+              {settings.aiMode === "clipboard" && (
+                <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                  Copy/paste använder din befintliga AI-tjänst. Lectio debiterar
+                  ingen API-kostnad.
+                </p>
+              )}
               <div className="mt-4">
                 <Label>Kvalitetsval</Label>
                 <div className="space-y-2">
@@ -1402,6 +1477,25 @@ export function CardStudio() {
               <div className="mb-3 text-xs text-slate-500">
                 {settings.aiProvider} · {settings.aiModel}. Nyckeln sparas bara
                 om du väljer det nedan, i Windows Credential Manager.
+              </div>
+              <div className="mb-3 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+                <div className="font-medium text-foreground">
+                  Uppskattad API-kostnad: {formattedGenerationCost ?? "Pris saknas"}
+                </div>
+                <p className="mt-1">
+                  Cirka {generationCostEstimate.inputTokens.toLocaleString("sv-SE")} input-token och{" "}
+                  {generationCostEstimate.outputTokens.toLocaleString("sv-SE")} output-token
+                  {generationChunks.length > 1
+                    ? ` över ${generationChunks.length} delar`
+                    : ""}
+                  . Beräknas lokalt innan inget material eller någon nyckel skickas.
+                </p>
+                {!formattedGenerationCost && (
+                  <p className="mt-1">
+                    Lectio har ingen verifierad prisuppgift för vald modell. Du kan
+                    fortfarande generera kort.
+                  </p>
+                )}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input

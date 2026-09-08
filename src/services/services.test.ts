@@ -57,6 +57,11 @@ import {
   suggestTerminologyCorrections,
 } from "./glossary";
 import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
+import {
+  estimateCardGenerationCost,
+  estimateCardOutputTokens,
+  formatCardGenerationCost,
+} from "./cardGenerationCost";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -72,6 +77,26 @@ describe("Anki-chunkning", () => {
     expect(chunks[0].transcript.map((segment) => segment.id)).toEqual(["one"]);
     expect(chunks[1].transcript.map((segment) => segment.id)).toEqual(["two"]);
     expect(chunkCardCeiling(36, chunks[0])).toBe(18);
+  });
+});
+
+describe("Anki-kostnad", () => {
+  it("räknar lokalt för modeller med versionsstyrd prisdata", () => {
+    const estimate = estimateCardGenerationCost(
+      "openai",
+      "gpt-4.1-mini",
+      10_000,
+      1_000,
+    );
+    expect(estimate.usd).toBeCloseTo(0.0056);
+    expect(formatCardGenerationCost(estimate)).toContain("0,006");
+    expect(estimateCardOutputTokens(16)).toBe(1_760);
+  });
+
+  it("hittar inte på ett pris för okända modeller", () => {
+    expect(
+      estimateCardGenerationCost("groq", "egen-modell", 10_000, 1_000).usd,
+    ).toBeUndefined();
   });
 });
 
