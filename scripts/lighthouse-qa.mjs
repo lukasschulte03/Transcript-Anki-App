@@ -3,9 +3,11 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-const port = 4174;
+const port = process.env.LECTIO_TEST_MODE === "1" ? 4200 + (process.pid % 500) : 4174;
 const url = `http://127.0.0.1:${port}`;
-const outputDir = "test-results/lighthouse";
+const outputDir = process.env.LECTIO_QA_OUTPUT_DIR
+  ? path.join(process.env.LECTIO_QA_OUTPUT_DIR, "lighthouse")
+  : "test-results/lighthouse";
 const require = createRequire(import.meta.url);
 const viteCli = path.resolve(path.dirname(require.resolve("vite")), "../../bin/vite.js");
 const lighthouseCli = path.resolve(path.dirname(require.resolve("lighthouse")), "../cli/index.js");
@@ -60,7 +62,7 @@ try {
       lighthouseCli,
       url,
       "--output=json",
-      `--output-path=${outputDir}/report.json`,
+      `--output-path=${path.join(outputDir, "report.json")}`,
       "--only-categories=performance",
       "--only-categories=accessibility",
       "--only-categories=best-practices",

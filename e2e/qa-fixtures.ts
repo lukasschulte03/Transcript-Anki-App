@@ -1,11 +1,51 @@
 import { expect, test as base, type Page } from "@playwright/test";
 
 export const seededNodes = [
-  { id: "workspace-main", parentId: null, type: "workspace", title: "Mina studier", context: "", createdAt: "2026-01-01T00:00:00.000Z", settings: { language: "sv" } },
-  { id: "course", parentId: "workspace-main", type: "course", title: "Kirurgi", context: "Kursens testcontext", createdAt: "2026-01-01T00:00:01.000Z", settings: {}, sortIndex: 0 },
-  { id: "module", parentId: "course", type: "module", title: "Akut kirurgi", context: "", createdAt: "2026-01-01T00:00:02.000Z", settings: {}, sortIndex: 0 },
-  { id: "lecture", parentId: "module", type: "lecture", title: "Akut buk", context: "", createdAt: "2026-01-01T00:00:03.000Z", settings: {}, sortIndex: 0 },
+  {
+    id: "workspace-main",
+    parentId: null,
+    type: "workspace",
+    title: "Mina studier",
+    context: "",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    settings: { language: "sv" },
+  },
+  {
+    id: "course",
+    parentId: "workspace-main",
+    type: "course",
+    title: "Kirurgi",
+    context: "Kursens testcontext",
+    createdAt: "2026-01-01T00:00:01.000Z",
+    settings: {},
+    sortIndex: 0,
+  },
+  {
+    id: "module",
+    parentId: "course",
+    type: "module",
+    title: "Akut kirurgi",
+    context: "",
+    createdAt: "2026-01-01T00:00:02.000Z",
+    settings: {},
+    sortIndex: 0,
+  },
+  {
+    id: "lecture",
+    parentId: "module",
+    type: "lecture",
+    title: "Akut buk",
+    context: "",
+    createdAt: "2026-01-01T00:00:03.000Z",
+    settings: {},
+    sortIndex: 0,
+  },
 ];
+
+export const databaseName =
+  process.env.VITE_STABILITY_TEST === "true"
+    ? "lectio-assets-stability"
+    : "lectio-assets";
 
 export async function seedLibrary(page: Page) {
   // Wait for the React shell before replacing its isolated test state.
@@ -25,18 +65,40 @@ export async function seedLibrary(page: Page) {
           notes: "Buksmärta och differentialdiagnoser.",
           slideAssetId: "slide-asset",
           slideName: "akut-buk.png",
-          visualIndex: [{
-            id: "visual-akut-buk",
-            slidePage: 1,
-            description: "Anatomisk bild av buken.",
-            keywords: ["buk", "anatomi"],
-            sourceHash: "fixture-slide",
-          }],
+          visualIndex: [
+            {
+              id: "visual-akut-buk",
+              slidePage: 1,
+              description: "Anatomisk bild av buken.",
+              keywords: ["buk", "anatomi"],
+              sourceHash: "fixture-slide",
+            },
+          ],
         },
       },
-      segments: [{ id: "segment", lectureId: "lecture", start: 0, end: 5, text: "Akut buk kräver snabb bedömning." }],
+      segments: [
+        {
+          id: "segment",
+          lectureId: "lecture",
+          start: 0,
+          end: 5,
+          text: "Akut buk kräver snabb bedömning.",
+        },
+      ],
       markers: [],
-      cards: [{ id: "approved-card", lectureId: "lecture", type: "basic", front: "Vad betyder akut buk?", back: "Buksmärta som kräver snabb bedömning.", tags: [], status: "approved", visualId: "visual-akut-buk", visualLectureId: "lecture" }],
+      cards: [
+        {
+          id: "approved-card",
+          lectureId: "lecture",
+          type: "basic",
+          front: "Vad betyder akut buk?",
+          back: "Buksmärta som kräver snabb bedömning.",
+          tags: [],
+          status: "approved",
+          visualId: "visual-akut-buk",
+          visualLectureId: "lecture",
+        },
+      ],
       selectedId: "lecture",
       activeView: "workspace",
     };
@@ -46,8 +108,8 @@ export async function seedLibrary(page: Page) {
     stored.version = 16;
     localStorage.setItem(key, JSON.stringify(stored));
   }, seededNodes);
-  await page.evaluate(async () => {
-    const request = indexedDB.open("lectio-assets");
+  await page.evaluate(async (name) => {
+    const request = indexedDB.open(name);
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -68,7 +130,7 @@ export async function seedLibrary(page: Page) {
       transaction.onabort = () => reject(transaction.error);
     });
     database.close();
-  });
+  }, databaseName);
 }
 
 /** Seeds twelve distinct local PDF assets without touching the user's library. */
@@ -86,7 +148,9 @@ export async function seedPdfStressLibrary(page: Page) {
     const key = "lectio-state-v1";
     const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
     stored.state.nodes = [
-      ...stored.state.nodes.filter((node: { id: string }) => node.id !== "lecture"),
+      ...stored.state.nodes.filter(
+        (node: { id: string }) => node.id !== "lecture",
+      ),
       ...stressLectures.map((lecture, index) => ({
         id: lecture.id,
         parentId: "module",
@@ -115,33 +179,37 @@ export async function seedPdfStressLibrary(page: Page) {
   }, lectures);
   await page.reload();
   await page.locator('input[value="PDF-stress 01"]').waitFor();
-  await page.evaluate(async (stressLectures) => {
-    const request = indexedDB.open("lectio-assets");
-    const database = await new Promise<IDBDatabase>((resolve, reject) => {
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
-    const transaction = database.transaction("assets", "readwrite");
-    const store = transaction.objectStore("assets");
-    const pdf = "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF";
-    for (const lecture of stressLectures) {
-      store.put({
-        id: lecture.assetId,
-        lectureId: lecture.id,
-        kind: "slides",
-        name: `${lecture.title}.pdf`,
-        mimeType: "application/pdf",
-        blob: new Blob([pdf], { type: "application/pdf" }),
-        createdAt: "2026-01-01T00:00:00.000Z",
+  await page.evaluate(
+    async ({ stressLectures, name }) => {
+      const request = indexedDB.open(name);
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
       });
-    }
-    await new Promise<void>((resolve, reject) => {
-      transaction.oncomplete = () => resolve();
-      transaction.onerror = () => reject(transaction.error);
-      transaction.onabort = () => reject(transaction.error);
-    });
-    database.close();
-  }, lectures);
+      const transaction = database.transaction("assets", "readwrite");
+      const store = transaction.objectStore("assets");
+      const pdf =
+        "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF";
+      for (const lecture of stressLectures) {
+        store.put({
+          id: lecture.assetId,
+          lectureId: lecture.id,
+          kind: "slides",
+          name: `${lecture.title}.pdf`,
+          mimeType: "application/pdf",
+          blob: new Blob([pdf], { type: "application/pdf" }),
+          createdAt: "2026-01-01T00:00:00.000Z",
+        });
+      }
+      await new Promise<void>((resolve, reject) => {
+        transaction.oncomplete = () => resolve();
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+      database.close();
+    },
+    { stressLectures: lectures, name: databaseName },
+  );
   await page.reload();
   await page.locator('input[value="PDF-stress 01"]').waitFor();
   return lectures;

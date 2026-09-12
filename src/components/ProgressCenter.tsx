@@ -8,7 +8,7 @@ import type {
   BackgroundJobStatus,
 } from "../core/types";
 import { cancelDownload, cancelLocalTranscription } from "../services/localStt";
-import { isTauri } from "../services/platform";
+import { isStabilityTest, isTauri } from "../services/platform";
 import {
   cancelActiveTranscription,
   cancelQueuedTranscription,
@@ -209,14 +209,25 @@ export function ProgressCenter() {
   const upsertJob = useAppStore((state) => state.upsertJob);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    const receiveTestProgress = (event: Event) => {
+      if (event instanceof CustomEvent) upsertJob(event.detail as NativeProgressEvent);
+    };
+    if (isStabilityTest()) {
+      window.addEventListener("lectio:stability-progress", receiveTestProgress);
+    }
+    if (!isTauri()) {
+      return () => window.removeEventListener("lectio:stability-progress", receiveTestProgress);
+    }
     let unlisten: UnlistenFn | undefined;
     void listen<NativeProgressEvent>("lectio:progress", (event) => {
       upsertJob(event.payload);
     }).then((cleanup) => {
       unlisten = cleanup;
     });
-    return () => unlisten?.();
+    return () => {
+      unlisten?.();
+      window.removeEventListener("lectio:stability-progress", receiveTestProgress);
+    };
   }, [upsertJob]);
 
   const activeJobs = jobs.filter((job) => job.status === "active");

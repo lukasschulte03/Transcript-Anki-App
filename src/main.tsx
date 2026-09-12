@@ -5,6 +5,7 @@ import App from "./App.tsx";
 import { AppErrorBoundary } from "./components/AppErrorBoundary.tsx";
 import { initializeDiagnostics, recordDiagnostic } from "./services/diagnostics.ts";
 import { markStartup } from "./services/startupMetrics.ts";
+import { StabilityErrorProbe } from "./components/StabilityErrorProbe.tsx";
 
 // The WebDriver bridge is compiled into the isolated desktop QA binary only.
 // It is excluded from normal development and release builds.
@@ -18,7 +19,9 @@ window.addEventListener("unhandledrejection", (event) => recordDiagnostic("promi
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AppErrorBoundary>
-      <App />
+      <StabilityErrorProbe>
+        <App />
+      </StabilityErrorProbe>
     </AppErrorBoundary>
   </StrictMode>,
 );

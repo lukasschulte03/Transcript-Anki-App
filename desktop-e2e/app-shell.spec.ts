@@ -7,27 +7,40 @@ describe("Lectio Windows desktop", () => {
     // Windows, which made the former regression suite test an empty page.
     const shell = await browser.$("#root");
     await shell.waitForDisplayed();
-    await (await browser.$("button=Översikt")).waitForDisplayed();
+    const overview = await browser.$('[aria-label="Översikt"]');
+    await overview.waitForDisplayed({ timeout: 30_000 });
 
-    await (await browser.$("button=Anki-kort")).click();
+    await (await browser.$('[aria-label="Anki-kort"]')).click();
     await browser.waitUntil(
       async () => {
         const source = await browser.getPageSource();
-        return source.includes("Generera nya kort") || source.includes("Skapa en föreläsning först");
+        return (
+          source.includes("Generera nya kort") ||
+          source.includes("Skapa en föreläsning först")
+        );
       },
-      { timeout: 10_000, timeoutMsg: "Anki-vyn öppnades inte i Tauri-fönstret" },
+      {
+        timeout: 10_000,
+        timeoutMsg: "Anki-vyn öppnades inte i Tauri-fönstret",
+      },
     );
 
-    await (await browser.$("button=Inställningar")).click();
+    await (await browser.$("//button[contains(., 'Inställningar')]")).click();
     await browser.waitUntil(
       async () => (await browser.getPageSource()).includes("Inställningar"),
-      { timeout: 10_000, timeoutMsg: "Inställningsvyn öppnades inte i Tauri-fönstret" },
+      {
+        timeout: 10_000,
+        timeoutMsg: "Inställningsvyn öppnades inte i Tauri-fönstret",
+      },
     );
   });
 
   it("webview fyller klientytan efter resize", async () => {
     await browser.setWindowSize(1024, 720);
-    const viewport = await browser.execute(() => ({ width: window.innerWidth, height: window.innerHeight }));
+    const viewport = await browser.execute(() => ({
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }));
     const root = await browser.$("#root");
     const rootSize = await root.getSize();
     expect(rootSize.width).toBeGreaterThanOrEqual(viewport.width - 2);
@@ -61,11 +74,17 @@ describe("Lectio Windows desktop", () => {
           // WebDriver executes in the already bundled WebView, where bare
           // package imports are unavailable. Invoke the same Tauri command
           // used by Window.isMinimized() directly through its native bridge.
-          return window.__TAURI_INTERNALS__.invoke("plugin:window|is_minimized", {
-            label: "main",
-          }) as Promise<boolean>;
+          return window.__TAURI_INTERNALS__.invoke(
+            "plugin:window|is_minimized",
+            {
+              label: "main",
+            },
+          ) as Promise<boolean>;
         }),
-      { timeout: 5_000, timeoutMsg: "Minimera-knappen minimerade inte Tauri-fönstret" },
+      {
+        timeout: 5_000,
+        timeoutMsg: "Minimera-knappen minimerade inte Tauri-fönstret",
+      },
     );
     await browser.maximizeWindow();
     await (await browser.$("#root")).waitForDisplayed();

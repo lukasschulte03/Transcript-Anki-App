@@ -12,6 +12,7 @@
     "qa:browser": "pnpm lint && pnpm test && pnpm build && pnpm test:e2e",
     "qa:lighthouse": "node scripts/lighthouse-qa.mjs",
     "qa": "pnpm qa:browser && pnpm qa:lighthouse",
+    "qa:stability": "node scripts/stability-qa.mjs",
     "qa:desktop": "cross-env VITE_DESKTOP_E2E=true pnpm tauri build --no-bundle --features tauri-plugin-wdio && pnpm exec wdio run wdio.desktop.conf.ts",
     "graph:refresh": "graphify . --update --code-only --no-viz",
     "check": "pnpm lint && pnpm test && pnpm build",

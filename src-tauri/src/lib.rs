@@ -1,4 +1,7 @@
-use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+    Engine as _,
+};
 use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -24,6 +27,18 @@ static CANCELLED_DOWNLOADS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static CANCELLED_TRANSCRIPTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 static GOOGLE_OAUTH_SESSIONS: OnceLock<Mutex<HashMap<String, GoogleOAuthSession>>> =
     OnceLock::new();
+
+fn stability_test_mode() -> bool {
+    std::env::var("LECTIO_TEST_MODE").is_ok_and(|value| value == "1")
+}
+
+fn ensure_external_services_allowed() -> Result<(), String> {
+    if stability_test_mode() {
+        Err("Externa tjänster är avstängda i stability-testläget.".into())
+    } else {
+        Ok(())
+    }
+}
 
 const GOOGLE_DRIVE_CLIENT_ID: &str =
     "607463229684-df99plb7hagdnlfsr1uleko6q6g78lpi.apps.googleusercontent.com";
@@ -448,7 +463,9 @@ async fn transcribe_whisper_chunk(
         return Err("Whisper kunde inte slutföra en del av transkriberingen.".into());
     }
     read_whisper_json(
-        output_prefix.parent().unwrap_or(wav.parent().unwrap_or(Path::new("."))),
+        output_prefix
+            .parent()
+            .unwrap_or(wav.parent().unwrap_or(Path::new("."))),
         output_prefix,
     )
     .await
@@ -462,7 +479,10 @@ fn merge_chunk_transcript(
 ) -> Result<(), String> {
     let parsed: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| format!("Whisper skapade ogiltig JSON: {error}"))?;
-    let Some(segments) = parsed.get("transcription").and_then(|value| value.as_array()) else {
+    let Some(segments) = parsed
+        .get("transcription")
+        .and_then(|value| value.as_array())
+    else {
         return Err("Whisper skapade ett transkript utan segment.".into());
     };
     for segment in segments {
@@ -472,7 +492,9 @@ fn merge_chunk_transcript(
             .and_then(|value| value.as_str())
             .unwrap_or("")
             .to_owned();
-        let offsets = segment.get_mut("offsets").and_then(|value| value.as_object_mut());
+        let offsets = segment
+            .get_mut("offsets")
+            .and_then(|value| value.as_object_mut());
         let from = offsets
             .as_ref()
             .and_then(|value| value.get("from"))
@@ -489,10 +511,17 @@ fn merge_chunk_transcript(
         // second overlap. Similar wording is preserved rather than guessed at.
         let duplicate = from < overlap_start_millis
             && merged.iter().rev().any(|previous| {
-                let previous_text = previous.get("text").and_then(|value| value.as_str()).unwrap_or("");
-                let previous_to = previous.pointer("/offsets/to").and_then(|value| value.as_u64()).unwrap_or(0);
+                let previous_text = previous
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("");
+                let previous_to = previous
+                    .pointer("/offsets/to")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
                 previous_text.trim().eq_ignore_ascii_case(text.trim())
-                    && previous_to >= overlap_start_millis.saturating_sub(LONG_TRANSCRIPTION_OVERLAP_MILLIS)
+                    && previous_to
+                        >= overlap_start_millis.saturating_sub(LONG_TRANSCRIPTION_OVERLAP_MILLIS)
             });
         if duplicate {
             continue;
@@ -612,6 +641,7 @@ async fn google_drive_client_secret() -> Result<String, String> {
 }
 
 async fn refresh_google_drive_access_token() -> Result<String, String> {
+    ensure_external_services_allowed()?;
     let credential = tokio::task::spawn_blocking(|| {
         credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?
             .get_password()
@@ -650,6 +680,9 @@ async fn refresh_google_drive_access_token() -> Result<String, String> {
 
 #[tauri::command]
 async fn read_credential(key: String) -> Result<Option<String>, String> {
+    if stability_test_mode() {
+        return Ok(None);
+    }
     tokio::task::spawn_blocking(move || {
         let entry = credential_entry(&key)?;
         match entry.get_password() {
@@ -664,6 +697,7 @@ async fn read_credential(key: String) -> Result<Option<String>, String> {
 
 #[tauri::command]
 async fn write_credential(key: String, secret: String) -> Result<(), String> {
+    ensure_external_services_allowed()?;
     if secret.trim().is_empty() {
         return Err("API-nyckeln kan inte vara tom".into());
     }
@@ -678,6 +712,9 @@ async fn write_credential(key: String, secret: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn delete_credential(key: String) -> Result<(), String> {
+    if stability_test_mode() {
+        return Ok(());
+    }
     tokio::task::spawn_blocking(move || {
         let entry = credential_entry(&key)?;
         match entry.delete_credential() {
@@ -691,6 +728,7 @@ async fn delete_credential(key: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn start_google_drive_oauth() -> Result<GoogleOAuthStart, String> {
+    ensure_external_services_allowed()?;
     if !google_oauth_sessions()
         .lock()
         .map_err(|_| "Kunde inte läsa OAuth-sessioner".to_string())?
@@ -777,6 +815,7 @@ async fn cancel_google_drive_oauth(session_id: String) -> Result<(), String> {
 
 #[tauri::command]
 async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveConnection, String> {
+    ensure_external_services_allowed()?;
     let (receiver, verifier, redirect_uri) = google_oauth_sessions()
         .lock()
         .map_err(|_| "Kunde inte läsa OAuth-sessionen".to_string())?
@@ -878,6 +917,9 @@ async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveCo
 
 #[tauri::command]
 async fn disconnect_google_drive() -> Result<(), String> {
+    if stability_test_mode() {
+        return Ok(());
+    }
     tokio::task::spawn_blocking(|| {
         let entry = credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?;
         match entry.delete_credential() {
@@ -893,6 +935,7 @@ async fn disconnect_google_drive() -> Result<(), String> {
 /// token remains in Windows Credential Manager and is never exposed to JS.
 #[tauri::command]
 async fn google_drive_access_token() -> Result<String, String> {
+    ensure_external_services_allowed()?;
     refresh_google_drive_access_token().await
 }
 
@@ -1176,10 +1219,7 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
         Ok(()) => {
             let status = local_vision_status_inner(&app).await;
             if !status.ready {
-                return Err(
-                    "Bildmotorn hämtades men kunde inte verifieras. Försök igen."
-                        .into(),
-                );
+                return Err("Bildmotorn hämtades men kunde inte verifieras. Försök igen.".into());
             }
             emit_progress(
                 &app,
@@ -1244,8 +1284,14 @@ async fn start_local_vision_worker(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("Kunde inte starta den lokala Nvidia-bildmotorn: {error}"))?;
-    let stdin = child.stdin.take().ok_or_else(|| "Bildmotorn saknar inmatning.".to_string())?;
-    let stdout = child.stdout.take().ok_or_else(|| "Bildmotorn saknar utmatning.".to_string())?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "Bildmotorn saknar inmatning.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Bildmotorn saknar utmatning.".to_string())?;
     let mut stdout = BufReader::new(stdout).lines();
     let line = time::timeout(Duration::from_secs(180), stdout.next_line())
         .await
@@ -1255,14 +1301,22 @@ async fn start_local_vision_worker(
     let ready: LocalVisionReady = serde_json::from_str(&line)
         .map_err(|_| "Bildmotorn skickade ett ogiltigt uppstartssvar.".to_string())?;
     if ready.ready != Some(true) {
-        return Err(ready.error.unwrap_or_else(|| "Bildmotorn kunde inte initieras.".into()));
+        return Err(ready
+            .error
+            .unwrap_or_else(|| "Bildmotorn kunde inte initieras.".into()));
     }
     log::info!(
         "vision: direkt bildmotor redo med {} på {}",
         ready.model.unwrap_or_else(|| LOCAL_VISION_MODEL.into()),
         ready.device.unwrap_or_else(|| "nvidia".into())
     );
-    Ok(LocalVisionWorker { python, script, child, stdin, stdout })
+    Ok(LocalVisionWorker {
+        python,
+        script,
+        child,
+        stdin,
+        stdout,
+    })
 }
 
 async fn stop_local_vision_worker(worker: &mut Option<LocalVisionWorker>) {
@@ -1284,23 +1338,41 @@ async fn describe_local_visual(
     let bytes = STANDARD
         .decode(image_base64.as_bytes())
         .map_err(|_| "Bildutklippet kunde inte avkodas lokalt.".to_string())?;
-    if bytes.is_empty() { return Err("Bildutklippet saknar bilddata.".into()); }
-    let directory = app.path().app_data_dir().map_err(|error| error.to_string())?.join("vision-input");
-    fs::create_dir_all(&directory).await.map_err(|error| format!("Kunde inte skapa lokal bildcache: {error}"))?;
+    if bytes.is_empty() {
+        return Err("Bildutklippet saknar bilddata.".into());
+    }
+    let directory = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("vision-input");
+    fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| format!("Kunde inte skapa lokal bildcache: {error}"))?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
     let input = directory.join(format!("{nonce}.png"));
-    fs::write(&input, bytes).await.map_err(|error| format!("Kunde inte förbereda bildutklippet: {error}"))?;
+    fs::write(&input, bytes)
+        .await
+        .map_err(|error| format!("Kunde inte förbereda bildutklippet: {error}"))?;
     let (python, script) = local_vision_sidecar(&app)?;
     let mut slot = local_vision_worker().lock().await;
-    if slot.as_ref().is_some_and(|worker| worker.python != python || worker.script != script) {
+    if slot
+        .as_ref()
+        .is_some_and(|worker| worker.python != python || worker.script != script)
+    {
         stop_local_vision_worker(&mut slot).await;
     }
-    if slot.is_none() { *slot = Some(start_local_vision_worker(python, script).await?); }
+    if slot.is_none() {
+        *slot = Some(start_local_vision_worker(python, script).await?);
+    }
     let worker = slot.as_mut().expect("worker inserted above");
-    let request = format!("{}\n", serde_json::json!({ "inputPath": input, "context": context.unwrap_or_default() }));
+    let request = format!(
+        "{}\n",
+        serde_json::json!({ "inputPath": input, "context": context.unwrap_or_default() })
+    );
     let response = async {
         worker.stdin.write_all(request.as_bytes()).await?;
         worker.stdin.flush().await?;
@@ -1308,15 +1380,32 @@ async fn describe_local_visual(
     };
     let line = match time::timeout(Duration::from_secs(120), response).await {
         Ok(Ok(Some(line))) => line,
-        Ok(Ok(None)) => { stop_local_vision_worker(&mut slot).await; return Err("Bildmotorn avslutades under analysen.".into()); }
-        Ok(Err(error)) => { stop_local_vision_worker(&mut slot).await; return Err(format!("Bildmotorn kunde inte läsa svaret: {error}")); }
-        Err(_) => { stop_local_vision_worker(&mut slot).await; return Err("Bildmotorn tog för lång tid på den här bilden.".into()); }
+        Ok(Ok(None)) => {
+            stop_local_vision_worker(&mut slot).await;
+            return Err("Bildmotorn avslutades under analysen.".into());
+        }
+        Ok(Err(error)) => {
+            stop_local_vision_worker(&mut slot).await;
+            return Err(format!("Bildmotorn kunde inte läsa svaret: {error}"));
+        }
+        Err(_) => {
+            stop_local_vision_worker(&mut slot).await;
+            return Err("Bildmotorn tog för lång tid på den här bilden.".into());
+        }
     };
     let _ = fs::remove_file(&input).await;
     let result: LocalVisionResult = serde_json::from_str(&line)
         .map_err(|_| "Bildmotorn returnerade ett ogiltigt svar.".to_string())?;
-    if let Some(error) = result.error.as_ref() { return Err(format!("Bildmotorn kunde inte beskriva bilden: {error}")); }
-    if result.description.as_deref().unwrap_or_default().trim().is_empty() {
+    if let Some(error) = result.error.as_ref() {
+        return Err(format!("Bildmotorn kunde inte beskriva bilden: {error}"));
+    }
+    if result
+        .description
+        .as_deref()
+        .unwrap_or_default()
+        .trim()
+        .is_empty()
+    {
         return Err("Bildmotorn gav ingen beskrivning.".into());
     }
     Ok(result)
@@ -2223,8 +2312,12 @@ async fn transcribe_local(
     let prompt_fingerprint = format!(
         "{:x}",
         Sha256::digest(
-            format!("{model}:{}:{}", language.as_deref().unwrap_or("auto"), initial_prompt.as_deref().unwrap_or(""))
-                .as_bytes()
+            format!(
+                "{model}:{}:{}",
+                language.as_deref().unwrap_or("auto"),
+                initial_prompt.as_deref().unwrap_or("")
+            )
+            .as_bytes()
         )
     );
     // Keep all temporary output for one invocation together. Besides avoiding
@@ -2305,9 +2398,17 @@ async fn transcribe_local(
         });
         let _ = fs::write(run_dir.join("resume.json"), manifest.to_string()).await;
         emit_progress(
-            &app, &job_id, "transcription", label, "transcribing", "active", 0,
+            &app,
+            &job_id,
+            "transcription",
+            label,
+            "transcribing",
+            "active",
+            0,
             Some(total_millis),
-            Some(format!("Delar upp lång inspelning i {chunk_count} säkra delar…")),
+            Some(format!(
+                "Delar upp lång inspelning i {chunk_count} säkra delar…"
+            )),
         );
         let mut merged = Vec::new();
         for index in 0..chunk_count {
@@ -2316,8 +2417,14 @@ async fn transcribe_local(
                 // same audio, model and glossary resumes at the missing part.
                 finish_transcription(&job_id);
                 emit_progress(
-                    &app, &job_id, "transcription", label, "cancelled", "cancelled",
-                    index as u64 * LONG_TRANSCRIPTION_CHUNK_MILLIS, Some(total_millis),
+                    &app,
+                    &job_id,
+                    "transcription",
+                    label,
+                    "cancelled",
+                    "cancelled",
+                    index as u64 * LONG_TRANSCRIPTION_CHUNK_MILLIS,
+                    Some(total_millis),
                     Some("Transkriberingen avbröts. Klara delar sparas för återupptagning.".into()),
                 );
                 return Err("TRANSCRIPTION_CANCELLED".into());
@@ -2329,8 +2436,12 @@ async fn transcribe_local(
                 base_start.saturating_sub(LONG_TRANSCRIPTION_OVERLAP_MILLIS)
             };
             let length = (LONG_TRANSCRIPTION_CHUNK_MILLIS
-                + if index == 0 { 0 } else { LONG_TRANSCRIPTION_OVERLAP_MILLIS })
-                .min(total_millis.saturating_sub(start));
+                + if index == 0 {
+                    0
+                } else {
+                    LONG_TRANSCRIPTION_OVERLAP_MILLIS
+                })
+            .min(total_millis.saturating_sub(start));
             let chunk_dir = chunks_dir.join(format!("part-{index:04}"));
             fs::create_dir_all(&chunk_dir)
                 .await
@@ -2354,7 +2465,9 @@ async fn transcribe_local(
                         .arg(&chunk_wav)
                         .output()
                         .await
-                        .map_err(|error| format!("Kunde inte förbereda ljuddel {}: {error}", index + 1))?;
+                        .map_err(|error| {
+                            format!("Kunde inte förbereda ljuddel {}: {error}", index + 1)
+                        })?;
                     if !chunked.status.success() {
                         return Err(format!(
                             "Kunde inte förbereda ljuddel {}: {}",
@@ -2365,10 +2478,23 @@ async fn transcribe_local(
                 }
                 let prefix = chunk_dir.join("result");
                 let raw = transcribe_whisper_chunk(
-                    &app, &job_id, label, &whisper, &whisper_dir, &model_path,
-                    &chunk_wav, &prefix, &whisper_language, initial_prompt.as_deref(), use_nvidia,
-                    start, total_millis, index + 1, chunk_count,
-                ).await?;
+                    &app,
+                    &job_id,
+                    label,
+                    &whisper,
+                    &whisper_dir,
+                    &model_path,
+                    &chunk_wav,
+                    &prefix,
+                    &whisper_language,
+                    initial_prompt.as_deref(),
+                    use_nvidia,
+                    start,
+                    total_millis,
+                    index + 1,
+                    chunk_count,
+                )
+                .await?;
                 // Atomic enough for a single-process queue: only write after a
                 // complete, parseable Whisper result exists.
                 fs::write(&chunk_json, &raw)
@@ -2383,9 +2509,19 @@ async fn transcribe_local(
                 if index == 0 { 0 } else { base_start },
             )?;
             emit_progress(
-                &app, &job_id, "transcription", label, "transcribing", "active",
-                (base_start + LONG_TRANSCRIPTION_CHUNK_MILLIS).min(total_millis), Some(total_millis),
-                Some(format!("Transkriberade del {} av {}…", index + 1, chunk_count)),
+                &app,
+                &job_id,
+                "transcription",
+                label,
+                "transcribing",
+                "active",
+                (base_start + LONG_TRANSCRIPTION_CHUNK_MILLIS).min(total_millis),
+                Some(total_millis),
+                Some(format!(
+                    "Transkriberade del {} av {}…",
+                    index + 1,
+                    chunk_count
+                )),
             );
         }
         let result = serde_json::json!({ "transcription": merged }).to_string();
@@ -2393,8 +2529,15 @@ async fn transcribe_local(
         let _ = fs::remove_dir_all(&run_dir).await;
         finish_transcription(&job_id);
         emit_progress(
-            &app, &job_id, "transcription", label, "complete", "complete", total_millis,
-            Some(total_millis), Some("Transkriptet är klart.".into()),
+            &app,
+            &job_id,
+            "transcription",
+            label,
+            "complete",
+            "complete",
+            total_millis,
+            Some(total_millis),
+            Some("Transkriptet är klart.".into()),
         );
         return Ok(result);
     }
@@ -2857,7 +3000,12 @@ mod transcription_tests {
         )
         .unwrap();
         assert_eq!(merged.len(), 3);
-        assert_eq!(merged[2].pointer("/offsets/from").and_then(|value| value.as_u64()), Some(1_200_000));
+        assert_eq!(
+            merged[2]
+                .pointer("/offsets/from")
+                .and_then(|value| value.as_u64()),
+            Some(1_200_000)
+        );
     }
 }
 
@@ -2902,11 +3050,16 @@ pub fn run() {
             optimize_audio_for_storage
         ])
         .setup(|app| {
+            // The WDIO bridge installs its own logger. Registering the normal
+            // plugin as well makes the dedicated QA binary panic at startup.
+            #[cfg(not(feature = "tauri-plugin-wdio"))]
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+            #[cfg(feature = "tauri-plugin-wdio")]
+            let _ = app;
             Ok(())
         })
         .run(tauri::generate_context!())

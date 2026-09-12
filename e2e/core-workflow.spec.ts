@@ -1,6 +1,8 @@
-import { expect, seedLibrary, test } from "./qa-fixtures";
+import { databaseName, expect, seedLibrary, test } from "./qa-fixtures";
 
-test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-synk", async ({ page }) => {
+test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-synk", async ({
+  page,
+}) => {
   await page.goto("/");
   await seedLibrary(page);
   await page.reload();
@@ -15,26 +17,40 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
   await page.getByRole("button", { name: "Skapa kort" }).click();
   await expect(page.getByText("Generera nya kort")).toBeVisible();
   await page.getByRole("button", { name: "Fortsätt" }).click();
-  await page.getByPlaceholder('{"cards":[…]}').fill('{"cards":[{"type":"basic","front":"Vad är peritonit?","back":"Inflammation i peritoneum.","tags":[]}]}');
+  await page
+    .getByPlaceholder('{"cards":[…]}')
+    .fill(
+      '{"cards":[{"type":"basic","front":"Vad är peritonit?","back":"Inflammation i peritoneum.","tags":[]}]}',
+    );
   await page.getByRole("button", { name: "Validera och importera" }).click();
-  await expect(page.getByText("Vad är peritonit?", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Vad är peritonit?", { exact: true }),
+  ).toBeVisible();
 
   await page.route("http://127.0.0.1:8765/**", async (route) => {
     const request = route.request();
     const body = JSON.parse(request.postData() ?? "{}") as { action?: string };
-    const result = body.action === "deckNames"
-      ? []
-      : body.action === "modelFieldNames"
-        ? ["Front", "Back"]
-        : 101;
+    const result =
+      body.action === "deckNames"
+        ? []
+        : body.action === "modelFieldNames"
+          ? ["Front", "Back"]
+          : 101;
     await route.fulfill({ json: { result, error: null } });
+  });
+  await page.evaluate(() => {
+    (
+      window as Window & { __LECTIO_STABILITY_ALLOW_LOOPBACK__?: boolean }
+    ).__LECTIO_STABILITY_ALLOW_LOOPBACK__ = true;
   });
   await page.getByRole("button", { name: "Synka godkända" }).click();
   await page.waitForFunction(() => {
     const stored = JSON.parse(localStorage.getItem("lectio-state-v1") ?? "{}");
     return stored.state?.cards?.some(
       (card: { id: string; status: string; ankiId?: number }) =>
-        card.id === "approved-card" && card.status === "synced" && card.ankiId === 101,
+        card.id === "approved-card" &&
+        card.status === "synced" &&
+        card.ankiId === 101,
     );
   });
   page.once("dialog", (dialog) => dialog.accept());
@@ -44,9 +60,9 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
   await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
   await page.getByRole("button", { name: "Akut buk", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
-  await page.getByRole("button", { name: "Ta bort ljudfil från föreläsningen" }).evaluate(
-    (button: HTMLButtonElement) => button.click(),
-  );
+  await page
+    .getByRole("button", { name: "Ta bort ljudfil från föreläsningen" })
+    .evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByText("Ingen ljudfil ännu")).toBeVisible();
 });
 
@@ -73,8 +89,8 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
 
   // The imported archive, not the pre-existing IndexedDB asset, must restore
   // the source image and the card's stable visual reference.
-  await page.evaluate(async () => {
-    const request = indexedDB.open("lectio-assets");
+  await page.evaluate(async (name) => {
+    const request = indexedDB.open(name);
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -87,13 +103,15 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
       transaction.onabort = () => reject(transaction.error);
     });
     database.close();
-  });
+  }, databaseName);
 
-  await page.locator('input[accept="application/json,.zip,application/zip"]').setInputFiles({
-    name: download.suggestedFilename(),
-    mimeType: "application/zip",
-    buffer: Buffer.concat(chunks),
-  });
+  await page
+    .locator('input[accept="application/json,.zip,application/zip"]')
+    .setInputFiles({
+      name: download.suggestedFilename(),
+      mimeType: "application/zip",
+      buffer: Buffer.concat(chunks),
+    });
   await expect(page.getByText("Biblioteket importerades")).toBeVisible();
   await page.waitForFunction(() => {
     const stored = JSON.parse(localStorage.getItem("lectio-state-v1") ?? "{}");
@@ -101,12 +119,17 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
     const card = stored.state?.cards?.find(
       (item: { id: string }) => item.id === "approved-card",
     );
-    return stored.state?.nodes?.some(
-      (node: { id: string; context: string }) => node.id === "course" && node.context === "Kursens testcontext",
-    ) && lecture?.visualIndex?.[0]?.id === "visual-akut-buk" && card?.visualId === "visual-akut-buk";
+    return (
+      stored.state?.nodes?.some(
+        (node: { id: string; context: string }) =>
+          node.id === "course" && node.context === "Kursens testcontext",
+      ) &&
+      lecture?.visualIndex?.[0]?.id === "visual-akut-buk" &&
+      card?.visualId === "visual-akut-buk"
+    );
   });
-  await page.waitForFunction(async () => {
-    const request = indexedDB.open("lectio-assets");
+  await page.waitForFunction(async (name) => {
+    const request = indexedDB.open(name);
     const database = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
@@ -119,5 +142,5 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
     });
     database.close();
     return Boolean(item);
-  });
+  }, databaseName);
 });

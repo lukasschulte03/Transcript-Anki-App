@@ -21,7 +21,11 @@ export type VisualThumbnail = {
   createdAt: string;
 };
 
-export const db = new Dexie("lectio-assets") as Dexie & {
+export const DATABASE_NAME = import.meta.env.VITE_STABILITY_TEST === "true"
+  ? "lectio-assets-stability"
+  : "lectio-assets";
+
+export const db = new Dexie(DATABASE_NAME) as Dexie & {
   assets: EntityTable<StoredAsset, "id">;
   recordingSessions: EntityTable<RecordingSession, "id">;
   recordingChunks: EntityTable<RecordingChunk, "id">;
