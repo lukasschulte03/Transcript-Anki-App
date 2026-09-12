@@ -5,7 +5,7 @@ const views = [
   { label: "Översikt", ready: "Översikt", snapshot: "view-dashboard.png" },
   { label: "Bibliotek", ready: "Akut buk", snapshot: "view-library.png" },
   { label: "Anki-kort", ready: "Generera nya kort", snapshot: "view-cards.png" },
-  { label: "Inkorg", ready: "Din Google Drive-inkorg", snapshot: "view-inbox.png" },
+  { label: "Inkorg", ready: "Koppla din Google Drive-inkorg", snapshot: "view-inbox.png" },
   { label: "Super Actions", ready: "Super Actions", snapshot: "view-super-actions.png" },
   { label: "Inställningar", ready: "Inställningar", snapshot: "view-settings.png" },
 ] as const;

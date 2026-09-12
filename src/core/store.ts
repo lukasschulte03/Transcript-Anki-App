@@ -16,6 +16,7 @@ import { uid } from "../lib/utils";
 import { db } from "./database";
 import { normalizePalette } from "./theme";
 import { backupSourceFromState, createLibraryBackup } from "../services/libraryBackup";
+import { markStartup } from "../services/startupMetrics";
 
 const now = () => new Date().toISOString();
 const workspaceId = "workspace-main";
@@ -570,7 +571,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: "lectio-state-v1",
-      version: 15,
+      version: 16,
       // Native operations cannot survive a process restart. In particular, an
       // interrupted Drive sync used to be rehydrated as an active job and
       // locked the entire UI even though no sync worker was running.
@@ -579,14 +580,16 @@ export const useAppStore = create<AppState>()(
         ...(persistedState as Partial<AppState>),
         jobs: [],
       }),
+      onRehydrateStorage: () => () => markStartup("library-state-hydrated"),
       migrate: (persistedState) => {
         const previous = persistedState as AppState;
-        const legacySettings = previous.settings as AppSettings & {
+        const legacySettings = previous.settings as Omit<AppSettings, "localVisualDescriptions"> & {
           aiMode?: string;
           aiProvider?: string;
           transcriptionProvider?: string;
           appearance?: string;
           accentTheme?: string;
+          localVisualDescriptions?: string;
         };
         return {
           ...previous,
@@ -614,8 +617,14 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
+            // The former local-vision toggle maps to the new opt-in engine.
+            // feature. It still remains disabled until the Nvidia package is
+            // explicitly installed and verified.
             localVisualDescriptions:
-              legacySettings.localVisualDescriptions === "local" ? "local" : "off",
+              legacySettings.localVisualDescriptions === "local" ||
+              legacySettings.localVisualDescriptions === "nvidia"
+                ? "nvidia"
+                : "off",
             cloudSync: (() => {
               const legacyCloud = legacySettings.cloudSync as Partial<
                 AppSettings["cloudSync"]

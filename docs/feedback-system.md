@@ -15,11 +15,20 @@ Utan DSN fungerar samma flöde lokalt: användaren kan granska och spara en JSON
 - appversion och operativsystem/arkitektur
 - antal CPU-trådar och status för NVIDIA, Whisper och FFmpeg
 - högst 30 senaste, rensade tekniska fel
+- högst 200 maskade loggrader vardera för app, transkribering, bildanalys, synk och native-flöden
 - användarens frivilliga beskrivning
 
 ## Data som aldrig ska skickas
 
 - ljud, PDF:er, slides, anteckningar, transkript eller Anki-kort
 - API-nycklar, tokens, e-postadresser eller riktiga användarsökvägar
+
+## Lokala felsökningsloggar
+
+Lectio behåller en liten ringbuffert i lokal appstorage per subsystem: `app`,
+`transcription`, `vision`, `sync` och `native`. Äldre rader ersätts automatiskt
+och loggningen får aldrig avbryta ett studieflöde. Loggarna är endast tekniska
+statusar och fel; föreläsningsinnehåll, filnamn och sökvägar maskas innan de kan
+exporteras eller bifogas en rapport.
 
 Sentry ska konfigureras med en rimlig retention och ett volymlarm inför ett bredare betatest.

@@ -24,3 +24,7 @@ graphify-out/
 *.njsproj
 *.sln
 *.sw?
+
+# Python worker bytecode is generated at runtime and must not become release source.
+__pycache__/
+*.py[cod]

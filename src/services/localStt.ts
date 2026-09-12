@@ -3,6 +3,7 @@ import { appDataDir, join } from "@tauri-apps/api/path";
 import { mkdir, readFile, remove, writeFile } from "@tauri-apps/plugin-fs";
 import { uid } from "../lib/utils";
 import { isTauri } from "./platform";
+import { logDiagnostic } from "./diagnosticLog";
 import {
   flagTranscriptionQuality,
   type TranscriptionResult,
@@ -172,6 +173,7 @@ export async function transcribeWithLocalWhisper(
   const inputPath = await join(directory, `${uid()}.${extension}`);
   await writeFile(inputPath, audio.stream());
   try {
+    logDiagnostic("transcription", `Startar lokal Whisper-transkribering (${model}, ${acceleration}).`);
     const raw = await invoke<string>("transcribe_local", {
       inputPath,
       model,
@@ -180,7 +182,12 @@ export async function transcribeWithLocalWhisper(
       jobId,
       initialPrompt: initialPrompt || null,
     });
-    return parseWhisperJson(raw);
+    const result = parseWhisperJson(raw);
+    logDiagnostic("transcription", `Whisper slutförde transkriberingen med ${result.segments.length} segment.`);
+    return result;
+  } catch (error) {
+    logDiagnostic("transcription", error, { level: "error", context: `Whisper (${model}, ${acceleration})` });
+    throw error;
   } finally {
     await remove(inputPath).catch(() => undefined);
   }

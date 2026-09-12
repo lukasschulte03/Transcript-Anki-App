@@ -1,3 +1,4 @@
+/* oxlint-disable react/set-state-in-effect -- effects synchronize the iframe document lifecycle. */
 import { useEffect, useState } from "react";
 import { FileWarning, LoaderCircle } from "lucide-react";
 

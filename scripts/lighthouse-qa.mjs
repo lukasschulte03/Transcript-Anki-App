@@ -67,8 +67,12 @@ try {
       "--chrome-flags=--headless=new --no-sandbox",
       "--quiet",
     ],
-    { stdio: "inherit", windowsHide: true },
+    { stdio: ["ignore", "ignore", "pipe"], windowsHide: true },
   );
+  let lighthouseErrorOutput = "";
+  lighthouse.stderr.on("data", (chunk) => {
+    lighthouseErrorOutput += String(chunk);
+  });
   const lighthouseExitCode = await waitForExit(lighthouse, "Lighthouse");
   let lhr;
   try {
@@ -76,8 +80,8 @@ try {
   } catch {
     throw new Error(`Lighthouse avslutades med kod ${lighthouseExitCode} utan att skapa en rapport.`);
   }
-  if (lighthouseExitCode !== 0)
-    console.warn(`Lighthouse skapade en rapport men avslutades med kod ${lighthouseExitCode}; vanligt vid Windows-rensning av Chromes temporära profil.`);
+  if (lighthouseExitCode !== 0 && !/EPERM, Permission denied/.test(lighthouseErrorOutput))
+    console.warn(`Lighthouse skapade en rapport men avslutades med kod ${lighthouseExitCode}: ${lighthouseErrorOutput.trim()}`);
   const scores = Object.fromEntries(
     Object.entries(lhr.categories).map(([id, category]) => [id, Math.round(category.score * 100)]),
   );

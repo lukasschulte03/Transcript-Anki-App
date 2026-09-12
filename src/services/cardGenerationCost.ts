@@ -1,11 +1,12 @@
 import type { AppSettings } from "../core/types";
+import { MODEL_PRICE_CATALOG_VERSION } from "./modelCatalog";
 
 /**
  * Versioned reference prices for models Lectio suggests by default. Prices are
  * deliberately kept outside the UI so the catalogue can be reviewed and
  * updated without changing generation behaviour.
  */
-export const CARD_GENERATION_PRICE_CATALOG_VERSION = "2026-09-08";
+export const CARD_GENERATION_PRICE_CATALOG_VERSION = MODEL_PRICE_CATALOG_VERSION;
 
 type PricedModel = {
   provider: Exclude<AppSettings["aiProvider"], "custom">;
@@ -28,6 +29,7 @@ export type CardGenerationCostEstimate = {
   usd?: number;
   inputUsdPerMillion?: number;
   outputUsdPerMillion?: number;
+  priceSource?: "local-catalog";
 };
 
 /** A conservative local estimate: compact JSON cards commonly need ~110 output tokens each. */
@@ -53,6 +55,7 @@ export function estimateCardGenerationCost(
     ...estimate,
     inputUsdPerMillion: pricedModel.inputUsdPerMillion,
     outputUsdPerMillion: pricedModel.outputUsdPerMillion,
+    priceSource: "local-catalog",
     usd:
       (estimate.inputTokens / 1_000_000) * pricedModel.inputUsdPerMillion +
       (estimate.outputTokens / 1_000_000) * pricedModel.outputUsdPerMillion,

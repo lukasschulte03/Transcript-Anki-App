@@ -61,7 +61,7 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
   });
   await expect(page.getByText("Transkribera", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: /Inställningar/ }).click();
-  await page.getByRole("button", { name: "Generellt" }).click();
+  await page.getByRole("button", { name: "Allmänt" }).click();
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Exportera bibliotek" }).click();
@@ -71,6 +71,24 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
   const chunks: Buffer[] = [];
   for await (const chunk of stream) chunks.push(Buffer.from(chunk));
 
+  // The imported archive, not the pre-existing IndexedDB asset, must restore
+  // the source image and the card's stable visual reference.
+  await page.evaluate(async () => {
+    const request = indexedDB.open("lectio-assets");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("assets", "readwrite");
+    transaction.objectStore("assets").delete("slide-asset");
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+  });
+
   await page.locator('input[accept="application/json,.zip,application/zip"]').setInputFiles({
     name: download.suggestedFilename(),
     mimeType: "application/zip",
@@ -79,8 +97,27 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
   await expect(page.getByText("Biblioteket importerades")).toBeVisible();
   await page.waitForFunction(() => {
     const stored = JSON.parse(localStorage.getItem("lectio-state-v1") ?? "{}");
+    const lecture = stored.state?.lectures?.lecture;
+    const card = stored.state?.cards?.find(
+      (item: { id: string }) => item.id === "approved-card",
+    );
     return stored.state?.nodes?.some(
       (node: { id: string; context: string }) => node.id === "course" && node.context === "Kursens testcontext",
-    );
+    ) && lecture?.visualIndex?.[0]?.id === "visual-akut-buk" && card?.visualId === "visual-akut-buk";
+  });
+  await page.waitForFunction(async () => {
+    const request = indexedDB.open("lectio-assets");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("assets", "readonly");
+    const item = await new Promise<unknown>((resolve, reject) => {
+      const get = transaction.objectStore("assets").get("slide-asset");
+      get.onsuccess = () => resolve(get.result);
+      get.onerror = () => reject(get.error);
+    });
+    database.close();
+    return Boolean(item);
   });
 });

@@ -2,7 +2,7 @@
  * Versioned reference prices for the models Lectio offers by default.
  * Update this catalogue after checking the provider's official pricing page.
  */
-export const TRANSCRIPTION_PRICE_CATALOG_VERSION = "2026-09-07";
+export const TRANSCRIPTION_PRICE_CATALOG_VERSION = MODEL_PRICE_CATALOG_VERSION;
 
 type PricedModel = {
   provider: "openai" | "groq";
@@ -20,6 +20,7 @@ export type TranscriptionCostEstimate = {
   durationSeconds: number;
   usd?: number;
   usdPerMinute?: number;
+  priceSource?: "local-catalog";
 };
 
 export function estimateTranscriptionCost(
@@ -35,6 +36,7 @@ export function estimateTranscriptionCost(
   return {
     durationSeconds: duration,
     usdPerMinute: pricedModel.usdPerMinute,
+    priceSource: "local-catalog",
     usd: (duration / 60) * pricedModel.usdPerMinute,
   };
 }
@@ -49,3 +51,4 @@ export function formatTranscriptionCost(estimate: TranscriptionCostEstimate) {
         maximumFractionDigits: estimate.usd < 0.01 ? 3 : 2,
       }).format(estimate.usd);
 }
+import { MODEL_PRICE_CATALOG_VERSION } from "./modelCatalog";

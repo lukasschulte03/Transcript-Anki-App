@@ -1,3 +1,4 @@
+/* oxlint-disable react/only-export-components -- variants are the public API of this UI primitive. */
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "cn"

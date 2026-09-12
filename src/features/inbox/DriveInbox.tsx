@@ -10,6 +10,8 @@ import {
   Settings,
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
 import { Input, Label, Select } from "../../components/ui/Form";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
@@ -115,7 +117,8 @@ export function DriveInbox() {
   const toggle = (id: string) =>
     setSelected((current) => {
       const next = new Set(current);
-      next.has(id) ? next.delete(id) : next.add(id);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
       return next;
     });
 
@@ -211,23 +214,14 @@ export function DriveInbox() {
   if (!connected) {
     return (
       <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto p-6">
-        <div className="mx-auto flex min-h-full max-w-2xl flex-col items-center justify-center text-center">
-          <div className="grid size-12 place-items-center rounded-xl bg-[var(--palette-primary-muted)] text-[var(--palette-accent)]">
-            <InboxIcon className="size-5" />
-          </div>
-          <h1 className="mt-5 text-xl font-semibold tracking-tight text-[var(--palette-text)]">
-            Din Google Drive-inkorg
-          </h1>
-          <p className="mt-2 max-w-md text-sm leading-6 text-[var(--palette-text-muted)]">
-            Koppla Google Drive och låt din iPhone-inspelare spara ljudfiler i{" "}
-            <strong className="font-medium text-[var(--palette-text)]">
-              Lectio/Inbox
-            </strong>
-            . Här väljer du sedan vilken föreläsning de hör till.
-          </p>
-          <Button className="mt-5" onClick={() => setActiveView("settings")}>
-            <Settings /> Öppna synkinställningar
-          </Button>
+        <div className="mx-auto flex min-h-full max-w-2xl items-center justify-center">
+          <EmptyState
+            icon={InboxIcon}
+            title="Koppla din Google Drive-inkorg"
+            description="Lägg inspelningar i Lectio/Inbox och välj sedan vilken föreläsning de hör till här."
+            action={<Button onClick={() => setActiveView("settings")}><Settings /> Synkinställningar</Button>}
+            className="w-full border-0 bg-transparent"
+          />
         </div>
       </main>
     );
@@ -236,27 +230,20 @@ export function DriveInbox() {
   return (
     <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto p-6">
       <div className="mx-auto max-w-5xl space-y-6">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight text-[var(--palette-text)]">
-              Inkorg
-            </h1>
-            <p className="mt-1 text-sm text-[var(--palette-text-muted)]">
-              Nya ljudfiler i Google Drive:{" "}
-              <span className="font-medium text-[var(--palette-text)]">
-                {settings.cloudSync.remotePath.trim() || "Lectio"}/Inbox
-              </span>
-            </p>
-          </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refresh()}
-            disabled={loading || importing}
-          >
-            <RefreshCw className={cn(loading && "animate-spin")} /> Uppdatera
-          </Button>
-        </header>
+        <PageHeader
+          title="Inkorg"
+          description={`Nya ljudfiler från ${(settings.cloudSync.remotePath.trim() || "Lectio") + "/Inbox"}`}
+          actions={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void refresh()}
+              disabled={loading || importing}
+            >
+              <RefreshCw className={cn(loading && "animate-spin")} /> Uppdatera
+            </Button>
+          }
+        />
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <section className="overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]">
@@ -288,18 +275,7 @@ export function DriveInbox() {
                 Hämtar inkorgen…
               </div>
             ) : files.length === 0 ? (
-              <div className="grid min-h-52 place-items-center px-6 text-center">
-                <div>
-                  <InboxIcon className="mx-auto size-5 text-[var(--palette-text-subtle)]" />
-                  <p className="mt-3 text-sm font-medium text-[var(--palette-text)]">
-                    Inkorgen är tom
-                  </p>
-                  <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
-                    Nya inspelningar visas här när de har laddats upp till
-                    Google Drive.
-                  </p>
-                </div>
-              </div>
+              <EmptyState icon={InboxIcon} title="Inkorgen är tom" description="Nya inspelningar visas här när de har laddats upp till Google Drive." className="min-h-52 border-0" />
             ) : (
               <ul className="divide-y divide-[var(--palette-border)]">
                 {files.map((file) => {

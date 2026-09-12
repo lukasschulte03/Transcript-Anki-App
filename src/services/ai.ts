@@ -9,17 +9,7 @@ import type {
 } from "../core/types";
 import { netFetch } from "./platform";
 import { visualPromptLines } from "./visualIndex";
-
-export const aiModelSuggestions: Record<
-  AppSettings["aiProvider"],
-  readonly string[]
-> = {
-  openai: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
-  anthropic: ["claude-sonnet-4-5", "claude-haiku-4-5"],
-  gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
-  groq: ["llama-3.3-70b-versatile", "openai/gpt-oss-120b"],
-  custom: [],
-};
+export { aiModelSuggestions } from "./modelCatalog";
 
 const cardSchema = z.object({
   type: z

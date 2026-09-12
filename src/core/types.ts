@@ -111,6 +111,15 @@ export interface VisualCandidate {
   contentHash?: string;
   /** Separate local image extracted from a PPTX, when present. */
   assetId?: string;
+  /** Normalized crop from a rendered slide. Full slides are never attached to cards. */
+  crop?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
+  /** OCR text spatially matched to this crop, extracted locally from the full-resolution slide. */
+  cropText?: string;
   /** Optional local vision result. The original text-derived description remains intact. */
   localVision?: {
     description: string;
@@ -131,9 +140,13 @@ export interface LectureData {
   /** Local, text-grounded visual candidates derived from the lecture slides. */
   visualIndex?: VisualCandidate[];
   visualIndexHash?: string;
+  /** Allows safe local re-indexing when the visual extraction pipeline improves. */
+  visualIndexVersion?: number;
   visualIndexUpdatedAt?: string;
   /** Candidates hidden from the reusable module library; original slides stay intact. */
   hiddenVisualIds?: string[];
+  /** Permanently removed crop IDs. The source slide remains intact, but these candidates are never recreated. */
+  deletedVisualIds?: string[];
   /** Preserved before an optional terminology review is applied. */
   transcriptOriginal?: TranscriptSegment[];
   audioAssetId?: string;
@@ -228,8 +241,8 @@ export interface AppSettings {
   transcriptionModel: string;
   transcriptionBaseUrl: string;
   transcriptionPrompt: string;
-  /** Never enables network AI: this controls an optional local Ollama vision model. */
-  localVisualDescriptions: "off" | "local";
+  /** Optional, fully local Nvidia vision package used for automatic Anki visuals. */
+  localVisualDescriptions: "off" | "nvidia";
   ankiUrl: string;
   defaultDeck: string;
   cloudSync: CloudSyncConfiguration;
@@ -270,7 +283,7 @@ export interface LibraryBackup {
   schemaVersion: 2;
   id: string;
   createdAt: string;
-  reason: "import" | "deletion" | "manual";
+  reason: "import" | "deletion" | "manual" | "automatic";
   nodes: LibraryNode[];
   lectures: Record<string, LectureData>;
   segments: TranscriptSegment[];

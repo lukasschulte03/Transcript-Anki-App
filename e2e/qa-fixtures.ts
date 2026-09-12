@@ -19,16 +19,56 @@ export async function seedLibrary(page: Page) {
     stored.state = {
       ...stored.state,
       nodes,
-      lectures: { lecture: { lectureId: "lecture", notes: "Buksmärta och differentialdiagnoser." } },
+      lectures: {
+        lecture: {
+          lectureId: "lecture",
+          notes: "Buksmärta och differentialdiagnoser.",
+          slideAssetId: "slide-asset",
+          slideName: "akut-buk.png",
+          visualIndex: [{
+            id: "visual-akut-buk",
+            slidePage: 1,
+            description: "Anatomisk bild av buken.",
+            keywords: ["buk", "anatomi"],
+            sourceHash: "fixture-slide",
+          }],
+        },
+      },
       segments: [{ id: "segment", lectureId: "lecture", start: 0, end: 5, text: "Akut buk kräver snabb bedömning." }],
       markers: [],
-      cards: [{ id: "approved-card", lectureId: "lecture", type: "basic", front: "Vad betyder akut buk?", back: "Buksmärta som kräver snabb bedömning.", tags: [], status: "approved" }],
+      cards: [{ id: "approved-card", lectureId: "lecture", type: "basic", front: "Vad betyder akut buk?", back: "Buksmärta som kräver snabb bedömning.", tags: [], status: "approved", visualId: "visual-akut-buk", visualLectureId: "lecture" }],
       selectedId: "lecture",
       activeView: "workspace",
     };
-    stored.version ??= 15;
+    // Keep this fixture on the current persisted schema. A deliberately old
+    // version belongs in a dedicated migration test; using one here reruns the
+    // upgrade path and can replace the just-seeded library with defaults.
+    stored.version = 16;
     localStorage.setItem(key, JSON.stringify(stored));
   }, seededNodes);
+  await page.evaluate(async () => {
+    const request = indexedDB.open("lectio-assets");
+    const database = await new Promise<IDBDatabase>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const transaction = database.transaction("assets", "readwrite");
+    transaction.objectStore("assets").put({
+      id: "slide-asset",
+      lectureId: "lecture",
+      kind: "slides",
+      name: "akut-buk.png",
+      mimeType: "image/png",
+      blob: new Blob(["fixture-slide-image"], { type: "image/png" }),
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    await new Promise<void>((resolve, reject) => {
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    database.close();
+  });
 }
 
 /** Seeds twelve distinct local PDF assets without touching the user's library. */

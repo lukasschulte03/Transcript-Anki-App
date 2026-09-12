@@ -5,11 +5,13 @@ import { uid } from "../lib/utils";
 import { hasStorageCapacity } from "../lib/utils";
 import { backupSourceFromState, createLibraryBackup } from "./libraryBackup";
 import { netFetch } from "./platform";
+import { logDiagnostic } from "./diagnosticLog";
 import { getGoogleDriveAccessToken } from "./sync";
 import type { LibrarySyncSnapshot } from "./libraryMerge";
 import {
   applySyncOperations,
   createSyncOperations,
+  findSyncConflicts,
   type SyncAsset,
   type SyncOperation,
   type SyncV2State,
@@ -25,6 +27,7 @@ type LibrarySnapshot = LibrarySyncSnapshot;
 
 type SyncV2Checkpoint = {
   protocol: 2;
+  schemaVersion?: 1;
   libraryId: string;
   createdAt: string;
   snapshot: LibrarySnapshot;
@@ -81,9 +84,11 @@ export async function googleDriveRequest(
   const response = await netFetch(url, { ...init, headers });
   if (!response.ok) {
     const detail = (await response.text()).replace(/\s+/g, " ").slice(0, 320);
-    throw new Error(
+    const error = new Error(
       `Google Drive svarade med ${response.status}${detail ? `: ${detail}` : ""}`,
     );
+    logDiagnostic("sync", error, { level: "error", context: "Google Drive API" });
+    throw error;
   }
   return response;
 }
@@ -290,6 +295,7 @@ async function seedSyncV2(
     [
       JSON.stringify({
         protocol: 2,
+        schemaVersion: 1,
         libraryId,
         createdAt: new Date().toISOString(),
         snapshot: snapshotForCloud(snapshot),
@@ -305,6 +311,9 @@ async function seedSyncV2(
   await db.syncV2States.put({
     id: stateId,
     protocol: 2,
+    // Older v2 state rows did not persist this field. Reading them as schema
+    // one is an additive migration; the next successful sync writes it.
+    schemaVersion: existingState?.schemaVersion ?? 1,
     libraryId,
     deviceId: getDeviceId(),
     nextSequence: existingState?.nextSequence ?? 1,
@@ -344,11 +353,31 @@ async function downloadRemoteLibrary(
   token: string,
   remote: Pick<SyncV2Checkpoint, "snapshot" | "assets">,
 ) {
+  await downloadMissingRemoteAssets(token, remote.assets, remote.snapshot);
+  const localCloud = useAppStore.getState().settings.cloudSync;
+  useAppStore.getState().importLibrary({
+    ...remote.snapshot,
+    settings: { ...remote.snapshot.settings, cloudSync: localCloud },
+  });
+}
+
+/**
+ * A metadata merge can introduce a lecture that references media created on a
+ * different device. Fetch only those immutable assets before materialising the
+ * merged checkpoint; otherwise a later sync could accidentally omit them.
+ */
+async function downloadMissingRemoteAssets(
+  token: string,
+  remoteAssets: RemoteAsset[],
+  snapshot: LibrarySnapshot,
+) {
   const existingIds = new Set(
     (await db.assets.toArray()).map((asset) => asset.id),
   );
-  for (const [index, asset] of remote.assets.entries()) {
-    if (existingIds.has(asset.id)) continue;
+  const missing = remoteAssets.filter(
+    (asset) => !existingIds.has(asset.id) && belongsToLibrary(asset, snapshot),
+  );
+  for (const [index, asset] of missing.entries()) {
     const response = await googleDriveRequest(
       `${DRIVE_API}/files/${asset.remoteId}?alt=media`,
       token,
@@ -363,15 +392,10 @@ async function downloadRemoteLibrary(
     syncJob({
       phase: "downloading",
       current: index + 1,
-      total: remote.assets.length,
-      detail: `Hämtar fil ${index + 1} av ${remote.assets.length}…`,
+      total: missing.length,
+      detail: `Hämtar fil ${index + 1} av ${missing.length}…`,
     });
   }
-  const localCloud = useAppStore.getState().settings.cloudSync;
-  useAppStore.getState().importLibrary({
-    ...remote.snapshot,
-    settings: { ...remote.snapshot.settings, cloudSync: localCloud },
-  });
 }
 
 /**
@@ -434,6 +458,7 @@ async function syncGoogleDriveInternal() {
     let v2State = await db.syncV2States.get(syncV2StateId(rootPath));
     let v2Folder: string | undefined;
     let v2Operations: SyncOperation[] = [];
+    let conflictCount = 0;
     if (checkpoint && localLibraryIsEmpty(snapshot, assets)) {
       syncJob({
         phase: "downloading",
@@ -491,8 +516,23 @@ async function syncGoogleDriveInternal() {
         v2State.libraryId,
       );
       const local = createSyncOperations(v2State.base, snapshot, v2State);
+      conflictCount = findSyncConflicts(
+        local.operations,
+        remoteOperations,
+      ).length;
       v2Operations = [...remoteOperations, ...local.operations];
       snapshot = applySyncOperations(v2State.base, v2Operations);
+      // Remote media is immutable and content-addressed. Only download assets
+      // that the merged metadata can reference and that are absent locally.
+      // This is intentionally before creating the next checkpoint.
+      if (checkpoint) {
+        await downloadMissingRemoteAssets(
+          token,
+          checkpoint.checkpoint.assets,
+          snapshot,
+        );
+        assets = await db.assets.toArray();
+      }
       v2State.nextSequence = local.nextSequence;
       const localAssetIds = new Set(
         assets
@@ -620,7 +660,9 @@ async function syncGoogleDriveInternal() {
       status: "complete",
       current: syncAssets.length + 1,
       total: syncAssets.length + 1,
-      detail: `Synkade ${syncAssets.length} mediefiler och bibliotekets metadata.`,
+      detail: conflictCount
+        ? `Synkade ${syncAssets.length} mediefiler. ${conflictCount} samtidiga ändring${conflictCount === 1 ? "" : "ar"} i samma fält fick den senaste versionen.`
+        : `Synkade ${syncAssets.length} mediefiler och bibliotekets metadata.`,
     });
   } catch (error) {
     syncJob({

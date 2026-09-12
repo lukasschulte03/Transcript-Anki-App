@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use base64::{engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD}, Engine as _};
 use rand::TryRngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,7 +16,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::TcpListener,
     process::Command,
-    sync::oneshot,
+    sync::{oneshot, Mutex as AsyncMutex},
     time,
 };
 
@@ -39,7 +39,7 @@ struct GoogleOAuthSession {
     redirect_uri: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 struct GoogleTokenResponse {
     access_token: String,
     refresh_token: Option<String>,
@@ -80,6 +80,90 @@ struct GoogleOAuthStart {
     authorization_url: String,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlideLayoutBox {
+    label: String,
+    score: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlideLayoutOutput {
+    boxes: Option<Vec<SlideLayoutBox>>,
+    text_boxes: Option<Vec<SlideOcrBox>>,
+    error: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SlideOcrBox {
+    text: String,
+    score: f64,
+    left: f64,
+    top: f64,
+    right: f64,
+    bottom: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PpStructureReady {
+    ready: Option<bool>,
+    device: Option<String>,
+    model: Option<String>,
+    error: Option<String>,
+}
+
+struct PpStructureWorker {
+    python: PathBuf,
+    script: PathBuf,
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+    device: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalVisionReady {
+    ready: Option<bool>,
+    model: Option<String>,
+    device: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalVisionResult {
+    description: Option<String>,
+    keywords: Option<Vec<String>>,
+    error: Option<String>,
+}
+
+struct LocalVisionWorker {
+    python: PathBuf,
+    script: PathBuf,
+    child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::Lines<BufReader<tokio::process::ChildStdout>>,
+}
+
+static PP_STRUCTURE_WORKER: OnceLock<AsyncMutex<Option<PpStructureWorker>>> = OnceLock::new();
+static LOCAL_VISION_WORKER: OnceLock<AsyncMutex<Option<LocalVisionWorker>>> = OnceLock::new();
+
+fn pp_structure_worker() -> &'static AsyncMutex<Option<PpStructureWorker>> {
+    PP_STRUCTURE_WORKER.get_or_init(|| AsyncMutex::new(None))
+}
+
+fn local_vision_worker() -> &'static AsyncMutex<Option<LocalVisionWorker>> {
+    LOCAL_VISION_WORKER.get_or_init(|| AsyncMutex::new(None))
+}
+
 fn google_oauth_sessions() -> &'static Mutex<HashMap<String, GoogleOAuthSession>> {
     GOOGLE_OAUTH_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -106,8 +190,12 @@ fn oauth_response(status: &str, body: &str) -> String {
 
 fn google_oauth_error(error: &str) -> String {
     match error {
-        "access_denied" => "Google-inloggningen avbröts eller nekades. Du kan försöka igen när du vill.".into(),
-        "temporarily_unavailable" => "Google är tillfälligt otillgängligt. Försök igen om en stund.".into(),
+        "access_denied" => {
+            "Google-inloggningen avbröts eller nekades. Du kan försöka igen när du vill.".into()
+        }
+        "temporarily_unavailable" => {
+            "Google är tillfälligt otillgängligt. Försök igen om en stund.".into()
+        }
         _ => "Google kunde inte slutföra inloggningen. Försök igen.".into(),
     }
 }
@@ -232,6 +320,192 @@ async fn wav_duration_millis(path: &Path) -> Option<u64> {
     Some(bytes.saturating_mul(1_000) / 32_000)
 }
 
+// Keep the existing one-process path for ordinary recordings. Long recordings
+// are deliberately split only after conversion to the canonical 16 kHz WAV
+// format, which makes every boundary deterministic and avoids touching the
+// user's original audio file.
+const LONG_TRANSCRIPTION_THRESHOLD_MILLIS: u64 = 35 * 60 * 1_000;
+const LONG_TRANSCRIPTION_CHUNK_MILLIS: u64 = 20 * 60 * 1_000;
+const LONG_TRANSCRIPTION_OVERLAP_MILLIS: u64 = 5 * 1_000;
+
+async fn transcription_source_fingerprint(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path)
+        .await
+        .map_err(|error| format!("Kunde inte läsa ljudfilen för återupptagning: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0_u8; 128 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Kunde inte läsa ljudfilen för återupptagning: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+async fn read_whisper_json(run_dir: &Path, output_prefix: &Path) -> Result<String, String> {
+    let expected_json_path = output_prefix.with_extension("json");
+    let json_path = find_whisper_json_output(run_dir, &expected_json_path)
+        .await?
+        .ok_or_else(|| "Whisper avslutades utan att skapa ett JSON-transkript.".to_string())?;
+    fs::read_to_string(&json_path)
+        .await
+        .map_err(|error| format!("Whisper skapade inget läsbart transkript: {error}"))
+}
+
+/// Runs one bounded chunk. Completed chunk JSON files are written by the
+/// caller, so cancellation never discards work that was already successful.
+async fn transcribe_whisper_chunk(
+    app: &AppHandle,
+    job_id: &str,
+    label: &str,
+    whisper: &Path,
+    whisper_dir: &Path,
+    model_path: &Path,
+    wav: &Path,
+    output_prefix: &Path,
+    language: &str,
+    initial_prompt: Option<&str>,
+    use_nvidia: bool,
+    progress_start: u64,
+    progress_total: u64,
+    chunk_index: usize,
+    chunk_count: usize,
+) -> Result<String, String> {
+    let cores = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4);
+    let threads = cores
+        .saturating_sub(1)
+        .clamp(2, if use_nvidia { 12 } else { 8 })
+        .to_string();
+    let mut command = Command::new(whisper);
+    command
+        .current_dir(whisper_dir)
+        .arg("-m")
+        .arg(model_path)
+        .arg("-f")
+        .arg(wav)
+        .arg("-oj")
+        .arg("-ojf")
+        .arg("-of")
+        .arg(output_prefix)
+        .arg("-t")
+        .arg(threads)
+        .arg("-l")
+        .arg(language)
+        // Avoid an unread stdout pipe blocking Whisper on long recordings.
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if use_nvidia {
+        command.arg("-dev").arg("0").arg("-fa");
+    }
+    if let Some(prompt) = initial_prompt.filter(|value| !value.trim().is_empty()) {
+        command.arg("-p").arg(prompt);
+    }
+    emit_progress(
+        app,
+        job_id,
+        "transcription",
+        label,
+        "transcribing",
+        "active",
+        progress_start,
+        Some(progress_total),
+        Some(format!("Transkriberar del {chunk_index} av {chunk_count}…")),
+    );
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "Kunde inte starta Whisper ({}) i {}: {error}",
+            whisper.display(),
+            whisper_dir.display()
+        )
+    })?;
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(1));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let status = loop {
+        tokio::select! {
+            result = child.wait() => break result.map_err(|error| format!("Whisper-processen avbröts: {error}"))?,
+            _ = heartbeat.tick() => {
+                if transcription_is_cancelled(job_id) {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    return Err("TRANSCRIPTION_CANCELLED".into());
+                }
+                emit_progress(
+                    app, job_id, "transcription", label, "transcribing", "active",
+                    progress_start, Some(progress_total),
+                    Some(format!("Transkriberar del {chunk_index} av {chunk_count}…")),
+                );
+            }
+        }
+    };
+    if !status.success() {
+        return Err("Whisper kunde inte slutföra en del av transkriberingen.".into());
+    }
+    read_whisper_json(
+        output_prefix.parent().unwrap_or(wav.parent().unwrap_or(Path::new("."))),
+        output_prefix,
+    )
+    .await
+}
+
+fn merge_chunk_transcript(
+    merged: &mut Vec<serde_json::Value>,
+    raw: &str,
+    offset_millis: u64,
+    overlap_start_millis: u64,
+) -> Result<(), String> {
+    let parsed: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| format!("Whisper skapade ogiltig JSON: {error}"))?;
+    let Some(segments) = parsed.get("transcription").and_then(|value| value.as_array()) else {
+        return Err("Whisper skapade ett transkript utan segment.".into());
+    };
+    for segment in segments {
+        let mut segment = segment.clone();
+        let text = segment
+            .get("text")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let offsets = segment.get_mut("offsets").and_then(|value| value.as_object_mut());
+        let from = offsets
+            .as_ref()
+            .and_then(|value| value.get("from"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0)
+            .saturating_add(offset_millis);
+        let to = offsets
+            .as_ref()
+            .and_then(|value| value.get("to"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(from)
+            .saturating_add(offset_millis);
+        // Deduplicate only literally identical text inside the deliberate five
+        // second overlap. Similar wording is preserved rather than guessed at.
+        let duplicate = from < overlap_start_millis
+            && merged.iter().rev().any(|previous| {
+                let previous_text = previous.get("text").and_then(|value| value.as_str()).unwrap_or("");
+                let previous_to = previous.pointer("/offsets/to").and_then(|value| value.as_u64()).unwrap_or(0);
+                previous_text.trim().eq_ignore_ascii_case(text.trim())
+                    && previous_to >= overlap_start_millis.saturating_sub(LONG_TRANSCRIPTION_OVERLAP_MILLIS)
+            });
+        if duplicate {
+            continue;
+        }
+        if let Some(offsets) = offsets {
+            offsets.insert("from".into(), serde_json::Value::from(from));
+            offsets.insert("to".into(), serde_json::Value::from(to));
+        }
+        merged.push(segment);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod whisper_progress_tests {
     use super::whisper_progress_seconds;
@@ -320,7 +594,9 @@ fn credential_entry(key: &str) -> Result<keyring::Entry, String> {
 }
 
 async fn google_drive_client_secret() -> Result<String, String> {
-    if let Some(secret) = BUNDLED_GOOGLE_DRIVE_CLIENT_SECRET.filter(|value| !value.trim().is_empty()) {
+    if let Some(secret) =
+        BUNDLED_GOOGLE_DRIVE_CLIENT_SECRET.filter(|value| !value.trim().is_empty())
+    {
         return Ok((*secret).to_string());
     }
     tokio::task::spawn_blocking(|| {
@@ -339,12 +615,15 @@ async fn refresh_google_drive_access_token() -> Result<String, String> {
     let credential = tokio::task::spawn_blocking(|| {
         credential_entry(GOOGLE_DRIVE_CREDENTIAL_KEY)?
             .get_password()
-            .map_err(|_| "Google Drive är inte anslutet. Koppla kontot igen under Inställningar.".to_string())
+            .map_err(|_| {
+                "Google Drive är inte anslutet. Koppla kontot igen under Inställningar.".to_string()
+            })
     })
     .await
     .map_err(|error| error.to_string())??;
-    let credential: GoogleDriveCredential = serde_json::from_str(&credential)
-        .map_err(|_| "Google Drive-anslutningen kunde inte läsas. Koppla kontot igen.".to_string())?;
+    let credential: GoogleDriveCredential = serde_json::from_str(&credential).map_err(|_| {
+        "Google Drive-anslutningen kunde inte läsas. Koppla kontot igen.".to_string()
+    })?;
     let client_secret = google_drive_client_secret().await?;
     let response = reqwest::Client::new()
         .post("https://oauth2.googleapis.com/token")
@@ -358,7 +637,9 @@ async fn refresh_google_drive_access_token() -> Result<String, String> {
         .await
         .map_err(|error| format!("Kunde inte förnya Google Drive-anslutningen: {error}"))?;
     if !response.status().is_success() {
-        return Err("Google Drive-sessionen har gått ut. Koppla kontot igen under Inställningar.".into());
+        return Err(
+            "Google Drive-sessionen har gått ut. Koppla kontot igen under Inställningar.".into(),
+        );
     }
     response
         .json::<GoogleTokenResponse>()
@@ -505,13 +786,23 @@ async fn complete_google_drive_oauth(session_id: String) -> Result<GoogleDriveCo
             session
                 .receiver
                 .take()
-                .map(|receiver| (receiver, session.verifier.clone(), session.redirect_uri.clone()))
-                .ok_or_else(|| "Inloggningen väntar redan på ett svar. Försök igen om en stund.".to_string())
+                .map(|receiver| {
+                    (
+                        receiver,
+                        session.verifier.clone(),
+                        session.redirect_uri.clone(),
+                    )
+                })
+                .ok_or_else(|| {
+                    "Inloggningen väntar redan på ett svar. Försök igen om en stund.".to_string()
+                })
         })?;
     let code_result = receiver
         .await
         .map_err(|_| "Inloggningen hann gå ut. Försök igen.".to_string());
-    let _ = google_oauth_sessions().lock().map(|mut sessions| sessions.remove(&session_id));
+    let _ = google_oauth_sessions()
+        .lock()
+        .map(|mut sessions| sessions.remove(&session_id));
     let code = code_result??;
     let client_secret = google_drive_client_secret().await?;
     let response = reqwest::Client::new()
@@ -614,72 +905,421 @@ struct LocalModelStatus {
     path: String,
 }
 
+const LOCAL_VISION_MODEL: &str = "moondream3.1-9B-A2B";
+const LOCAL_VISION_PYTHON_PACKAGE: &str = "moondream==2.2.0";
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct LocalVisionStatus {
-    ollama_installed: bool,
+    nvidia_detected: bool,
+    nvidia_name: Option<String>,
+    nvidia_vram_total_mb: Option<u32>,
+    runtime_installed: bool,
     model_installed: bool,
+    ready: bool,
 }
 
-async fn local_vision_status_inner() -> LocalVisionStatus {
-    let output = Command::new("ollama").arg("list").output().await;
-    let Ok(output) = output else {
-        return LocalVisionStatus { ollama_installed: false, model_installed: false };
+async fn local_vision_status_inner(app: &AppHandle) -> LocalVisionStatus {
+    let nvidia_name = nvidia_gpu_name().await;
+    let metrics = nvidia_metrics().await;
+    let runtime = pp_structure_sidecar(app).ok();
+    let runtime_installed = runtime.is_some();
+    let model_installed = if let Some((python, _)) = runtime {
+        Command::new(python)
+            .args(["-c", "import moondream; print('ok')"])
+            .output()
+            .await
+            .ok()
+            .is_some_and(|output| output.status.success())
+    } else {
+        false
     };
-    if !output.status.success() {
-        return LocalVisionStatus { ollama_installed: false, model_installed: false };
+    let nvidia_detected = nvidia_name.is_some();
+    LocalVisionStatus {
+        nvidia_detected,
+        nvidia_name,
+        nvidia_vram_total_mb: metrics.vram_total_mb,
+        runtime_installed,
+        model_installed,
+        ready: model_installed && nvidia_detected,
     }
-    let installed = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .skip(1)
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|name| name.eq_ignore_ascii_case("moondream") || name.to_ascii_lowercase().starts_with("moondream:"));
-    LocalVisionStatus { ollama_installed: true, model_installed: installed }
 }
 
 #[tauri::command]
-async fn local_vision_status() -> Result<LocalVisionStatus, String> {
-    Ok(local_vision_status_inner().await)
+async fn local_vision_status(app: AppHandle) -> Result<LocalVisionStatus, String> {
+    Ok(local_vision_status_inner(&app).await)
 }
 
-/// Pulls only the selected local model through an already installed Ollama.
-/// No lecture files or credentials are included in this operation.
+fn pp_structure_sidecar(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Kunde inte hitta Lectios resurser: {error}"))?;
+    let bundled_python = resource_dir.join("pp-structure").join("python.exe");
+    let bundled_script = resource_dir
+        .join("pp-structure")
+        .join("pp_structure_layout.py");
+    if bundled_python.is_file() && bundled_script.is_file() {
+        return Ok((bundled_python, bundled_script));
+    }
+
+    // The development runtime is deliberately outside the shipped app. It
+    // keeps the repository and normal installer small while PP-Structure is
+    // evaluated locally; a later optional runtime installer can populate the
+    // same bundled path without changing the frontend contract.
+    // `cargo tauri dev` may start the executable in `src-tauri`, `target`, or
+    // the project root depending on how the development server was launched.
+    // Walk upward from both reliable anchors instead of assuming one CWD.
+    let mut development_roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        development_roots.push(current_dir);
+    }
+    if let Ok(executable) = std::env::current_exe() {
+        if let Some(parent) = executable.parent() {
+            development_roots.push(parent.to_path_buf());
+        }
+    }
+    for root in development_roots {
+        for project_dir in root.ancestors() {
+            let development_python = project_dir
+                .join(".tools")
+                .join("pp-structure")
+                .join("Scripts")
+                .join("python.exe");
+            let development_script = project_dir
+                .join("src-tauri")
+                .join("resources")
+                .join("pp-structure")
+                .join("pp_structure_layout.py");
+            if development_python.is_file() && development_script.is_file() {
+                return Ok((development_python, development_script));
+            }
+        }
+    }
+    Err("PP-StructureV3 är inte installerad på den här datorn ännu.".into())
+}
+
+async fn start_pp_structure_worker(
+    python: PathBuf,
+    script: PathBuf,
+    prefer_gpu: bool,
+) -> Result<PpStructureWorker, String> {
+    let requested_device = if prefer_gpu { "gpu:0" } else { "cpu" };
+    log::info!("vision: startar persistent PP-StructureV3-worker ({requested_device})");
+    let mut child = Command::new(&python)
+        .arg(&script)
+        .arg("--serve")
+        .env("LECTIO_PADDLE_DEVICE", requested_device)
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        // The official BOS mirror is consistently reachable from Windows and
+        // avoids an interactive HuggingFace availability probe at first use.
+        .env("PADDLE_PDX_MODEL_SOURCE", "BOS")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // The sidecar returns actionable failures through JSON-lines. Keeping
+        // stderr detached prevents framework warnings from blocking the pipe.
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Kunde inte starta PP-StructureV3: {error}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "PP-StructureV3 saknar inmatning.".to_string())?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "PP-StructureV3 saknar utmatning.".to_string())?;
+    let mut stdout = BufReader::new(stdout).lines();
+    let ready_line = time::timeout(Duration::from_secs(120), stdout.next_line())
+        .await
+        .map_err(|_| "PP-StructureV3 tog för lång tid att starta.".to_string())?
+        .map_err(|error| format!("PP-StructureV3 kunde inte starta: {error}"))?
+        .ok_or_else(|| "PP-StructureV3 avslutades under uppstart.".to_string())?;
+    let ready: PpStructureReady = serde_json::from_str(&ready_line)
+        .map_err(|_| "PP-StructureV3 skickade ett ogiltigt uppstartssvar.".to_string())?;
+    if ready.ready != Some(true) {
+        return Err(ready
+            .error
+            .unwrap_or_else(|| "PP-StructureV3 kunde inte initieras.".into()));
+    }
+    let device = ready.device.unwrap_or_else(|| "cpu".into());
+    let model = ready.model.unwrap_or_else(|| "okänd modell".into());
+    log::info!("vision: PP-Structure-worker redo med {model} på {device}");
+    Ok(PpStructureWorker {
+        python,
+        script,
+        child,
+        stdin,
+        stdout,
+        device,
+    })
+}
+
+async fn stop_pp_structure_worker(worker: &mut Option<PpStructureWorker>) {
+    if let Some(mut worker) = worker.take() {
+        let _ = worker.child.start_kill();
+        let _ = worker.child.wait().await;
+    }
+}
+
+#[tauri::command]
+async fn detect_slide_layout(
+    app: AppHandle,
+    input_path: String,
+) -> Result<SlideLayoutOutput, String> {
+    let input_path = PathBuf::from(input_path);
+    if !input_path.is_file() {
+        return Err("Slidebilden kunde inte läsas för layoutanalys.".into());
+    }
+    let (python, script) = pp_structure_sidecar(&app)?;
+    let prefer_gpu = nvidia_gpu_name().await.is_some();
+    let mut worker_slot = pp_structure_worker().lock().await;
+    let restart_worker = worker_slot
+        .as_ref()
+        .is_some_and(|worker| worker.python != python || worker.script != script);
+    if restart_worker {
+        stop_pp_structure_worker(&mut worker_slot).await;
+    }
+    if worker_slot.is_none() {
+        *worker_slot = Some(start_pp_structure_worker(python, script, prefer_gpu).await?);
+    }
+    let worker = worker_slot.as_mut().expect("worker inserted above");
+    let request = format!("{}\n", serde_json::json!({ "inputPath": input_path }));
+    let response = async {
+        worker.stdin.write_all(request.as_bytes()).await?;
+        worker.stdin.flush().await?;
+        worker.stdout.next_line().await
+    };
+    let response = match time::timeout(Duration::from_secs(120), response).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            stop_pp_structure_worker(&mut worker_slot).await;
+            return Err("PP-StructureV3 avslutades under layoutanalysen.".into());
+        }
+        Ok(Err(error)) => {
+            stop_pp_structure_worker(&mut worker_slot).await;
+            return Err(format!(
+                "PP-StructureV3 kunde inte läsa slidebilden: {error}"
+            ));
+        }
+        Err(_) => {
+            stop_pp_structure_worker(&mut worker_slot).await;
+            return Err("PP-StructureV3 tog för lång tid på den här sliden.".into());
+        }
+    };
+    let result: SlideLayoutOutput = serde_json::from_str(&response)
+        .map_err(|_| "PP-StructureV3 returnerade ett ogiltigt layoutresultat.".to_string())?;
+    if let Some(error) = result.error {
+        return Err(format!(
+            "PP-StructureV3 kunde inte analysera sliden: {error}"
+        ));
+    }
+    let box_count = result.boxes.as_ref().map_or(0, Vec::len);
+    log::info!(
+        "vision: PP-StructureV3 ({}) hittade {} bildregioner och {} OCR-rader",
+        worker.device,
+        box_count,
+        result.text_boxes.as_ref().map_or(0, Vec::len)
+    );
+    Ok(result)
+}
+
 #[tauri::command]
 async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus, String> {
-    let before = local_vision_status_inner().await;
-    if !before.ollama_installed {
-        return Err("Ollama är inte installerat. Installera Ollama först och försök igen.".into());
+    log::info!("vision: installerar direkt lokal Nvidia-bildmotor");
+    let job_id = "download:local-vision:moondream";
+    if nvidia_gpu_name().await.is_none() {
+        return Err("Automatiska bilder kräver en kompatibel Nvidia-GPU.".into());
     }
-    if before.model_installed {
+    let before = local_vision_status_inner(&app).await;
+    if before.ready {
         return Ok(before);
     }
-    let job_id = "download:local-vision:moondream";
-    emit_progress(
-        &app, job_id, "download", "Lokal bildbeskrivning", "downloading", "active", 0, None,
-        Some("Hämtar Moondream lokalt via Ollama…".into()),
-    );
-    let output = Command::new("ollama")
-        .args(["pull", "moondream"])
-        .output()
+    begin_download(job_id);
+    let result: Result<(), String> = async {
+        let (python, layout_script) = pp_structure_sidecar(&app)?;
+        let worker_script = layout_script
+            .parent()
+            .map(|path| path.join("local_vision_worker.py"))
+            .filter(|path| path.is_file())
+            .ok_or_else(|| "Lectios lokala Nvidia-bildmotor saknas i installationen. Installera senaste versionen av Lectio.".to_string())?;
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "preparing", "active", 0, Some(3), Some("Förbereder lokal Nvidia-bildmotor…".into()));
+        if download_is_cancelled(job_id) { return Err("Nedladdningen avbröts".into()); }
+        let output = Command::new(&python)
+            .args(["-m", "pip", "install", "--disable-pip-version-check", "--upgrade", LOCAL_VISION_PYTHON_PACKAGE])
+            .env("PYTHONUTF8", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|error| format!("Kunde inte starta Lectios bildmotor: {error}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
+            return Err(format!("Kunde inte installera den lokala Nvidia-bildmotorn. {detail}"));
+        }
+        if download_is_cancelled(job_id) { return Err("Nedladdningen avbröts".into()); }
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "verifying", "active", 2, Some(3), Some("Verifierar den lokala bildmotorn…".into()));
+        let output = Command::new(&python)
+            .arg(&worker_script)
+            .arg("--check")
+            .env("PYTHONUTF8", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map_err(|error| format!("Kunde inte verifiera bildmotorn: {error}"))?;
+        if !output.success() { return Err("Den lokala Nvidia-bildmotorn kunde inte verifieras.".into()); }
+        Ok(())
+    }.await;
+    match result {
+        Ok(()) => {
+            let status = local_vision_status_inner(&app).await;
+            if !status.ready {
+                return Err(
+                    "Bildmotorn hämtades men kunde inte verifieras. Försök igen."
+                        .into(),
+                );
+            }
+            emit_progress(
+                &app,
+                job_id,
+                "download",
+                "Automatiska bilder i Anki",
+                "complete",
+                "complete",
+                1,
+                Some(1),
+                Some("Den lokala Nvidia-bildmotorn är redo.".into()),
+            );
+            Ok(status)
+        }
+        Err(error) => {
+            emit_progress(
+                &app,
+                job_id,
+                "download",
+                "Automatiska bilder i Anki",
+                if download_is_cancelled(job_id) {
+                    "cancelled"
+                } else {
+                    "error"
+                },
+                if download_is_cancelled(job_id) {
+                    "cancelled"
+                } else {
+                    "error"
+                },
+                0,
+                None,
+                Some(error.clone()),
+            );
+            Err(error)
+        }
+    }
+}
+
+fn local_vision_sidecar(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let (python, layout_script) = pp_structure_sidecar(app)?;
+    let script = layout_script
+        .parent()
+        .map(|path| path.join("local_vision_worker.py"))
+        .filter(|path| path.is_file())
+        .ok_or_else(|| "Lectios lokala Nvidia-bildmotor saknas i installationen. Installera senaste versionen av Lectio.".to_string())?;
+    Ok((python, script))
+}
+
+async fn start_local_vision_worker(
+    python: PathBuf,
+    script: PathBuf,
+) -> Result<LocalVisionWorker, String> {
+    log::info!("vision: startar persistent direkt Nvidia-bildmotor");
+    let mut child = Command::new(&python)
+        .arg(&script)
+        .arg("--serve")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("Kunde inte starta den lokala Nvidia-bildmotorn: {error}"))?;
+    let stdin = child.stdin.take().ok_or_else(|| "Bildmotorn saknar inmatning.".to_string())?;
+    let stdout = child.stdout.take().ok_or_else(|| "Bildmotorn saknar utmatning.".to_string())?;
+    let mut stdout = BufReader::new(stdout).lines();
+    let line = time::timeout(Duration::from_secs(180), stdout.next_line())
         .await
-        .map_err(|error| format!("Kunde inte starta Ollama: {error}"))?;
-    if !output.status.success() {
-        let detail = process_output_excerpt(&output.stderr);
-        emit_progress(
-            &app, job_id, "download", "Lokal bildbeskrivning", "error", "error", 0, None,
-            Some(detail.clone()),
-        );
-        return Err(format!("Moondream kunde inte laddas ner: {detail}"));
+        .map_err(|_| "Bildmotorn tog för lång tid att starta första gången.".to_string())?
+        .map_err(|error| format!("Bildmotorn kunde inte starta: {error}"))?
+        .ok_or_else(|| "Bildmotorn avslutades under uppstart.".to_string())?;
+    let ready: LocalVisionReady = serde_json::from_str(&line)
+        .map_err(|_| "Bildmotorn skickade ett ogiltigt uppstartssvar.".to_string())?;
+    if ready.ready != Some(true) {
+        return Err(ready.error.unwrap_or_else(|| "Bildmotorn kunde inte initieras.".into()));
     }
-    let status = local_vision_status_inner().await;
-    if !status.model_installed {
-        return Err("Ollama slutförde hämtningen men modellen kunde inte verifieras.".into());
-    }
-    emit_progress(
-        &app, job_id, "download", "Lokal bildbeskrivning", "complete", "complete", 1, Some(1),
-        Some("Moondream är redo lokalt.".into()),
+    log::info!(
+        "vision: direkt bildmotor redo med {} på {}",
+        ready.model.unwrap_or_else(|| LOCAL_VISION_MODEL.into()),
+        ready.device.unwrap_or_else(|| "nvidia".into())
     );
-    Ok(status)
+    Ok(LocalVisionWorker { python, script, child, stdin, stdout })
+}
+
+async fn stop_local_vision_worker(worker: &mut Option<LocalVisionWorker>) {
+    if let Some(mut worker) = worker.take() {
+        let _ = worker.child.start_kill();
+        let _ = worker.child.wait().await;
+    }
+}
+
+#[tauri::command]
+async fn describe_local_visual(
+    app: AppHandle,
+    image_base64: String,
+    context: Option<String>,
+) -> Result<LocalVisionResult, String> {
+    if nvidia_gpu_name().await.is_none() {
+        return Err("Automatiska bilder kräver en kompatibel Nvidia-GPU.".into());
+    }
+    let bytes = STANDARD
+        .decode(image_base64.as_bytes())
+        .map_err(|_| "Bildutklippet kunde inte avkodas lokalt.".to_string())?;
+    if bytes.is_empty() { return Err("Bildutklippet saknar bilddata.".into()); }
+    let directory = app.path().app_data_dir().map_err(|error| error.to_string())?.join("vision-input");
+    fs::create_dir_all(&directory).await.map_err(|error| format!("Kunde inte skapa lokal bildcache: {error}"))?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let input = directory.join(format!("{nonce}.png"));
+    fs::write(&input, bytes).await.map_err(|error| format!("Kunde inte förbereda bildutklippet: {error}"))?;
+    let (python, script) = local_vision_sidecar(&app)?;
+    let mut slot = local_vision_worker().lock().await;
+    if slot.as_ref().is_some_and(|worker| worker.python != python || worker.script != script) {
+        stop_local_vision_worker(&mut slot).await;
+    }
+    if slot.is_none() { *slot = Some(start_local_vision_worker(python, script).await?); }
+    let worker = slot.as_mut().expect("worker inserted above");
+    let request = format!("{}\n", serde_json::json!({ "inputPath": input, "context": context.unwrap_or_default() }));
+    let response = async {
+        worker.stdin.write_all(request.as_bytes()).await?;
+        worker.stdin.flush().await?;
+        worker.stdout.next_line().await
+    };
+    let line = match time::timeout(Duration::from_secs(120), response).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => { stop_local_vision_worker(&mut slot).await; return Err("Bildmotorn avslutades under analysen.".into()); }
+        Ok(Err(error)) => { stop_local_vision_worker(&mut slot).await; return Err(format!("Bildmotorn kunde inte läsa svaret: {error}")); }
+        Err(_) => { stop_local_vision_worker(&mut slot).await; return Err("Bildmotorn tog för lång tid på den här bilden.".into()); }
+    };
+    let _ = fs::remove_file(&input).await;
+    let result: LocalVisionResult = serde_json::from_str(&line)
+        .map_err(|_| "Bildmotorn returnerade ett ogiltigt svar.".to_string())?;
+    if let Some(error) = result.error.as_ref() { return Err(format!("Bildmotorn kunde inte beskriva bilden: {error}")); }
+    if result.description.as_deref().unwrap_or_default().trim().is_empty() {
+        return Err("Bildmotorn gav ingen beskrivning.".into());
+    }
+    Ok(result)
 }
 
 #[derive(Serialize)]
@@ -850,15 +1490,26 @@ struct NvidiaMetrics {
 
 async fn nvidia_metrics() -> NvidiaMetrics {
     let output = Command::new("nvidia-smi")
-        .args(["--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"])
+        .args([
+            "--query-gpu=utilization.gpu,memory.used,memory.total",
+            "--format=csv,noheader,nounits",
+        ])
         .output()
         .await;
-    let Ok(output) = output else { return NvidiaMetrics::default() };
-    if !output.status.success() { return NvidiaMetrics::default(); }
+    let Ok(output) = output else {
+        return NvidiaMetrics::default();
+    };
+    if !output.status.success() {
+        return NvidiaMetrics::default();
+    }
     let values = String::from_utf8_lossy(&output.stdout)
         .lines()
         .next()
-        .map(|line| line.split(',').map(|value| value.trim().parse::<u32>().ok()).collect::<Vec<_>>())
+        .map(|line| {
+            line.split(',')
+                .map(|value| value.trim().parse::<u32>().ok())
+                .collect::<Vec<_>>()
+        })
         .unwrap_or_default();
     NvidiaMetrics {
         utilization_percent: values.first().and_then(|value| *value),
@@ -903,7 +1554,8 @@ async fn engine_status(app: &AppHandle) -> Result<LocalEngineStatus, String> {
         nvidia_detected: nvidia_name.is_some(),
         nvidia_name,
         nvidia_runtime_installed,
-        nvidia_runtime_ready: nvidia_runtime_installed && nvidia_runtime_is_ready(&runtime_dir).await,
+        nvidia_runtime_ready: nvidia_runtime_installed
+            && nvidia_runtime_is_ready(&runtime_dir).await,
         nvidia_runtime_size: directory_size(&runtime_dir),
         nvidia_vram_total_mb: metrics.vram_total_mb,
     })
@@ -927,7 +1579,9 @@ fn silence_wav(seconds: u32) -> Vec<u8> {
     bytes.extend_from_slice(&1_u16.to_le_bytes());
     bytes.extend_from_slice(&channels.to_le_bytes());
     bytes.extend_from_slice(&sample_rate.to_le_bytes());
-    bytes.extend_from_slice(&(sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8).to_le_bytes());
+    bytes.extend_from_slice(
+        &(sample_rate * u32::from(channels) * u32::from(bits_per_sample) / 8).to_le_bytes(),
+    );
     bytes.extend_from_slice(&(channels * bits_per_sample / 8).to_le_bytes());
     bytes.extend_from_slice(&bits_per_sample.to_le_bytes());
     bytes.extend_from_slice(b"data");
@@ -951,7 +1605,10 @@ async fn benchmark_local_engine(
     if !model_path.exists() {
         return Err(format!("Whisper {model} är inte nedladdad"));
     }
-    let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
     let runtime_dir = nvidia_runtime_dir(&app)?;
     let use_nvidia = acceleration == "nvidia";
     let whisper = if use_nvidia {
@@ -966,43 +1623,100 @@ async fn benchmark_local_engine(
     if !whisper.exists() {
         return Err("Whisper-motorn saknas i installationen".into());
     }
-    let work_dir = app.path().app_data_dir().map_err(|error| error.to_string())?
+    let work_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
         .join("benchmark-temp");
-    fs::create_dir_all(&work_dir).await.map_err(|error| error.to_string())?;
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    fs::create_dir_all(&work_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
     let wav = work_dir.join(format!("{stamp}.wav"));
     let output = work_dir.join(format!("{stamp}-result"));
     const SAMPLE_SECONDS: u32 = 20;
-    fs::write(&wav, silence_wav(SAMPLE_SECONDS)).await.map_err(|error| error.to_string())?;
-    let threads = std::thread::available_parallelism().map(|value| value.get()).unwrap_or(4)
-        .saturating_sub(1).clamp(2, if use_nvidia { 12 } else { 8 }).to_string();
+    fs::write(&wav, silence_wav(SAMPLE_SECONDS))
+        .await
+        .map_err(|error| error.to_string())?;
+    let threads = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4)
+        .saturating_sub(1)
+        .clamp(2, if use_nvidia { 12 } else { 8 })
+        .to_string();
     let started = std::time::Instant::now();
     let mut command = Command::new(&whisper);
-    command.current_dir(whisper.parent().unwrap_or(&work_dir))
-        .arg("-m").arg(&model_path).arg("-f").arg(&wav)
-        .arg("-otxt").arg("-nt").arg("-of").arg(&output)
-        .arg("-t").arg(threads).stdout(Stdio::piped()).stderr(Stdio::piped());
-    if use_nvidia { command.arg("-dev").arg("0").arg("-fa"); }
-    let result = command.output().await.map_err(|error| format!("Kunde inte starta Whisper-testet: {error}"))?;
+    command
+        .current_dir(whisper.parent().unwrap_or(&work_dir))
+        .arg("-m")
+        .arg(&model_path)
+        .arg("-f")
+        .arg(&wav)
+        .arg("-otxt")
+        .arg("-nt")
+        .arg("-of")
+        .arg(&output)
+        .arg("-t")
+        .arg(threads)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if use_nvidia {
+        command.arg("-dev").arg("0").arg("-fa");
+    }
+    let result = command
+        .output()
+        .await
+        .map_err(|error| format!("Kunde inte starta Whisper-testet: {error}"))?;
     let elapsed_seconds = started.elapsed().as_secs_f64();
     let metrics = nvidia_metrics().await;
-    let report = format!("{}{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr)).to_ascii_lowercase();
+    let report = format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    )
+    .to_ascii_lowercase();
     let gpu_used = report.contains("use gpu    = 1") || report.contains("use gpu = 1");
     let _ = fs::remove_file(&wav).await;
     let _ = fs::remove_file(output.with_extension("txt")).await;
     if !result.status.success() {
-        return Err(format!("Whisper-testet misslyckades: {}", process_output_excerpt(&result.stderr)));
+        return Err(format!(
+            "Whisper-testet misslyckades: {}",
+            process_output_excerpt(&result.stderr)
+        ));
     }
     if use_nvidia && !gpu_used {
         return Err("NVIDIA-testet startade men Whisper bekräftade inte GPU-användning".into());
     }
     Ok(LocalTranscriptionBenchmark {
-        model: model.into(), acceleration, realtime_factor: elapsed_seconds / f64::from(SAMPLE_SECONDS),
-        duration_seconds: f64::from(SAMPLE_SECONDS), elapsed_seconds, gpu_used,
-        gpu_utilization_percent: if use_nvidia { metrics.utilization_percent } else { None },
-        vram_used_mb: if use_nvidia { metrics.vram_used_mb } else { None },
-        vram_total_mb: if use_nvidia { metrics.vram_total_mb } else { None },
-        measured_at: SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_secs().to_string(),
+        model: model.into(),
+        acceleration,
+        realtime_factor: elapsed_seconds / f64::from(SAMPLE_SECONDS),
+        duration_seconds: f64::from(SAMPLE_SECONDS),
+        elapsed_seconds,
+        gpu_used,
+        gpu_utilization_percent: if use_nvidia {
+            metrics.utilization_percent
+        } else {
+            None
+        },
+        vram_used_mb: if use_nvidia {
+            metrics.vram_used_mb
+        } else {
+            None
+        },
+        vram_total_mb: if use_nvidia {
+            metrics.vram_total_mb
+        } else {
+            None
+        },
+        measured_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| error.to_string())?
+            .as_secs()
+            .to_string(),
     })
 }
 
@@ -1425,6 +2139,7 @@ async fn transcribe_local(
     job_id: String,
     initial_prompt: Option<String>,
 ) -> Result<String, String> {
+    log::info!("transcription: startar lokal Whisper med modell={model}");
     begin_transcription(&job_id);
     let label = "Lokal transkribering";
     emit_progress(
@@ -1502,56 +2217,186 @@ async fn transcribe_local(
     fs::create_dir_all(&work_dir)
         .await
         .map_err(|error| error.to_string())?;
-    let stamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| error.to_string())?
-        .as_millis();
+    // The frontend creates a fresh temporary input path for every attempt.
+    // Use a streamed content hash instead, so retries can resume safely.
+    let fingerprint = transcription_source_fingerprint(&input).await?;
+    let prompt_fingerprint = format!(
+        "{:x}",
+        Sha256::digest(
+            format!("{model}:{}:{}", language.as_deref().unwrap_or("auto"), initial_prompt.as_deref().unwrap_or(""))
+                .as_bytes()
+        )
+    );
     // Keep all temporary output for one invocation together. Besides avoiding
     // collisions between concurrent transcriptions, this lets us safely discover
     // JSON output from Whisper builds with slightly different naming behaviour.
-    let run_dir = work_dir.join(stamp.to_string());
+    let run_dir = work_dir.join(format!("{fingerprint}-{prompt_fingerprint}"));
     fs::create_dir_all(&run_dir)
         .await
         .map_err(|error| format!("Kunde inte skapa tillfällig transkriptionsmapp: {error}"))?;
     let wav = run_dir.join("input.wav");
     let output_prefix = run_dir.join("result");
-    let converted = Command::new(&ffmpeg)
-        .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
-        .arg(&input)
-        .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
-        .arg(&wav)
-        .output()
-        .await
-        .map_err(|error| {
-            format!(
-                "Kunde inte starta FFmpeg ({}) för {}: {error}",
-                ffmpeg.display(),
-                input.display()
-            )
-        })?;
-    if !converted.status.success() {
+    if !wav.is_file() {
+        let converted = Command::new(&ffmpeg)
+            .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
+            .arg(&input)
+            .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+            .arg(&wav)
+            .output()
+            .await
+            .map_err(|error| {
+                format!(
+                    "Kunde inte starta FFmpeg ({}) för {}: {error}",
+                    ffmpeg.display(),
+                    input.display()
+                )
+            })?;
+        if !converted.status.success() {
+            let _ = fs::remove_dir_all(&run_dir).await;
+            emit_progress(
+                &app,
+                &job_id,
+                "transcription",
+                label,
+                "error",
+                "error",
+                0,
+                None,
+                Some("Ljudkonvertering misslyckades.".into()),
+            );
+            return Err(format!(
+                "Ljudkonvertering misslyckades: {}",
+                String::from_utf8_lossy(&converted.stderr)
+            ));
+        }
+    }
+    if transcription_is_cancelled(&job_id) {
         let _ = fs::remove_dir_all(&run_dir).await;
+        finish_transcription(&job_id);
         emit_progress(
             &app,
             &job_id,
             "transcription",
             label,
-            "error",
-            "error",
+            "cancelled",
+            "cancelled",
             0,
             None,
-            Some("Ljudkonvertering misslyckades.".into()),
+            Some("Transkriberingen avbröts.".into()),
         );
-        return Err(format!(
-            "Ljudkonvertering misslyckades: {}",
-            String::from_utf8_lossy(&converted.stderr)
-        ));
+        return Err("TRANSCRIPTION_CANCELLED".into());
     }
-    if transcription_is_cancelled(&job_id) {
+    let whisper_language = language.clone().unwrap_or_else(|| "auto".into());
+    let total_millis = wav_duration_millis(&wav).await.unwrap_or(0);
+    if total_millis >= LONG_TRANSCRIPTION_THRESHOLD_MILLIS {
+        let chunk_count = total_millis.div_ceil(LONG_TRANSCRIPTION_CHUNK_MILLIS) as usize;
+        let chunks_dir = run_dir.join("chunks");
+        fs::create_dir_all(&chunks_dir)
+            .await
+            .map_err(|error| format!("Kunde inte skapa transkriptionsdelar: {error}"))?;
+        let manifest = serde_json::json!({
+            "version": 1,
+            "source": fingerprint,
+            "model": model,
+            "language": whisper_language,
+            "totalMillis": total_millis,
+            "chunkMillis": LONG_TRANSCRIPTION_CHUNK_MILLIS,
+            "overlapMillis": LONG_TRANSCRIPTION_OVERLAP_MILLIS,
+        });
+        let _ = fs::write(run_dir.join("resume.json"), manifest.to_string()).await;
+        emit_progress(
+            &app, &job_id, "transcription", label, "transcribing", "active", 0,
+            Some(total_millis),
+            Some(format!("Delar upp lång inspelning i {chunk_count} säkra delar…")),
+        );
+        let mut merged = Vec::new();
+        for index in 0..chunk_count {
+            if transcription_is_cancelled(&job_id) {
+                // Keep completed JSON and the converted WAV. A retry with the
+                // same audio, model and glossary resumes at the missing part.
+                finish_transcription(&job_id);
+                emit_progress(
+                    &app, &job_id, "transcription", label, "cancelled", "cancelled",
+                    index as u64 * LONG_TRANSCRIPTION_CHUNK_MILLIS, Some(total_millis),
+                    Some("Transkriberingen avbröts. Klara delar sparas för återupptagning.".into()),
+                );
+                return Err("TRANSCRIPTION_CANCELLED".into());
+            }
+            let base_start = index as u64 * LONG_TRANSCRIPTION_CHUNK_MILLIS;
+            let start = if index == 0 {
+                0
+            } else {
+                base_start.saturating_sub(LONG_TRANSCRIPTION_OVERLAP_MILLIS)
+            };
+            let length = (LONG_TRANSCRIPTION_CHUNK_MILLIS
+                + if index == 0 { 0 } else { LONG_TRANSCRIPTION_OVERLAP_MILLIS })
+                .min(total_millis.saturating_sub(start));
+            let chunk_dir = chunks_dir.join(format!("part-{index:04}"));
+            fs::create_dir_all(&chunk_dir)
+                .await
+                .map_err(|error| format!("Kunde inte skapa ljuddel: {error}"))?;
+            let chunk_wav = chunk_dir.join("input.wav");
+            let chunk_json = chunk_dir.join("complete.json");
+            let raw = if chunk_json.is_file() {
+                fs::read_to_string(&chunk_json)
+                    .await
+                    .map_err(|error| format!("Kunde inte läsa sparad transkriptionsdel: {error}"))?
+            } else {
+                if !chunk_wav.is_file() {
+                    let chunked = Command::new(&ffmpeg)
+                        .args(["-hide_banner", "-loglevel", "error", "-y", "-ss"])
+                        .arg(format!("{:.3}", start as f64 / 1_000.0))
+                        .arg("-t")
+                        .arg(format!("{:.3}", length as f64 / 1_000.0))
+                        .arg("-i")
+                        .arg(&wav)
+                        .args(["-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"])
+                        .arg(&chunk_wav)
+                        .output()
+                        .await
+                        .map_err(|error| format!("Kunde inte förbereda ljuddel {}: {error}", index + 1))?;
+                    if !chunked.status.success() {
+                        return Err(format!(
+                            "Kunde inte förbereda ljuddel {}: {}",
+                            index + 1,
+                            String::from_utf8_lossy(&chunked.stderr)
+                        ));
+                    }
+                }
+                let prefix = chunk_dir.join("result");
+                let raw = transcribe_whisper_chunk(
+                    &app, &job_id, label, &whisper, &whisper_dir, &model_path,
+                    &chunk_wav, &prefix, &whisper_language, initial_prompt.as_deref(), use_nvidia,
+                    start, total_millis, index + 1, chunk_count,
+                ).await?;
+                // Atomic enough for a single-process queue: only write after a
+                // complete, parseable Whisper result exists.
+                fs::write(&chunk_json, &raw)
+                    .await
+                    .map_err(|error| format!("Kunde inte spara transkriptionsdel: {error}"))?;
+                raw
+            };
+            merge_chunk_transcript(
+                &mut merged,
+                &raw,
+                start,
+                if index == 0 { 0 } else { base_start },
+            )?;
+            emit_progress(
+                &app, &job_id, "transcription", label, "transcribing", "active",
+                (base_start + LONG_TRANSCRIPTION_CHUNK_MILLIS).min(total_millis), Some(total_millis),
+                Some(format!("Transkriberade del {} av {}…", index + 1, chunk_count)),
+            );
+        }
+        let result = serde_json::json!({ "transcription": merged }).to_string();
+        let _ = fs::remove_file(&input).await;
         let _ = fs::remove_dir_all(&run_dir).await;
         finish_transcription(&job_id);
-        emit_progress(&app, &job_id, "transcription", label, "cancelled", "cancelled", 0, None, Some("Transkriberingen avbröts.".into()));
-        return Err("TRANSCRIPTION_CANCELLED".into());
+        emit_progress(
+            &app, &job_id, "transcription", label, "complete", "complete", total_millis,
+            Some(total_millis), Some("Transkriptet är klart.".into()),
+        );
+        return Ok(result);
     }
     let cores = std::thread::available_parallelism()
         .map(|value| value.get())
@@ -1831,35 +2676,72 @@ struct OptimizedAudio {
 /// Re-encodes a local recording for compact archival. The caller owns both
 /// input and output cleanup, so a failed conversion can never replace audio.
 #[tauri::command]
-async fn optimize_audio_for_storage(app: AppHandle, input_path: String) -> Result<OptimizedAudio, String> {
-    let app_data = app.path().app_data_dir().map_err(|error| error.to_string())?;
+async fn optimize_audio_for_storage(
+    app: AppHandle,
+    input_path: String,
+) -> Result<OptimizedAudio, String> {
+    let app_data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     let input = PathBuf::from(&input_path);
     if !input.starts_with(&app_data) || !input.is_file() {
         return Err("Ljudfilen kunde inte hittas i Lectios lokala lagring".into());
     }
-    let resource_dir = app.path().resource_dir().map_err(|error| error.to_string())?;
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| error.to_string())?;
     let ffmpeg = resource_dir.join("ffmpeg").join("ffmpeg.exe");
     if !ffmpeg.exists() {
         return Err("FFmpeg saknas i Lectios installation".into());
     }
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| error.to_string())?.as_millis();
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis();
     let output_dir = app_data.join("audio-optimisation");
-    fs::create_dir_all(&output_dir).await.map_err(|error| error.to_string())?;
+    fs::create_dir_all(&output_dir)
+        .await
+        .map_err(|error| error.to_string())?;
     let output = output_dir.join(format!("{stamp}.m4a"));
     let result = Command::new(&ffmpeg)
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(&input)
-        .args(["-map", "0:a:0", "-vn", "-ac", "1", "-ar", "32000", "-c:a", "aac", "-b:a", "64k", "-movflags", "+faststart"])
+        .args([
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-ac",
+            "1",
+            "-ar",
+            "32000",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "64k",
+            "-movflags",
+            "+faststart",
+        ])
         .arg(&output)
         .output()
         .await
         .map_err(|error| format!("Kunde inte starta ljudkonverteraren: {error}"))?;
     if !result.status.success() || !output.is_file() {
         let _ = fs::remove_file(&output).await;
-        return Err(format!("Ljudoptimering misslyckades: {}", String::from_utf8_lossy(&result.stderr)));
+        return Err(format!(
+            "Ljudoptimering misslyckades: {}",
+            String::from_utf8_lossy(&result.stderr)
+        ));
     }
-    let bytes = fs::metadata(&output).await.map_err(|error| error.to_string())?.len();
-    Ok(OptimizedAudio { path: output.to_string_lossy().into_owned(), bytes })
+    let bytes = fs::metadata(&output)
+        .await
+        .map_err(|error| error.to_string())?
+        .len();
+    Ok(OptimizedAudio {
+        path: output.to_string_lossy().into_owned(),
+        bytes,
+    })
 }
 
 /// Converts oversized recordings into conservative, provider-safe API chunks.
@@ -1953,6 +2835,32 @@ async fn prepare_api_audio(app: AppHandle, input_path: String) -> Result<Vec<Str
         .collect())
 }
 
+#[cfg(test)]
+mod transcription_tests {
+    use super::*;
+
+    #[test]
+    fn merge_chunk_transcript_only_removes_identical_overlap_segments() {
+        let mut merged = Vec::new();
+        merge_chunk_transcript(
+            &mut merged,
+            r#"{"transcription":[{"text":"Första raden","offsets":{"from":0,"to":3000}},{"text":"Gränsrad","offsets":{"from":1196000,"to":1200000}}]}"#,
+            0,
+            0,
+        )
+        .unwrap();
+        merge_chunk_transcript(
+            &mut merged,
+            r#"{"transcription":[{"text":"Gränsrad","offsets":{"from":0,"to":3000}},{"text":"Ny rad","offsets":{"from":5000,"to":8000}}]}"#,
+            1_195_000,
+            1_200_000,
+        )
+        .unwrap();
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[2].pointer("/offsets/from").and_then(|value| value.as_u64()), Some(1_200_000));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
@@ -1986,19 +2894,19 @@ pub fn run() {
             remove_local_model,
             local_vision_status,
             install_local_vision_model,
+            describe_local_visual,
+            detect_slide_layout,
             open_anki_desktop,
             transcribe_local,
             prepare_api_audio,
             optimize_audio_for_storage
         ])
         .setup(|app| {
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .build(),
+            )?;
             Ok(())
         })
         .run(tauri::generate_context!())

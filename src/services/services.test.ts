@@ -26,6 +26,7 @@ import {
   cardResponseErrorMessage,
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
+import { parseVisionResult } from "./localVision";
 import {
   hasClozeMarkup,
   lectureDeckName,
@@ -48,7 +49,12 @@ import {
   estimateTranscriptionCost,
   formatTranscriptionCost,
 } from "./transcriptionCost";
-import { applySyncOperations, createSyncOperations } from "./syncV2";
+import {
+  applySyncOperations,
+  createSyncOperations,
+  findSyncConflicts,
+  sharedSnapshot,
+} from "./syncV2";
 import {
   audioFingerprint,
   audioMimeType,
@@ -80,6 +86,10 @@ import {
 } from "./libraryBackup";
 import { extractPptxImages } from "./pptx";
 import { zipSync } from "fflate";
+import {
+  fallbackModelOptions,
+  fetchProviderModelOptions,
+} from "./modelCatalog";
 
 describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
@@ -206,6 +216,13 @@ describe("PowerPoint-bilder", () => {
 });
 
 describe("lokal bildbeskrivning", () => {
+  it("läser JSON även när den lokala runtime-motorn skriver extra konsoltext", () => {
+    expect(parseVisionResult("llama: loading…\nSvara JSON: {\"description\":\"kort beskrivning\",\"keywords\":[\"nyckelord\"]}\n{\"description\":\"Anatomisk bild på prostata och bäckenbotten\",\"keywords\":[\"prostata\"]}\nllama: done")).toEqual({
+      description: "Anatomisk bild på prostata och bäckenbotten",
+      keywords: ["prostata"],
+    });
+  });
+
   it("föredrar cachead lokal vision utan att ändra kandidatens källa", () => {
     expect(visualCandidateDescription({
       id: "visual-1",
@@ -714,6 +731,43 @@ describe("Sync v2", () => {
     ]);
     expect(merged.markers).toEqual([]);
   });
+
+  it("ger samma merge oavsett i vilken ordning två enheter laddar ner operationer", () => {
+    const base = snapshot("Bas");
+    const pc = createSyncOperations(
+      base,
+      { ...base, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } },
+      { libraryId: "library", deviceId: "pc", nextSequence: 1, at: "2026-09-07T10:00:00Z" },
+    );
+    const laptop = createSyncOperations(
+      base,
+      { ...base, markers: [{ id: "m", lectureId: "lecture", time: 1, note: "Laptop", createdAt: "" }] },
+      { libraryId: "library", deviceId: "laptop", nextSequence: 1, at: "2026-09-07T10:01:00Z" },
+    );
+    const forward = applySyncOperations(base, [...pc.operations, ...laptop.operations]);
+    const reverse = applySyncOperations(base, [...laptop.operations, ...pc.operations]);
+    expect(reverse).toEqual(forward);
+  });
+
+  it("utelämnar enhetslokala inställningar från den delade snapshoten", () => {
+    const local = snapshot("Bas");
+    local.settings = { cloudSync: { remotePath: "Privat", lastSyncedAt: "nu" } } as AppSettings;
+    expect(sharedSnapshot(local).settings).toEqual({});
+    expect(local.settings.cloudSync?.remotePath).toBe("Privat");
+  });
+
+  it("rapporterar bara samma-fält-kollisioner, inte oberoende ändringar", () => {
+    const base = snapshot("Bas");
+    const local = createSyncOperations(base, snapshot("PC"), {
+      libraryId: "library", deviceId: "pc", nextSequence: 1,
+    });
+    const remote = createSyncOperations(base, snapshot("Laptop"), {
+      libraryId: "library", deviceId: "laptop", nextSequence: 1,
+    });
+    expect(findSyncConflicts(local.operations, remote.operations)).toEqual([
+      { collection: "lectures", entityId: "lecture", field: "notes" },
+    ]);
+  });
 });
 
 describe("biblioteksträd", () => {
@@ -1009,6 +1063,34 @@ describe("kortformat", () => {
   it("erbjuder modellförslag men lämnar utrymme för egna modell-ID:n", () => {
     expect(aiModelSuggestions.openai).toContain("gpt-4.1-mini");
     expect(aiModelSuggestions.custom).toEqual([]);
+    expect(fallbackModelOptions("groq")[0]?.tier).toBe("budget");
+  });
+
+  it("använder lokal modellkatalog utan nyckel och läser Groqs modellmetadata vid behov", async () => {
+    const local = await fetchProviderModelOptions("openai", null, "");
+    expect(local.source).toBe("fallback");
+    expect(local.models.map((model) => model.id)).toContain("gpt-4.1-mini");
+
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "openai/gpt-oss-20b" },
+            { id: "whisper-large-v3" },
+            { id: "qwen/qwen3-32b" },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const remote = await fetchProviderModelOptions(
+      "groq",
+      "testnyckel",
+      "https://api.groq.com/openai/v1",
+    );
+    expect(remote.source).toBe("provider");
+    expect(remote.models.map((model) => model.id)).toContain("qwen/qwen3-32b");
+    expect(remote.models.map((model) => model.id)).not.toContain("whisper-large-v3");
   });
 
   it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {
@@ -1284,6 +1366,49 @@ describe("kortformat", () => {
       note: {
         fields: {
           Back: expect.stringContaining('<img src="lectio-slide.png">'),
+        },
+      },
+    });
+  });
+
+  it("lägger även en vald slidebild i Cloze-kortets Extra-fält", async () => {
+    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(String(init.body)) as {
+          action: string;
+          params: Record<string, unknown>;
+        };
+        requests.push(body);
+        const result = body.action === "modelFieldNames" ? ["Text", "Extra"] : 457;
+        return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+      }),
+    );
+    await syncCard(
+      "http://127.0.0.1:8765",
+      "Kirurgi - Lectio",
+      {
+        id: "cloze-with-slide",
+        lectureId: "lecture",
+        type: "cloze",
+        front: "Akut buk kräver {{c1::snabb bedömning}}.",
+        back: "Viktig princip.",
+        tags: [],
+        status: "approved",
+      },
+      { filename: "lectio-crop.png", data: "base64-data", caption: "Bild från slide 2" },
+    );
+    expect(requests.map((request) => request.action)).toEqual([
+      "storeMediaFile",
+      "modelFieldNames",
+      "addNote",
+    ]);
+    expect(requests[2].params).toMatchObject({
+      note: {
+        modelName: "Cloze",
+        fields: {
+          Extra: expect.stringContaining('<img src="lectio-crop.png">'),
         },
       },
     });

@@ -37,9 +37,17 @@ export type SyncOperation = {
   patch?: Record<string, unknown>;
 };
 
+export type SyncConflict = {
+  collection: SyncOperation["collection"];
+  entityId: string;
+  field: string;
+};
+
 export type SyncV2State = {
   id: string;
   protocol: 2;
+  /** Version of the operation payload independently of the transport. */
+  schemaVersion: 1;
   libraryId: string;
   deviceId: string;
   nextSequence: number;
@@ -243,6 +251,38 @@ export function applySyncOperations(
     else list.push(next as never);
   }
   return result;
+}
+
+/**
+ * Only simultaneous writes to the same field are worth surfacing. Independent
+ * edits merge field-by-field; an entity deletion remains a deterministic
+ * tombstone rather than a prompt that could resurrect study material.
+ */
+export function findSyncConflicts(
+  local: SyncOperation[],
+  remote: SyncOperation[],
+): SyncConflict[] {
+  const conflicts = new Map<string, SyncConflict>();
+  for (const left of local) {
+    if (left.kind !== "upsert") continue;
+    for (const right of remote) {
+      if (
+        right.kind !== "upsert" ||
+        left.collection !== right.collection ||
+        left.entityId !== right.entityId
+      ) continue;
+      for (const field of Object.keys(left.patch ?? {})) {
+        if (
+          field in (right.patch ?? {}) &&
+          stable(left.patch?.[field]) !== stable(right.patch?.[field])
+        ) {
+          const key = `${left.collection}:${left.entityId}:${field}`;
+          conflicts.set(key, { collection: left.collection, entityId: left.entityId, field });
+        }
+      }
+    }
+  }
+  return [...conflicts.values()];
 }
 
 /** Keeps the v2 wire format free from all device-local preferences. */

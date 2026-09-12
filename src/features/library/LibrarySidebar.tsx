@@ -77,6 +77,7 @@ export function LibrarySidebar() {
     markers,
     cards,
     selectedId,
+    activeView,
     settings,
     updateSettings,
     addNode,
@@ -104,6 +105,7 @@ export function LibrarySidebar() {
   const courses = sortNodes(
     nodes.filter((node) => node.type === "course" && node.parentId === root?.id),
   );
+  const hidden = activeView !== "workspace" && activeView !== "cards";
 
   const results = useMemo(() => {
     if (query.trim().length < 2) return [];
@@ -270,7 +272,13 @@ export function LibrarySidebar() {
   if (settings.librarySidebarCollapsed) return null;
 
   return (
-    <aside className="flex h-full w-[286px] shrink-0 flex-col border-r border-slate-200/80 bg-white">
+    <aside
+      className={cn(
+        hidden
+          ? "hidden"
+          : "flex h-full w-[286px] shrink-0 flex-col border-r border-border bg-card",
+      )}
+    >
       <div
         className={cn(
           "flex h-16 items-center justify-between px-6 transition-colors",
@@ -280,7 +288,7 @@ export function LibrarySidebar() {
         onDragOver={(event) => root && onDragOver(event, root.id)}
         onDrop={(event) => root && onDrop(event, root.id)}
       >
-        <div className="text-sm font-semibold text-slate-800">
+        <div className="text-sm font-semibold text-foreground">
           {dropTargetId === root?.id ? "Släpp kursen här" : "Mina studier"}
         </div>
         <div className="flex items-center gap-1">
@@ -308,16 +316,16 @@ export function LibrarySidebar() {
       </div>
 
       <div className="relative px-3">
-        <Search className="absolute left-6 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+        <Search className="absolute left-6 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           ref={searchInput}
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Sök i allt material"
-          className="h-9 border-transparent bg-slate-100 pl-9 focus:bg-white"
+          className="h-9 border-transparent bg-muted pl-9 focus:bg-background"
         />
         {query.length >= 2 && (
-          <div className="absolute left-3 right-3 top-11 z-30 max-h-72 overflow-auto rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+          <div className="absolute left-3 right-3 top-11 z-30 max-h-72 overflow-auto rounded-xl border border-border bg-card p-1.5 shadow-xl">
             {results.length ? (
               results.map((result, index) => {
                 const Icon = iconByType[result.node.type] ?? FileText;

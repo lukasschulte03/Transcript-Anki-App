@@ -3,6 +3,7 @@ import {
   lazy,
   Suspense,
   useEffect,
+  useRef,
   useState,
 } from "react";
 import { useAppStore } from "./core/store";
@@ -13,6 +14,12 @@ import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { FeedbackDialog } from "./components/FeedbackDialog";
+import { toast } from "./services/feedbackToast";
+import {
+  createAutomaticLibraryCheckpoint,
+  recoverEmptyLibrary,
+} from "./services/librarySafetyNet";
+import { markStartup } from "./services/startupMetrics";
 
 const LibrarySidebar = lazy(() =>
   import("./features/library/LibrarySidebar").then((module) => ({
@@ -66,11 +73,39 @@ function ViewLoader() {
   );
 }
 
+function scheduleIdleWork(work: () => void, timeout = 1_500) {
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
+  if (idleWindow.requestIdleCallback) {
+    const id = idleWindow.requestIdleCallback(work, { timeout });
+    return () => idleWindow.cancelIdleCallback?.(id);
+  }
+  const id = window.setTimeout(work, timeout);
+  return () => window.clearTimeout(id);
+}
+
 export default function App() {
-  const { nodes, selectedId, activeView, settings, jobs } = useAppStore();
+  const {
+    nodes,
+    lectures,
+    segments,
+    markers,
+    cards,
+    selectedId,
+    activeView,
+    settings,
+    jobs,
+  } = useAppStore();
   const selected = nodes.find((n) => n.id === selectedId) ?? nodes[0];
-  const libraryOperation = jobs.find(
-    (job) => job.kind === "library" && job.status === "active",
+  // Only import/export locks the library. Background work such as slide-image
+  // indexing must leave the workspace usable and report through ProgressCenter.
+  const blockingLibraryOperation = jobs.find(
+    (job) =>
+      job.kind === "library" &&
+      job.status === "active" &&
+      ["importing", "exporting", "packing"].includes(job.phase),
   );
   const transcriptionActive = jobs.some(
     (job) => job.kind === "transcription" && job.status === "active",
@@ -78,11 +113,55 @@ export default function App() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | undefined>();
+  const [recoveryChecked, setRecoveryChecked] = useState(false);
+  const showLibrarySidebar =
+    activeView === "workspace" || activeView === "cards";
+  // Keep the tree mounted after its first use. Hidden views reclaim the full
+  // workspace while the tree keeps its expanded state and returns instantly.
+  const librarySidebarWasMounted = useRef(showLibrarySidebar);
+  if (showLibrarySidebar) librarySidebarWasMounted.current = true;
   useEffect(() => {
-    void import("./services/batchActions").then(({ resumeBatchQueue }) =>
-      resumeBatchQueue(),
-    );
+    markStartup("app-mounted");
+    return scheduleIdleWork(() => {
+      markStartup("batch-queue-resume");
+      void import("./services/batchActions").then(({ resumeBatchQueue }) =>
+        resumeBatchQueue(),
+      );
+    });
   }, []);
+  useEffect(() => {
+    let active = true;
+    // First paint and normal navigation must never wait for a potentially
+    // large IndexedDB recovery scan. The check still runs promptly when the
+    // event loop is idle and remains unable to overwrite a non-empty library.
+    const cancelIdleWork = scheduleIdleWork(() => {
+      markStartup("library-safety-check");
+      void recoverEmptyLibrary(
+        useAppStore.getState(),
+        useAppStore.getState().restoreLibraryBackup,
+      ).then((backup) => {
+        if (!active) return;
+        if (backup)
+          toast.success(
+            `Lectio återställde automatiskt din senaste lokala säkerhetskopia från ${new Date(backup.createdAt).toLocaleString("sv-SE")}.`,
+          );
+        setRecoveryChecked(true);
+      }).catch(() => {
+        if (active) setRecoveryChecked(true);
+      });
+    }, 2_500);
+    return () => {
+      active = false;
+      cancelIdleWork();
+    };
+  }, []);
+  useEffect(() => {
+    if (!recoveryChecked) return;
+    const timer = window.setTimeout(() => {
+      void createAutomaticLibraryCheckpoint(useAppStore.getState());
+    }, 2_000);
+    return () => window.clearTimeout(timer);
+  }, [recoveryChecked, nodes, lectures, segments, markers, cards]);
   useEffect(() => {
     applyPalette(
       resolvePalette(settings.selectedPaletteId, settings.customPalettes),
@@ -125,6 +204,12 @@ export default function App() {
         } else if (key === "3") {
           event.preventDefault();
           useAppStore.getState().setActiveView("cards");
+        } else if (key === "4") {
+          event.preventDefault();
+          useAppStore.getState().setActiveView("inbox");
+        } else if (key === "5") {
+          event.preventDefault();
+          useAppStore.getState().setActiveView("super-actions");
         } else if (key === ",") {
           event.preventDefault();
           useAppStore.getState().setActiveView("settings");
@@ -180,7 +265,9 @@ export default function App() {
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <AppNavigation />
           <Suspense fallback={<ViewLoader />}>
-            {activeView !== "dashboard" && <LibrarySidebar />}
+            {librarySidebarWasMounted.current && (
+              <LibrarySidebar />
+            )}
             {activeView === "dashboard" ? (
               <Dashboard />
             ) : activeView === "cards" ? (
@@ -206,14 +293,14 @@ export default function App() {
           </Suspense>
         </div>
         <Toaster position="bottom-right" richColors closeButton />
-        {libraryOperation && (
+        {blockingLibraryOperation && (
           <div className="fixed inset-0 z-40 grid place-items-center bg-[color-mix(in_srgb,var(--palette-background)_88%,transparent)] p-6 backdrop-blur-[1px]">
             <div className="max-w-sm rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] px-5 py-4 text-center shadow-lg">
               <p className="text-sm font-semibold text-[var(--palette-text)]">
-                {libraryOperation.label}
+                {blockingLibraryOperation.label}
               </p>
               <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
-                {libraryOperation.detail ??
+                {blockingLibraryOperation.detail ??
                   "Biblioteket är tillfälligt låst för att skydda din data."}
               </p>
             </div>

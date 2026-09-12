@@ -1,3 +1,4 @@
+/* oxlint-disable react/set-state-in-effect, react-hooks/exhaustive-deps -- derived prompt state deliberately resets per source and uses an explicit dependency budget. */
 import { useEffect, useMemo, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
@@ -26,6 +27,7 @@ import {
   type Flashcard,
 } from "../../core/types";
 import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/EmptyState";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import {
@@ -48,11 +50,7 @@ import {
   withoutStructuralTags,
 } from "../../services/anki";
 import { openExternal } from "../../services/platform";
-import {
-  deleteCredential,
-  readCredential,
-  writeCredential,
-} from "../../services/credentials";
+import { useStoredCredential } from "../../hooks/useStoredCredential";
 import { toast } from "../../services/feedbackToast";
 import {
   chunkCardCeiling,
@@ -60,6 +58,7 @@ import {
   type GenerationChunk,
 } from "../../services/ankiChunking";
 import {
+  CARD_GENERATION_PRICE_CATALOG_VERSION,
   estimateCardGenerationCost,
   estimateCardOutputTokens,
   formatCardGenerationCost,
@@ -135,6 +134,7 @@ export function CardStudio() {
     markAnkiNoteDeletionError,
     updateSettings,
     inheritedContext,
+    setActiveView,
   } = useAppStore();
   const lecturesList = nodes.filter((n) => n.type === "lecture");
   const selectedNode = nodes.find((node) => node.id === selectedId);
@@ -185,9 +185,6 @@ export function CardStudio() {
   const [ankiHelpOpen, setAnkiHelpOpen] = useState(false);
   const [openingAnki, setOpeningAnki] = useState(false);
   const [response, setResponse] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [rememberApiKey, setRememberApiKey] = useState(true);
-  const [savedApiKey, setSavedApiKey] = useState(false);
   const [busy, setBusy] = useState(false);
   const [generationProgress, setGenerationProgress] = useState<{
     current: number;
@@ -198,22 +195,11 @@ export function CardStudio() {
     "all" | "generated" | "approved" | "synced"
   >("all");
   const credentialKey = `ai:${settings.aiProvider}`;
-  useEffect(() => {
-    let cancelled = false;
-    if (settings.aiMode !== "api") return;
-    void readCredential(credentialKey)
-      .then((secret) => {
-        if (cancelled) return;
-        setSavedApiKey(Boolean(secret));
-        if (secret) setApiKey(secret);
-      })
-      .catch(() => {
-        if (!cancelled) setSavedApiKey(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [credentialKey, settings.aiMode]);
+  const {
+    credential: apiKey,
+    configured: apiKeyConfigured,
+    loading: apiKeyLoading,
+  } = useStoredCredential(credentialKey, settings.aiMode === "api");
   const node = nodes.find((n) => n.id === lectureId);
   const lecture = lectures[lectureId];
   const moduleId = useMemo(
@@ -798,18 +784,11 @@ export function CardStudio() {
   };
   const generateApi = async () => {
     if (!apiKey) {
-      toast.error("Ange en API-nyckel för denna session");
+      toast.error("Lägg till en API-nyckel i Inställningar först");
       return;
     }
     setBusy(true);
     try {
-      if (rememberApiKey) {
-        await writeCredential(credentialKey, apiKey);
-        setSavedApiKey(true);
-      } else if (savedApiKey) {
-        await deleteCredential(credentialKey);
-        setSavedApiKey(false);
-      }
       const responses: string[] = [];
       for (const chunk of generationChunks) {
         setGenerationProgress({ current: chunk.index + 1, total: chunk.total });
@@ -1015,7 +994,6 @@ export function CardStudio() {
       <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
         <div>
           <h1 className="text-lg font-semibold text-slate-900">Anki-kort</h1>
-          <p className="text-xs text-slate-400">Generera, granska och synka</p>
         </div>
         <div className="flex items-center gap-2">
           {pendingSyncCount > 0 && (
@@ -1354,13 +1332,13 @@ export function CardStudio() {
             </div>
           </details>
           <div className="mb-4 flex items-center justify-between">
-            <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
+            <div className="flex gap-1 rounded-lg border border-border bg-card p-1">
               {(["all", "generated", "approved", "synced"] as const).map(
                 (f) => (
                   <button
                     key={f}
                     onClick={() => setFilter(f)}
-                    className={`rounded-md px-3 py-1.5 text-xs font-medium ${filter === f ? "bg-slate-900 text-white" : "text-slate-500 hover:bg-slate-50"}`}
+                    className={`rounded-md px-3 py-1.5 text-xs font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)] ${filter === f ? "bg-[var(--palette-primary)] text-[var(--palette-primary-foreground)]" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
                   >
                     {f === "all"
                       ? "Alla"
@@ -1373,7 +1351,7 @@ export function CardStudio() {
                 ),
               )}
             </div>
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-muted-foreground">
               {lectureCards.length} kort
             </span>
           </div>
@@ -1442,17 +1420,12 @@ export function CardStudio() {
               />
             ))}
             {!lectureCards.length && (
-              <div className="grid min-h-72 place-items-center rounded-xl border-2 border-dashed border-slate-200 bg-white/50 text-center">
-                <div>
-                  <FileJson className="mx-auto size-9 text-slate-300" />
-                  <p className="mt-3 text-sm font-semibold text-slate-600">
-                    Inga kort här ännu
-                  </p>
-                  <p className="mt-1 text-xs text-slate-400">
-                    Generera via copy/paste eller API.
-                  </p>
-                </div>
-              </div>
+              <EmptyState
+                icon={FileJson}
+                title="Inga kort här ännu"
+                description="Välj Generera för att skapa kort från föreläsningsmaterialet."
+                className="min-h-72 bg-card"
+              />
             )}
           </div>
         </main>
@@ -1572,10 +1545,16 @@ export function CardStudio() {
               </div>
             </>
           ) : (
-            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-              <div className="mb-3 text-xs text-slate-500">
-                {settings.aiProvider} · {settings.aiModel}. Hantera sparade
-                nycklar i Inställningar. Du kan också tillfälligt ersätta den här.
+            <div className="rounded-xl border border-border bg-muted/40 p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span>{settings.aiProvider} · {settings.aiModel}</span>
+                {apiKeyConfigured ? (
+                  <span className="font-medium text-[var(--palette-success)]">API-nyckel sparad</span>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={() => setActiveView("settings")}>
+                    Lägg till API-nyckel
+                  </Button>
+                )}
               </div>
               <div className="mb-3 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
                 <div className="font-medium text-foreground">
@@ -1589,6 +1568,11 @@ export function CardStudio() {
                     : ""}
                   . Beräknas lokalt innan inget material eller någon nyckel skickas.
                 </p>
+                {generationCostEstimate.priceSource === "local-catalog" && (
+                  <p className="mt-1">
+                    Pris från Lectios lokala referenskatalog ({CARD_GENERATION_PRICE_CATALOG_VERSION}); kontrollera alltid providerns faktiska pris före större körningar.
+                  </p>
+                )}
                 {!formattedGenerationCost && (
                   <p className="mt-1">
                     Lectio har ingen verifierad prisuppgift för vald modell. Du kan
@@ -1597,14 +1581,7 @@ export function CardStudio() {
                 )}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="API-nyckel"
-                  className="flex-1"
-                />
-                <Button onClick={generateApi} disabled={busy || !apiKey}>
+                <Button className="sm:ml-auto" onClick={generateApi} disabled={busy || !apiKeyConfigured || apiKeyLoading}>
                   {busy ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
@@ -1620,32 +1597,6 @@ export function CardStudio() {
                   Delarna bearbetas en i taget så att hela föreläsningen får plats.
                 </p>
               )}
-              <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={rememberApiKey}
-                    onChange={(event) =>
-                      setRememberApiKey(event.target.checked)
-                    }
-                  />
-                  Kom ihåg nyckeln säkert på den här datorn
-                </label>
-                {savedApiKey && (
-                  <button
-                    type="button"
-                    className="font-medium text-violet-700 hover:text-violet-900"
-                    onClick={async () => {
-                      await deleteCredential(credentialKey);
-                      setApiKey("");
-                      setSavedApiKey(false);
-                      toast.success("Den sparade API-nyckeln togs bort");
-                    }}
-                  >
-                    Glöm sparad nyckel
-                  </button>
-                )}
-              </div>
             </div>
           )}
           <div className="border-t border-slate-100 pt-4">

@@ -1,3 +1,4 @@
+/* oxlint-disable react/set-state-in-effect -- dialog state is synchronized from a newly supplied error. */
 import { useEffect, useMemo, useState } from "react";
 import { Bug, Download, LoaderCircle, Send, ShieldCheck } from "lucide-react";
 import { toast } from "../services/feedbackToast";
@@ -94,7 +95,7 @@ export function FeedbackDialog({
           />
             <span>
               <span className="block text-sm font-medium text-[var(--palette-text)]">Bifoga teknisk diagnostik</span>
-            <span className="mt-0.5 block text-xs leading-5 text-[var(--palette-text-muted)]">Appversion, Windows, GPU/Whisper-status, säkra jobbstatusar, senaste tekniska fel och felsökningsförslag.</span>
+            <span className="mt-0.5 block text-xs leading-5 text-[var(--palette-text-muted)]">Appversion, Windows, GPU/Whisper-status, säkra jobbstatusar och de senaste maskade systemloggarna. Ljud, slides och transkript ingår aldrig.</span>
             </span>
         </label>
         <div className="flex flex-wrap items-center justify-between gap-2">

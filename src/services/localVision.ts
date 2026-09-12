@@ -1,26 +1,40 @@
 import { invoke } from "@tauri-apps/api/core";
-import { isTauri, netFetch } from "./platform";
-
-export const LOCAL_VISION_MODEL = "moondream";
+import { logDiagnostic } from "./diagnosticLog";
+import { isTauri } from "./platform";
 
 export type LocalVisionStatus = {
-  ollamaInstalled: boolean;
+  nvidiaDetected: boolean;
+  nvidiaName: string | null;
+  nvidiaVramTotalMb: number | null;
+  runtimeInstalled: boolean;
   modelInstalled: boolean;
+  ready: boolean;
 };
 
 export type VisualDescriptionProvider = {
-  id: "local-ollama";
+  id: "local-nvidia";
   label: string;
-  describe(image: Blob, signal?: AbortSignal): Promise<{ description: string; keywords: string[] }>;
+  describe(
+    image: Blob,
+    signal?: AbortSignal,
+    context?: string,
+  ): Promise<{ description: string; keywords: string[] }>;
 };
 
 export async function getLocalVisionStatus(): Promise<LocalVisionStatus> {
-  if (!isTauri()) return { ollamaInstalled: false, modelInstalled: false };
+  if (!isTauri()) return {
+    nvidiaDetected: false,
+    nvidiaName: null,
+    nvidiaVramTotalMb: null,
+    runtimeInstalled: false,
+    modelInstalled: false,
+    ready: false,
+  };
   return invoke<LocalVisionStatus>("local_vision_status");
 }
 
 export async function installLocalVisionModel() {
-  if (!isTauri()) throw new Error("Lokal bildbeskrivning kräver desktopappen.");
+  if (!isTauri()) throw new Error("Automatiska bilder kräver desktopappen.");
   return invoke<LocalVisionStatus>("install_local_vision_model");
 }
 
@@ -32,42 +46,54 @@ const asBase64 = async (blob: Blob) => {
   return btoa(value);
 };
 
-const parseResult = (raw: string) => {
-  const normalized = raw.trim().replace(/^```json\s*|```$/gim, "");
-  try {
-    const parsed = JSON.parse(normalized) as { description?: unknown; keywords?: unknown };
-    const description = String(parsed.description ?? "").replace(/\s+/g, " ").trim();
-    const keywords = Array.isArray(parsed.keywords)
-      ? parsed.keywords.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 12)
-      : [];
-    if (description) return { description, keywords };
-  } catch {
-    // A concise plain-text fall-back is safer than throwing away a useful local result.
+export const parseVisionResult = (raw: string) => {
+  const stripped = raw.trim().replace(/^```json\s*|```$/gim, "");
+  // llama.cpp may echo the prompt, which itself contains our JSON schema. Scan
+  // every shallow object and prefer the final valid response instead of joining
+  // prompt text and model output into one invalid JSON string.
+  const objects = stripped.match(/\{[^{}]*\}/g) ?? [stripped];
+  for (const object of [...objects].reverse()) {
+    try {
+      const parsed = JSON.parse(object) as { description?: unknown; keywords?: unknown };
+      const description = String(parsed.description ?? "").replace(/\s+/g, " ").trim();
+      const keywords = Array.isArray(parsed.keywords)
+        ? parsed.keywords.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 12)
+        : [];
+      if (description) return { description: conciseDescription(description), keywords };
+    } catch {
+      // Keep searching: console output and an echoed schema are expected.
+    }
   }
-  return { description: normalized.replace(/\s+/g, " ").slice(0, 360), keywords: [] };
+  return { description: conciseDescription(stripped), keywords: [] };
 };
 
-export const localOllamaVisionProvider: VisualDescriptionProvider = {
-  id: "local-ollama",
-  label: "Lokal Moondream",
-  async describe(image, signal) {
-    const response = await netFetch("http://127.0.0.1:11434/api/generate", {
-      method: "POST",
-      signal,
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: LOCAL_VISION_MODEL,
-        stream: false,
-        format: "json",
-        options: { temperature: 0 },
-        prompt: "Beskriv endast bildens pedagogiskt viktiga innehåll på svenska. Gissa inte diagnoser eller detaljer som inte syns. Svara som JSON: {\\\"description\\\":\\\"kort beskrivning\\\",\\\"keywords\\\":[\\\"nyckelord\\\"]}.",
-        images: [await asBase64(image)],
-      }),
+/** The local model can be verbose; a short first sentence is enough as visual context for Anki. */
+function conciseDescription(value: string, limit = 240) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (clean.length <= limit) return clean;
+  const sentence = clean.slice(0, limit + 1).match(/^.*?[.!?](?:\s|$)/)?.[0];
+  if (sentence?.trim()) return sentence.trim();
+  const boundary = clean.lastIndexOf(" ", limit);
+  return `${clean.slice(0, boundary > 70 ? boundary : limit).trim()}…`;
+}
+
+export const localNvidiaVisionProvider: VisualDescriptionProvider = {
+  id: "local-nvidia",
+  label: "Automatisk lokal Nvidia-bildmotor",
+  async describe(image, signal, context = "") {
+    if (signal?.aborted) throw new DOMException("Avbruten", "AbortError");
+    if (!image.size) throw new Error("Bildutklippet saknar bilddata.");
+    const result = await invoke<{ description?: string; keywords?: string[] }>(
+      "describe_local_visual",
+      { imageBase64: await asBase64(image), context },
+    ).catch((error) => {
+      const message = `Den lokala Nvidia-bildmotorn kunde inte beskriva bilden: ${String(error)}`;
+      logDiagnostic("vision", message, { level: "error" });
+      throw new Error(message);
     });
-    if (!response.ok) throw new Error(`Den lokala visionsmotorn svarade ${response.status}.`);
-    const body = await response.json() as { response?: string };
-    const result = parseResult(String(body.response ?? ""));
-    if (!result.description) throw new Error("Den lokala visionsmodellen gav ingen beskrivning.");
-    return result;
+    if (signal?.aborted) throw new DOMException("Avbruten", "AbortError");
+    const parsed = parseVisionResult(JSON.stringify(result));
+    if (!parsed.description) throw new Error("Den lokala visionsmodellen gav ingen beskrivning.");
+    return parsed;
   },
 };

@@ -1,3 +1,4 @@
+/* oxlint-disable react/set-state-in-effect -- effects synchronize browser media devices, playback and local engine state. */
 import {
   useCallback,
   useEffect,
@@ -51,14 +52,11 @@ import {
 } from "../../services/transcriptionQueue";
 import { recommendLocalTranscription } from "../../services/transcriptionRecommendation";
 import {
+  TRANSCRIPTION_PRICE_CATALOG_VERSION,
   estimateTranscriptionCost,
   formatTranscriptionCost,
 } from "../../services/transcriptionCost";
-import {
-  deleteCredential,
-  readCredential,
-  writeCredential,
-} from "../../services/credentials";
+import { useStoredCredential } from "../../hooks/useStoredCredential";
 import { canRecoverRecording } from "../../services/recordingRecovery";
 import { inheritedGlossary } from "../../services/glossary";
 import {
@@ -114,12 +112,7 @@ export function AudioPanel({
           },
         ]
       : [];
-  }, [
-    lecture?.audioAssetId,
-    lecture?.audioDuration,
-    lecture?.audioName,
-    lecture?.audioParts,
-  ]);
+  }, [lecture]);
   const audioPartKey = audioParts.map((part) => part.assetId).join(":");
   const [activeAudioPart, setActiveAudioPart] = useState(0);
   // Keep just the playing part in renderer memory. Hydrating every split
@@ -184,9 +177,6 @@ export function AudioPanel({
     null,
   );
   const [downloading, setDownloading] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [rememberApiKey, setRememberApiKey] = useState(true);
-  const [savedApiKey, setSavedApiKey] = useState(false);
   const [savingRecording, setSavingRecording] = useState(false);
   const [optimizingAudio, setOptimizingAudio] = useState(false);
   const [optimizationResult, setOptimizationResult] = useState<{
@@ -205,6 +195,14 @@ export function AudioPanel({
   >("idle");
   const recorder = useRef<MediaRecorder | null>(null);
   const transcriptionCredentialKey = `transcription:${settings.transcriptionProvider === "groq" ? "groq" : "openai"}`;
+  const {
+    credential: apiKey,
+    configured: apiKeyConfigured,
+    loading: apiKeyLoading,
+  } = useStoredCredential(
+    transcriptionCredentialKey,
+    transcribeOpen && transcribeMode === "api",
+  );
   const recordingSessionId = useRef<string | null>(null);
   const chunkSequence = useRef(0);
   const chunkWriteQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -242,22 +240,6 @@ export function AudioPanel({
         refreshMicrophones,
       );
   }, [refreshMicrophones]);
-  useEffect(() => {
-    let cancelled = false;
-    if (!transcribeOpen || transcribeMode !== "api") return;
-    void readCredential(transcriptionCredentialKey)
-      .then((secret) => {
-        if (cancelled) return;
-        setSavedApiKey(Boolean(secret));
-        if (secret) setApiKey(secret);
-      })
-      .catch(() => {
-        if (!cancelled) setSavedApiKey(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [transcribeOpen, transcribeMode, transcriptionCredentialKey]);
   useEffect(
     () => () => {
       const activeRecorder = recorder.current;
@@ -676,15 +658,6 @@ export function AudioPanel({
     if (!audioParts.length || (transcribeMode === "api" && !apiKey)) return;
     const selectedMode = transcribeMode;
     const selectedApiKey = apiKey;
-    if (selectedMode === "api") {
-      if (rememberApiKey) {
-        await writeCredential(transcriptionCredentialKey, selectedApiKey);
-        setSavedApiKey(true);
-      } else if (savedApiKey) {
-        await deleteCredential(transcriptionCredentialKey);
-        setSavedApiKey(false);
-      }
-    }
     const jobId = `transcription:${uid()}`;
     upsertJob({
       id: jobId,
@@ -699,7 +672,6 @@ export function AudioPanel({
       detail: "Väntar på ledig transkriberingsmotor…",
     });
     setTranscribeOpen(false);
-    setApiKey("");
     enqueueTranscription({
       id: jobId,
       run: async () => {
@@ -1722,8 +1694,6 @@ export function AudioPanel({
             <>
               <div className="rounded-lg bg-amber-50 p-3 text-xs leading-5 text-amber-800">
                 Ljudet skickas till providern som valts under Inställningar.
-                Nyckeln sparas bara om du väljer det nedan, i Windows Credential
-                Manager.
               </div>
               <div className="rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-3 text-xs leading-5 text-[var(--palette-text-muted)]">
                 <div className="font-semibold text-[var(--palette-text)]">
@@ -1748,40 +1718,20 @@ export function AudioPanel({
                     Ljudlängden fastställs när ljudfilens metadata har lästs.
                   </p>
                 )}
+                {transcriptionCostEstimate?.priceSource === "local-catalog" && (
+                  <p className="mt-1">
+                    Pris från Lectios lokala referenskatalog ({TRANSCRIPTION_PRICE_CATALOG_VERSION}).
+                  </p>
+                )}
               </div>
-              <div>
-                <Label>API-nyckel</Label>
-                <Input
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder="Sparad nyckel fylls i automatiskt"
-                />
-              </div>
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-500">
-                <label className="flex cursor-pointer items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={rememberApiKey}
-                    onChange={(event) =>
-                      setRememberApiKey(event.target.checked)
-                    }
-                  />
-                  Kom ihåg nyckeln säkert på den här datorn
-                </label>
-                {savedApiKey && (
-                  <button
-                    type="button"
-                    className="font-medium text-violet-700 hover:text-violet-900"
-                    onClick={async () => {
-                      await deleteCredential(transcriptionCredentialKey);
-                      setApiKey("");
-                      setSavedApiKey(false);
-                      toast.success("Den sparade API-nyckeln togs bort");
-                    }}
-                  >
-                    Glöm sparad nyckel
-                  </button>
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
+                <span className={apiKeyConfigured ? "font-medium text-[var(--palette-success)]" : "text-muted-foreground"}>
+                  {apiKeyConfigured ? "API-nyckel sparad säkert" : "API-nyckel saknas"}
+                </span>
+                {!apiKeyConfigured && (
+                  <Button size="sm" variant="outline" onClick={() => { setTranscribeOpen(false); setActiveView("settings"); }}>
+                    Lägg till i Inställningar
+                  </Button>
                 )}
               </div>
               <div>
@@ -1802,7 +1752,7 @@ export function AudioPanel({
           )}
           <Button
             className="w-full"
-            disabled={transcribeMode === "local" ? !localInstalled : !apiKey}
+            disabled={transcribeMode === "local" ? !localInstalled : !apiKeyConfigured || apiKeyLoading}
             onClick={transcribe}
           >
             Lägg till i transkriptionskön

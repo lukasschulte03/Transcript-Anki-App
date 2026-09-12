@@ -1,3 +1,4 @@
+/* oxlint-disable react/set-state-in-effect -- fields synchronize secure credentials and local engine status. */
 import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2,
@@ -6,7 +7,6 @@ import {
   FileUp,
   KeyRound,
   Languages,
-  Palette,
   MonitorCog,
   PlugZap,
   ShieldCheck,
@@ -23,6 +23,7 @@ import type { LucideIcon } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useAppStore } from "../../core/store";
 import { Button } from "../../components/ui/Button";
+import { PageHeader } from "../../components/PageHeader";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import { getDecks, testAnki } from "../../services/anki";
@@ -73,7 +74,11 @@ import {
   type LocalModel,
   type LocalModelStatus,
 } from "../../services/localStt";
-import { aiModelSuggestions } from "../../services/ai";
+import {
+  fallbackModelOptions,
+  fetchProviderModelOptions,
+  type ModelOption,
+} from "../../services/modelCatalog";
 import {
   deleteCredential,
   readCredential,
@@ -197,6 +202,42 @@ export function SettingsView() {
     useState<ThemePalette>(defaultCustomPalette);
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [cloudConnectBusy, setCloudConnectBusy] = useState(false);
+  const [aiModels, setAiModels] = useState<ModelOption[]>(() =>
+    fallbackModelOptions(settings.aiProvider),
+  );
+  const [aiModelsSource, setAiModelsSource] = useState<"fallback" | "provider">(
+    "fallback",
+  );
+  const [aiModelsBusy, setAiModelsBusy] = useState(false);
+  const [aiModelsError, setAiModelsError] = useState<string>();
+  useEffect(() => {
+    setAiModels(fallbackModelOptions(settings.aiProvider));
+    setAiModelsSource("fallback");
+    setAiModelsError(undefined);
+  }, [settings.aiProvider]);
+  const refreshAiModels = async () => {
+    setAiModelsBusy(true);
+    setAiModelsError(undefined);
+    try {
+      const apiKey = await readCredential(`ai:${settings.aiProvider}`);
+      const result = await fetchProviderModelOptions(
+        settings.aiProvider,
+        apiKey,
+        settings.aiBaseUrl,
+      );
+      setAiModels(result.models);
+      setAiModelsSource(result.source);
+      setAiModelsError(result.error);
+      if (result.source === "provider")
+        toast.success("Modellistan har uppdaterats från providern.");
+      else if (!apiKey)
+        toast.message("Spara en API-nyckel för att läsa modellistan från providern.");
+      else if (result.error)
+        toast.warning("Kunde inte läsa providerlistan. Lectios förslag används i stället.");
+    } finally {
+      setAiModelsBusy(false);
+    }
+  };
   const storageSummary = useLiveQuery(async () => {
     const [assets, sessions, chunks] = await Promise.all([
       db.assets.toArray(),
@@ -631,31 +672,22 @@ export function SettingsView() {
     }
   };
   const tabs = [
-    { id: "general", label: "Generellt", icon: Languages },
-    { id: "transcription", label: "Transkribering", icon: AudioLines },
-    { id: "anki", label: "Anki", icon: PlugZap },
-    { id: "sync", label: "Synk", icon: DownloadCloud },
+    { id: "general", label: "Allmänt", icon: Languages },
+    { id: "sync", label: "Lagring & synk", icon: DownloadCloud },
+    { id: "transcription", label: "Ljud & transkribering", icon: AudioLines },
+    { id: "anki", label: "AI & Anki", icon: PlugZap },
   ];
   return (
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
-      <header className="flex min-h-16 items-center border-b border-slate-200 bg-white px-4 py-3 sm:px-6">
-        <div>
-          <h1 className="text-lg font-semibold text-slate-900">
-            Inställningar
-          </h1>
-          <p className="text-xs text-slate-400">
-            Lokala val, providers och integrationer
-          </p>
-        </div>
-      </header>
+      <PageHeader title="Inställningar" />
       <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] xl:grid-cols-[240px_minmax(0,1fr)] xl:grid-rows-1">
-        <aside className="overflow-x-auto border-b border-slate-200 bg-white p-2 xl:overflow-visible xl:border-b-0 xl:border-r xl:p-3">
+        <aside className="overflow-x-auto border-b border-border bg-card p-2 xl:overflow-visible xl:border-b-0 xl:border-r xl:p-3">
           <nav className="flex min-w-max gap-1 xl:block xl:min-w-0">
             {tabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
-                className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm xl:mb-1 xl:w-full xl:gap-3 ${tab === id ? "bg-violet-50 font-semibold text-violet-800" : "text-slate-600 hover:bg-slate-50"}`}
+                className={`flex h-10 items-center gap-2 rounded-lg px-3 text-sm outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)] xl:mb-1 xl:w-full xl:gap-3 ${tab === id ? "bg-[var(--palette-primary-muted)] font-semibold text-[var(--palette-accent)]" : "text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"}`}
               >
                 <Icon className="size-4" />
                 {label}
@@ -667,27 +699,26 @@ export function SettingsView() {
           <div className="mx-auto max-w-5xl">
             {tab === "general" && (
               <Section
-                title="Generellt"
-                description="Språk, bibliotek och lokal datahantering."
+                title="Allmänt"
+                description="Appens språk, utseende och lokala bibliotek."
               >
-                <Field label="Språk i appen">
-                  <Select
-                    value={settings.locale}
-                    onChange={(e) =>
-                      updateSettings({ locale: e.target.value as "sv" | "en" })
-                    }
-                  >
-                    <option value="sv">Svenska</option>
-                    <option value="en">English (förhandsvisning)</option>
-                  </Select>
-                </Field>
-                <div className="border-t border-slate-100 pt-6">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                    <Palette className="size-4 text-violet-500" /> Färgpalett
-                  </div>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Paletten styr hela appens bakgrund, ytor, text och knappar.
-                  </p>
+                <SettingsGroup title="App">
+                  <Field label="Språk i appen">
+                    <Select
+                      value={settings.locale}
+                      onChange={(e) =>
+                        updateSettings({ locale: e.target.value as "sv" | "en" })
+                      }
+                    >
+                      <option value="sv">Svenska</option>
+                      <option value="en">English (förhandsvisning)</option>
+                    </Select>
+                  </Field>
+                </SettingsGroup>
+                <SettingsGroup
+                  title="Utseende"
+                  description="Paletten styr appens bakgrund, ytor, text och knappar."
+                >
                   <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
                     <Field label="Aktiv palett">
                       <Select
@@ -752,41 +783,38 @@ export function SettingsView() {
                     ].map((color, index) => (
                       <span
                         key={`${color}-${index}`}
-                        className="size-7 rounded-md border border-slate-200"
+                        className="size-7 rounded-md border border-[var(--palette-border)]"
                         style={{ backgroundColor: color }}
                       />
                     ))}
                   </div>
-                </div>
-                <div className="border-t border-slate-100 pt-6">
-                  <h3 className="text-sm font-semibold text-slate-800">
-                    Bibliotek
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Importera, exportera och behåll kontrollen över din data.
-                  </p>
+                </SettingsGroup>
+                <SettingsGroup
+                  title="Bibliotek"
+                  description="Importera, exportera och behåll kontrollen över din data."
+                >
                   <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <button
                       onClick={() => void exportAll()}
                       disabled={libraryBusy}
-                      className="rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 disabled:cursor-wait disabled:opacity-60"
+                      className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] p-5 text-left transition-colors hover:bg-[var(--palette-surface-hover)] disabled:cursor-wait disabled:opacity-60"
                     >
-                      <FileDown className="size-5 text-violet-600" />
+                      <FileDown className="size-5 text-[var(--palette-accent)]" />
                       <div className="mt-3 text-sm font-semibold">
                         Exportera bibliotek
                       </div>
-                      <div className="mt-1 text-xs leading-5 text-slate-400">
+                      <div className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
                         ZIP med JSON, ljud, slides och andra originalfiler.
                       </div>
                     </button>
                     <label
-                      className={`cursor-pointer rounded-xl border border-slate-200 bg-white p-6 text-left hover:border-violet-300 ${libraryBusy ? "pointer-events-none opacity-60" : ""}`}
+                      className={`cursor-pointer rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] p-5 text-left transition-colors hover:bg-[var(--palette-surface-hover)] ${libraryBusy ? "pointer-events-none opacity-60" : ""}`}
                     >
-                      <FileUp className="size-5 text-violet-600" />
+                      <FileUp className="size-5 text-[var(--palette-accent)]" />
                       <div className="mt-3 text-sm font-semibold">
                         Importera bibliotek
                       </div>
-                      <div className="mt-1 text-xs leading-5 text-slate-400">
+                      <div className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
                         Återställ från en Lectio JSON-export.
                       </div>
                       <input
@@ -797,19 +825,19 @@ export function SettingsView() {
                       />
                     </label>
                   </div>
-                  <div className="mt-4 rounded-xl bg-emerald-50 p-4 text-xs leading-5 text-emerald-800">
+                  <div className="mt-4 rounded-xl bg-[var(--palette-info-muted)] p-4 text-xs leading-5 text-[var(--palette-text)]">
                     Metadata lagras lokalt. Exporten använder öppna filer: JSON
                     för strukturerad data och originalformat för ljud, PDF och
                     bilder.
                   </div>
-                  <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50/70 p-4">
+                  <div className="mt-4 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4">
                     <div className="flex items-start gap-3">
-                      <HardDrive className="mt-0.5 size-5 shrink-0 text-violet-600" />
+                      <HardDrive className="mt-0.5 size-5 shrink-0 text-[var(--palette-accent)]" />
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm font-semibold text-slate-800">
+                        <div className="text-sm font-semibold text-[var(--palette-text)]">
                           Lokal lagring
                         </div>
-                        <p className="mt-1 text-xs leading-5 text-slate-500">
+                        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
                           {storageSummary
                             ? `${formatBytes(storageSummary.total)} används av ${storageSummary.files.length} lokala filer och inspelningsdelar.`
                             : "Beräknar lagringsanvändning…"}
@@ -817,8 +845,8 @@ export function SettingsView() {
                       </div>
                     </div>
                     {!!storageSummary?.files.length && (
-                      <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
-                        <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      <div className="mt-3 space-y-2 border-t border-[var(--palette-border)] pt-3">
+                        <div className="text-xs font-semibold text-[var(--palette-text-muted)]">
                           Största filer
                         </div>
                         {storageSummary.files.slice(0, 5).map((file) => (
@@ -826,10 +854,10 @@ export function SettingsView() {
                             key={file.id}
                             className="flex min-w-0 items-center justify-between gap-3 text-xs"
                           >
-                            <span className="min-w-0 truncate text-slate-600">
+                            <span className="min-w-0 truncate text-[var(--palette-text-muted)]">
                               {file.lecture} · {file.name}
                             </span>
-                            <span className="shrink-0 tabular-nums text-slate-400">
+                            <span className="shrink-0 tabular-nums text-[var(--palette-text-subtle)]">
                               {formatBytes(file.size)}
                             </span>
                           </div>
@@ -850,13 +878,13 @@ export function SettingsView() {
                     <LocalAiStorageSummary />
                     <LocalVisionSettings />
                   </div>
-                </div>
+                </SettingsGroup>
               </Section>
             )}
             {tab === "sync" && (
               <Section
-                title="Direkt molnsynk"
-                description="Koppla ditt eget konto direkt. Lectio kräver ingen separat molnapp och lagrar inga lösenord."
+                title="Lagring & synk"
+                description="Säkerhetskopiera lokalt och synka biblioteket med ditt eget konto."
               >
                 <div className="space-y-6">
                   <div>
@@ -1107,17 +1135,13 @@ export function SettingsView() {
             )}
             {tab === "anki" && (
               <Section
-                title="Anki och kortgenerering"
-                description="Konfigurera kort, AI-underlag och AnkiConnect på ett ställe."
+                title="AI & Anki"
+                description="Välj hur kort skapas och koppla Lectio till Anki."
               >
-                <div>
-                  <h3 className="text-sm font-semibold text-slate-800">
-                    Kortgenerering
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Välj hur föreläsningsmaterial skickas till en språkmodell.
-                  </p>
-                </div>
+                <SettingsGroup
+                  title="Kortgenerering"
+                  description="Välj hur föreläsningsmaterial skickas till en språkmodell."
+                >
                 <div className="grid gap-3 sm:grid-cols-2">
                   <ChoiceCard
                     selected={settings.aiMode === "clipboard"}
@@ -1141,7 +1165,7 @@ export function SettingsView() {
                     text="Lectio skapar en komplett prompt. Du väljer själv ChatGPT, Claude eller Gemini och klistrar tillbaka svaret för granskning."
                   />
                 ) : (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
+                  <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <Field label="AI-provider">
                         <Select
@@ -1150,7 +1174,7 @@ export function SettingsView() {
                             const provider = event.target
                               .value as typeof settings.aiProvider;
                             const suggestedModel =
-                              aiModelSuggestions[provider][0];
+                              fallbackModelOptions(provider)[0]?.id;
                             updateSettings({
                               aiProvider: provider,
                               aiBaseUrl: aiBaseUrls[provider],
@@ -1181,20 +1205,70 @@ export function SettingsView() {
                             aria-describedby="ai-model-help"
                           />
                           <datalist id="lectio-ai-model-suggestions">
-                            {aiModelSuggestions[settings.aiProvider].map(
-                              (model) => (
-                                <option key={model} value={model} />
-                              ),
-                            )}
+                            {aiModels.map((model) => (
+                              <option
+                                key={model.id}
+                                value={model.id}
+                                label={model.label}
+                              />
+                            ))}
                           </datalist>
+                          {aiModels.some((model) => model.tier !== "available") && (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {aiModels
+                                .filter((model) => model.tier !== "available")
+                                .slice(0, 3)
+                                .map((model) => (
+                                  <Button
+                                    key={model.id}
+                                    type="button"
+                                    size="sm"
+                                    variant={
+                                      settings.aiModel === model.id
+                                        ? "secondary"
+                                        : "outline"
+                                    }
+                                    title={model.description}
+                                    onClick={() =>
+                                      updateSettings({ aiModel: model.id })
+                                    }
+                                  >
+                                    {model.label}
+                                    <span className="text-[10px] text-muted-foreground">
+                                      {model.tier === "budget"
+                                        ? "Billig"
+                                        : model.tier === "powerful"
+                                          ? "Kraftfull"
+                                          : "Rekommenderad"}
+                                    </span>
+                                  </Button>
+                                ))}
+                            </div>
+                          )}
                           <p
                             id="ai-model-help"
-                            className="mt-2 text-xs leading-5 text-slate-500"
+                            className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
                           >
-                            {aiModelSuggestions[settings.aiProvider].length
-                              ? `Förslag för ${settings.aiProvider}: ${aiModelSuggestions[settings.aiProvider].join(", ")}. Du kan alltid skriva ett eget modell-ID.`
+                            {aiModels.length
+                              ? `${aiModelsSource === "provider" ? "Tillgängliga modeller har hämtats från din provider." : "Lectios granskade modellförslag visas lokalt."} Du kan alltid skriva ett eget modell-ID.`
                               : "Skriv modell-ID:t från din tjänst. Egna modellnamn bevaras."}
                           </p>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 px-0"
+                            onClick={() => void refreshAiModels()}
+                            disabled={aiModelsBusy}
+                          >
+                            {aiModelsBusy && <LoaderCircle className="size-3.5 animate-spin" />}
+                            Uppdatera modeller från provider
+                          </Button>
+                          {aiModelsError && (
+                            <p className="text-xs text-muted-foreground">
+                              Senaste uppdatering misslyckades ({aiModelsError}).
+                            </p>
+                          )}
                         </>
                       </Field>
                     </div>
@@ -1211,7 +1285,7 @@ export function SettingsView() {
                         />
                         <p
                           id="ai-base-url-help"
-                          className="mt-2 text-xs leading-5 text-slate-500"
+                          className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
                         >
                           Använd en endpoint som stöder OpenAI-formatet för chat
                           completions.
@@ -1235,14 +1309,11 @@ export function SettingsView() {
                     placeholder="Exempel: Svara på svenska och prioritera kliniska samband."
                   />
                 </Field>
-                <div className="border-t border-slate-100 pt-6">
-                  <h3 className="text-sm font-semibold text-slate-800">
-                    AnkiConnect
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Anki måste vara öppet och tillägget AnkiConnect installerat.
-                  </p>
-                </div>
+                </SettingsGroup>
+                <SettingsGroup
+                  title="AnkiConnect"
+                  description="Anki måste vara öppet och AnkiConnect installerat."
+                >
                 <Field label="AnkiConnect-adress">
                   <Input
                     value={settings.ankiUrl}
@@ -1310,13 +1381,15 @@ export function SettingsView() {
                   )}{" "}
                   Testa anslutningen
                 </Button>
+                </SettingsGroup>
               </Section>
             )}
             {tab === "transcription" && (
               <Section
-                title="Transkribering"
-                description="Bearbeta ljud helt lokalt eller skicka det till en vald API-provider."
+                title="Ljud & transkribering"
+                description="Bearbeta ljud lokalt eller med en vald API-provider."
               >
+                <SettingsGroup title="Transkriberingsmetod">
                 <div className="grid gap-3 sm:grid-cols-2">
                   <ChoiceCard
                     selected={settings.transcriptionProvider === "local"}
@@ -1343,7 +1416,7 @@ export function SettingsView() {
                 {settings.transcriptionProvider === "local" ? (
                   <LocalModelManager />
                 ) : (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 sm:p-6">
+                  <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
                     <div className="grid gap-4 sm:grid-cols-2">
                       <Field label="Provider">
                         <Select
@@ -1385,6 +1458,11 @@ export function SettingsView() {
                     </p>
                   </div>
                 )}
+                </SettingsGroup>
+                <SettingsGroup
+                  title="Fraslexikon"
+                  description="Håll det kort och termfokuserat. Det kombineras med ärvda fraslexikon, inte med vanligt context."
+                >
                 <Field label="Transkriberingsordlista / initial prompt">
                   <Textarea
                     className="min-h-24"
@@ -1440,13 +1518,7 @@ export function SettingsView() {
                     <FileDown className="size-3.5" /> Exportera
                   </Button>
                 </div>
-                <p className="text-xs leading-5 text-slate-500">
-                  Håll detta kort och termfokuserat. När en föreläsning
-                  transkriberas kombineras det med ärvda fraslexikon från kurs,
-                  modul och föreläsning — inte med vanligt context. Lokala
-                  Whisper använder prompten på datorn; OpenAI och Groq får den
-                  som API-prompt.
-                </p>
+                </SettingsGroup>
               </Section>
             )}
           </div>
@@ -1707,10 +1779,36 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-6">
-      <h2 className="text-xl font-semibold text-slate-900">{title}</h2>
-      <p className="mt-1 text-sm text-slate-400">{description}</p>
-      <div className="mt-6 space-y-5">{children}</div>
+    <section className="pb-8">
+      <header className="max-w-2xl">
+        <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+      </header>
+      <div className="mt-8 max-w-4xl space-y-8">{children}</div>
+    </section>
+  );
+}
+
+function SettingsGroup({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="border-t border-[var(--palette-border)] pt-5 first:border-t-0 first:pt-0">
+      <div className="mb-4 max-w-2xl">
+        <h3 className="text-sm font-semibold text-[var(--palette-text)]">{title}</h3>
+        {description && (
+          <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
+            {description}
+          </p>
+        )}
+      </div>
+      <div className="space-y-4">{children}</div>
     </section>
   );
 }
@@ -1735,26 +1833,26 @@ function ChoiceCard({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`group flex min-h-24 items-start gap-3 rounded-xl border p-4 text-left transition disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={`group flex min-h-24 items-start gap-3 rounded-xl border p-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
         selected
-          ? "border-violet-400 bg-violet-50 ring-2 ring-violet-100"
-          : "border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50"
+          ? "border-[var(--palette-primary)] bg-[var(--palette-primary-muted)] ring-2 ring-[var(--palette-focus-ring)]/30"
+          : "border-border bg-card hover:bg-muted"
       }`}
     >
       <span
         className={`grid size-9 shrink-0 place-items-center rounded-xl ${
           selected
-            ? "bg-violet-600 text-white"
-            : "bg-slate-100 text-slate-500 group-hover:bg-white"
+            ? "bg-[var(--palette-primary)] text-[var(--palette-primary-foreground)]"
+            : "bg-muted text-muted-foreground group-hover:bg-card"
         }`}
       >
         <Icon className="size-4" />
       </span>
       <span className="min-w-0">
-        <span className="block text-sm font-semibold text-slate-800">
+        <span className="block text-sm font-semibold text-foreground">
           {title}
         </span>
-        <span className="mt-1 block text-xs leading-5 text-slate-500">
+        <span className="mt-1 block text-xs leading-5 text-muted-foreground">
           {description}
         </span>
       </span>
@@ -1772,11 +1870,11 @@ function InfoPanel({
   text: string;
 }) {
   return (
-    <div className="flex gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-950">
-      <Icon className="mt-0.5 size-5 shrink-0 text-emerald-600" />
+    <div className="flex gap-3 rounded-xl border border-[var(--palette-success)]/30 bg-[var(--palette-success-muted)] p-4 text-[var(--palette-text)]">
+      <Icon className="mt-0.5 size-5 shrink-0 text-[var(--palette-success)]" />
       <div>
         <div className="text-sm font-semibold">{title}</div>
-        <p className="mt-1 text-xs leading-5 text-emerald-800">{text}</p>
+        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">{text}</p>
       </div>
     </div>
   );

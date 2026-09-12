@@ -9,6 +9,8 @@ const groups: { title: string; shortcuts: Shortcut[] }[] = [
       { keys: ["Ctrl", "1"], label: "Öppna översikt" },
       { keys: ["Ctrl", "2"], label: "Öppna bibliotek" },
       { keys: ["Ctrl", "3"], label: "Öppna Anki-kort" },
+      { keys: ["Ctrl", "4"], label: "Öppna Inkorg" },
+      { keys: ["Ctrl", "5"], label: "Öppna Super Actions" },
       { keys: ["Ctrl", ","], label: "Öppna inställningar" },
       { keys: ["Ctrl", "B"], label: "Visa eller dölj sidofält" },
       { keys: ["?"], label: "Visa dessa kortkommandon" },

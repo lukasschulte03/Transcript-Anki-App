@@ -3,6 +3,8 @@ import { Check, ChevronDown, ChevronRight, CircleAlert, CircleCheck, Clock3, Loa
 import { useAppStore } from "../../core/store";
 import type { LibraryNode } from "../../core/types";
 import { Button } from "../../components/ui/Button";
+import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
 import { cn } from "../../lib/utils";
 import { lectureDeckName, needsAnkiSync } from "../../services/anki";
 import { cancelBatchJob, clearFinishedBatchJobs, completeWaitingBatchJob, enqueueBatch, getBatchJobs, resumeBatchQueue, retryBatchJob, subscribeBatchJobs, type BatchAction, type BatchJob } from "../../services/batchActions";
@@ -100,11 +102,10 @@ export function SuperActions() {
   const roots = nodes.filter((node) => node.parentId && nodes.find((parent) => parent.id === node.parentId)?.type === "workspace");
   const relevantJobs = jobs.filter((job) => job.action === action);
   const activeCount = relevantJobs.filter((job) => job.status === "queued" || job.status === "running").length;
-  return <main className="ui-app-bg min-w-0 flex-1 overflow-auto p-6"><div className="mx-auto max-w-6xl space-y-5">
-    <header><h1 className="text-2xl font-semibold tracking-tight text-[var(--palette-text)]">Super Actions</h1><p className="mt-1 max-w-3xl text-sm leading-6 text-[var(--palette-text-muted)]">Kör återkommande arbete över flera föreläsningar. Tunga jobb behandlas sekventiellt så att datorn och externa tjänster förblir stabila.</p></header>
+  return <main className="ui-app-bg min-w-0 flex-1 overflow-auto"><PageHeader title="Super Actions" /><div className="mx-auto max-w-6xl space-y-5 p-6">
     <div className="flex gap-1 overflow-x-auto border-b border-[var(--palette-border)]" role="tablist">{(Object.keys(labels) as BatchAction[]).map((item) => <button key={item} role="tab" aria-selected={action === item} onClick={() => { setAction(item); setSelected([]); }} className={cn("whitespace-nowrap border-b-2 px-4 py-2.5 text-sm font-medium outline-none focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]", action === item ? "border-[var(--palette-primary)] text-[var(--palette-accent)]" : "border-transparent text-[var(--palette-text-muted)] hover:text-[var(--palette-text)]")}>{labels[item]}</button>)}</div>
     <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-[var(--palette-text-muted)]">{descriptions[action]}</p><div className="flex items-center gap-2">{relevantJobs.some((job) => ["complete", "error", "cancelled"].includes(job.status)) && <Button variant="ghost" size="sm" onClick={clearFinishedBatchJobs}><Trash2 className="mr-1.5 size-4" />Rensa klara</Button>}<Button variant="outline" size="sm" onClick={() => setSelected(possible.map((node) => node.id))}>Välj alla möjliga ({possible.length})</Button></div></div>
-    <section className="overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]" aria-label="Bibliotek för batchåtgärder">{roots.length ? roots.map((root) => renderNode(root)) : <p className="p-8 text-center text-sm text-[var(--palette-text-muted)]">Skapa en kurs och några föreläsningar för att använda batchåtgärder.</p>}</section>
+    <section className="overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]" aria-label="Bibliotek för batchåtgärder">{roots.length ? roots.map((root) => renderNode(root)) : <EmptyState icon={Wand2} title="Inga föreläsningar att köra" description="Skapa en kurs och några föreläsningar först." className="border-0" />}</section>
     <div className="sticky bottom-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-[var(--palette-border-strong)] bg-[var(--palette-surface)] p-4 shadow-lg"><div><p className="text-sm font-medium text-[var(--palette-text)]">{selected.length} föreläsningar valda</p><p className="mt-0.5 text-xs text-[var(--palette-text-muted)]">{activeCount ? `${activeCount} jobb arbetar eller väntar i kön.` : "Ett fel stoppar inte nästa föreläsning."}</p></div><Button disabled={!selected.length} onClick={start}><Wand2 className="mr-2 size-4" />{labels[action]} nu ({selected.length})</Button></div>
   </div></main>;
 }

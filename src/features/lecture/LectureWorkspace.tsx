@@ -24,7 +24,12 @@ import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { parseTimestampedText } from "../../services/transcription";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import { suggestSlideMappings } from "../../services/slideMatching";
-import { buildPptxVisualIndex, buildVisualIndex } from "../../services/visualIndex";
+import {
+  buildPdfVisualIndex,
+  buildPptxVisualIndex,
+  buildVisualIndex,
+} from "../../services/visualIndex";
+import { queueSlideIndex } from "../../services/slideIndexQueue";
 import { ModuleVisualLibrary } from "../library/ModuleVisualLibrary";
 import { extractPptxImages } from "../../services/pptx";
 import { AudioPanel } from "./AudioPanel";
@@ -148,23 +153,20 @@ export function LectureWorkspace({
   );
   const slideIsPdf = Boolean(
     slideAsset &&
-      (slideAsset.mimeType === "application/pdf" ||
-        slideAsset.name.toLowerCase().endsWith(".pdf")),
+    (slideAsset.mimeType === "application/pdf" ||
+      slideAsset.name.toLowerCase().endsWith(".pdf")),
   );
-  const slideUrl = useMemo(
-    () => {
-      if (mediaSuspended || !slideAsset) return "";
-      // Files imported through Windows/Drive occasionally arrive as an empty
-      // or text MIME type even though their extension and bytes are PDF. Edge
-      // otherwise renders the raw `%PDF` bytes as text instead of its viewer.
-      const blob =
-        slideIsPdf && slideAsset.blob.type !== "application/pdf"
-          ? new Blob([slideAsset.blob], { type: "application/pdf" })
-          : slideAsset.blob;
-      return URL.createObjectURL(blob);
-    },
-    [mediaSuspended, slideAsset, slideIsPdf],
-  );
+  const slideUrl = useMemo(() => {
+    if (mediaSuspended || !slideAsset) return "";
+    // Files imported through Windows/Drive occasionally arrive as an empty
+    // or text MIME type even though their extension and bytes are PDF. Edge
+    // otherwise renders the raw `%PDF` bytes as text instead of its viewer.
+    const blob =
+      slideIsPdf && slideAsset.blob.type !== "application/pdf"
+        ? new Blob([slideAsset.blob], { type: "application/pdf" })
+        : slideAsset.blob;
+    return URL.createObjectURL(blob);
+  }, [mediaSuspended, slideAsset, slideIsPdf]);
   const [time, setTime] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
   const [rawTranscript, setRawTranscript] = useState("");
@@ -273,7 +275,8 @@ export function LectureWorkspace({
       kind: "slides",
       name: file.name,
       mimeType:
-        file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf")
+        file.type === "application/pdf" ||
+        file.name.toLowerCase().endsWith(".pdf")
           ? "application/pdf"
           : file.type,
       blob: file,
@@ -309,7 +312,7 @@ export function LectureWorkspace({
           total: pages.length,
           detail: "Förbereder lokala bildbeskrivningar…",
         });
-        window.setTimeout(() => {
+        queueSlideIndex(jobId, async () => {
           upsertJob({
             id: jobId,
             kind: "library",
@@ -320,37 +323,52 @@ export function LectureWorkspace({
             total: pages.length,
             detail: "Bygger lokala bildbeskrivningar…",
           });
-          void buildVisualIndex(file, pages)
-            .then(({ sourceHash, candidates }) => {
-              updateLecture(lectureId, {
-                visualIndex: candidates,
-                visualIndexHash: sourceHash,
-                visualIndexUpdatedAt: new Date().toISOString(),
-              });
-              upsertJob({
-                id: jobId,
-                kind: "library",
-                label: "Indexerar slidebilder",
-                phase: "complete",
-                status: "complete",
-                current: candidates.length,
-                total: pages.length,
-                detail: `${candidates.length} lokala bildkandidater är klara.`,
-              });
-            })
-            .catch((error) => {
-              upsertJob({
-                id: jobId,
-                kind: "library",
-                label: "Indexerar slidebilder",
-                phase: "error",
-                status: "error",
-                current: 0,
-                total: pages.length,
-                detail: String(error),
-              });
+          try {
+            const { sourceHash, candidates } = await buildPdfVisualIndex(
+              file,
+              pages,
+              (current, total, detail) => {
+                upsertJob({
+                  id: jobId,
+                  kind: "library",
+                  label: "Indexerar slidebilder",
+                  phase: "indexing",
+                  status: "active",
+                  current,
+                  total,
+                  detail,
+                });
+              },
+            );
+            updateLecture(lectureId, {
+              visualIndex: candidates,
+              visualIndexHash: sourceHash,
+              visualIndexVersion: 2,
+              visualIndexUpdatedAt: new Date().toISOString(),
             });
-        }, 0);
+            upsertJob({
+              id: jobId,
+              kind: "library",
+              label: "Indexerar slidebilder",
+              phase: "complete",
+              status: "complete",
+              current: candidates.length,
+              total: pages.length,
+              detail: `${candidates.length} lokala bildkandidater är klara.`,
+            });
+          } catch (error) {
+            upsertJob({
+              id: jobId,
+              kind: "library",
+              label: "Indexerar slidebilder",
+              phase: "error",
+              status: "error",
+              current: 0,
+              total: pages.length,
+              detail: String(error),
+            });
+          }
+        });
         const foundText = pages.filter(Boolean).length;
         toast.success(
           foundText
@@ -361,7 +379,8 @@ export function LectureWorkspace({
         toast.success("Slides importerade · text kan läggas till manuellt");
       }
     } else if (
-      file.type === "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
+      file.type ===
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
       file.name.toLowerCase().endsWith(".pptx")
     ) {
       const jobId = `visual-index:${lectureId}:${id}`;
@@ -377,7 +396,10 @@ export function LectureWorkspace({
       window.setTimeout(() => {
         void (async () => {
           const extracted = await extractPptxImages(file);
-          if (!extracted.length) throw new Error("PowerPointen innehåller inga inbäddade bildfiler.");
+          if (!extracted.length)
+            throw new Error(
+              "PowerPointen innehåller inga inbäddade bildfiler.",
+            );
           const images = await Promise.all(
             extracted.map(async (image) => {
               const assetId = uid();
@@ -393,10 +415,14 @@ export function LectureWorkspace({
               return { ...image, assetId };
             }),
           );
-          const { sourceHash, candidates } = await buildPptxVisualIndex(file, images);
+          const { sourceHash, candidates } = await buildPptxVisualIndex(
+            file,
+            images,
+          );
           updateLecture(lectureId, {
             visualIndex: candidates,
             visualIndexHash: sourceHash,
+            visualIndexVersion: 2,
             visualIndexUpdatedAt: new Date().toISOString(),
           });
           upsertJob({
@@ -441,6 +467,7 @@ export function LectureWorkspace({
             updateLecture(lectureId, {
               visualIndex: candidates,
               visualIndexHash: sourceHash,
+              visualIndexVersion: 2,
               visualIndexUpdatedAt: new Date().toISOString(),
             });
             upsertJob({
@@ -547,9 +574,9 @@ export function LectureWorkspace({
   };
   return (
     <div className="flex h-full min-w-0 flex-1 flex-col">
-      <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-6">
+      <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-card px-6">
         <div className="min-w-0">
-          <div className="flex items-center gap-1 text-xs text-slate-400">
+          <div className="flex items-center gap-1 text-xs text-muted-foreground">
             {path.slice(1, -1).map((p) => (
               <span className="flex items-center gap-1" key={p.id}>
                 {p.title}
@@ -560,7 +587,7 @@ export function LectureWorkspace({
           <input
             value={node.title}
             onChange={(e) => updateNode(node.id, { title: e.target.value })}
-            className="w-full min-w-0 border-none bg-transparent text-lg font-semibold tracking-tight text-slate-900 outline-none"
+            className="w-full min-w-0 border-none bg-transparent text-lg font-semibold tracking-tight text-foreground outline-none"
           />
         </div>
         <div className="flex items-center gap-2">
@@ -650,8 +677,8 @@ export function LectureWorkspace({
                 />
               )
             ) : (
-              <label className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-slate-300 bg-white/60 px-12 py-12 text-center hover:border-violet-300 hover:bg-white">
-                <div className="grid size-12 place-items-center rounded-xl bg-violet-50 text-violet-600">
+              <label className="flex cursor-pointer flex-col items-center rounded-xl border-2 border-dashed border-border bg-card/60 px-12 py-12 text-center hover:border-[var(--palette-primary)] hover:bg-card">
+                <div className="grid size-12 place-items-center rounded-xl bg-[var(--palette-primary-muted)] text-[var(--palette-accent)]">
                   <FileUp className="size-5" />
                 </div>
                 <div className="mt-3 text-sm font-semibold text-slate-700">
@@ -1104,8 +1131,8 @@ export function LectureWorkspace({
             ) : null}
             {lecture.visualIndex?.length ? (
               <p className="mt-1 text-xs leading-5 text-[var(--palette-accent)]">
-                {lecture.visualIndex.length} lokala bildkandidater är indexerade.
-                De skickas aldrig som bilder till AI:n.
+                {lecture.visualIndex.length} lokala bildkandidater är
+                indexerade. De skickas aldrig som bilder till AI:n.
               </p>
             ) : lecture.slideAssetId ? (
               <p className="mt-1 text-xs leading-5 text-slate-500">
@@ -1317,21 +1344,10 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
       <div className="mx-auto max-w-4xl px-8 py-10">
         <div className="flex items-start justify-between">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-violet-600">
-              {
-                {
-                  workspace: "Studier",
-                  course: "Kurs",
-                  module: "Modul",
-                  topic: "Ämne",
-                  lecture: "Föreläsning",
-                }[node.type]
-              }
-            </div>
             <input
               value={node.title}
               onChange={(e) => updateNode(node.id, { title: e.target.value })}
-              className="mt-1 w-full border-0 bg-transparent text-3xl font-bold tracking-tight text-slate-900 outline-none"
+              className="w-full border-0 bg-transparent text-3xl font-bold tracking-tight text-slate-900 outline-none"
             />
             <p className="mt-2 text-sm text-slate-500">
               {children.length} underobjekt · lokal lagring
@@ -1350,7 +1366,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             </Button>
           )}
         </div>
-        <div className="mt-8 grid grid-cols-[1fr_280px] gap-6">
+        <div className="mt-8 space-y-5">
           <div className="space-y-5">
             <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
@@ -1433,7 +1449,9 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 )}
               </div>
             </div>
-            {node.type === "module" && <ModuleVisualLibrary moduleId={node.id} />}
+            {node.type === "module" && (
+              <ModuleVisualLibrary moduleId={node.id} />
+            )}
             <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Settings2 className="size-4 text-violet-500" /> Egna
@@ -1505,8 +1523,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
               </p>
             </div>
           </div>
-          <div className="space-y-4">
-            <div className="rounded-xl border border-slate-200 bg-white p-6">
+          <div className="rounded-xl border border-slate-200 bg-white p-6">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <Settings2 className="size-4 text-slate-400" /> Ärvt context
               </div>
@@ -1551,13 +1568,12 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 )}
               </div>
             </div>
-            <div className="rounded-xl bg-violet-600 p-6 text-white">
-              <div className="text-sm font-semibold">Modulärt bibliotek</div>
-              <p className="mt-2 text-xs leading-5 text-violet-100">
-                Varje nivå kan ha egen kontext och egna inställningar som ärvs
-                nedåt i kursstrukturen.
-              </p>
-            </div>
+          <div className="rounded-xl bg-violet-600 p-6 text-white">
+            <div className="text-sm font-semibold">Modulärt bibliotek</div>
+            <p className="mt-2 text-xs leading-5 text-violet-100">
+              Varje nivå kan ha egen kontext och egna inställningar som ärvs
+              nedåt i kursstrukturen.
+            </p>
           </div>
         </div>
       </div>

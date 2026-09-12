@@ -2,4 +2,5 @@ allowBuilds:
   edgedriver: true
   esbuild: true
   geckodriver: false
+  protobufjs: true
   tesseract.js: true

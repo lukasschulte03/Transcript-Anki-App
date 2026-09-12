@@ -5,6 +5,10 @@ import { APP_VERSION } from "../lib/appVersion";
 import { useAppStore } from "../core/store";
 import { db } from "../core/database";
 import { isTauri } from "./platform";
+import { diagnosticLogs, logDiagnostic, type DiagnosticLogEntry, type DiagnosticSubsystem } from "./diagnosticLog";
+import { redactDiagnosticText } from "./diagnosticRedaction";
+import { startupTimings } from "./startupMetrics";
+export { redactDiagnosticText } from "./diagnosticRedaction";
 
 const MAX_EVENTS = 30;
 
@@ -29,6 +33,7 @@ export type DiagnosticSnapshot = {
   app: { name: "Lectio"; version: string; desktop: boolean };
   device: Record<string, unknown>;
   events: DiagnosticEvent[];
+  logs: Record<DiagnosticSubsystem, DiagnosticLogEntry[]>;
   runtime: {
     transcriptionProvider: string;
     localModel: string;
@@ -40,23 +45,11 @@ export type DiagnosticSnapshot = {
     syncV2KnownOperations: number;
     recentJobs: SafeJob[];
   };
+  startup: Array<{ stage: string; elapsedMs: number }>;
   suggestedActions: string[];
 };
 
 const events: DiagnosticEvent[] = [];
-
-// Do not allow a path, token, email address, or pasted content to leave the app.
-export function redactDiagnosticText(value: unknown) {
-  return String(value ?? "")
-    .replace(/[A-Za-z]:[\\/][^\r\n]*/g, "[redacted-path]")
-    .replace(/[A-Za-z]:\\Users\\[^\\\s]+/gi, "C:\\Users\\[redacted]")
-    .replace(
-      /(?:api[_ -]?key|client[_ -]?secret|refresh[_ -]?token|access[_ -]?token|token|authorization|bearer|password|secret)["']?\s*[:=]\s*["']?[^\s,;}"']+/gi,
-      "$1=[redacted]",
-    )
-    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]")
-    .slice(0, 800);
-}
 
 export function diagnosticSuggestions(events: DiagnosticEvent[]) {
   const text = events
@@ -88,6 +81,11 @@ export function diagnosticSuggestions(events: DiagnosticEvent[]) {
 }
 
 export function recordDiagnostic(area: string, error: unknown) {
+  const subsystem: DiagnosticSubsystem =
+    /transcri|whisper|ffmpeg/i.test(area) ? "transcription" :
+    /vision|paddle|slidebilder/i.test(area) ? "vision" :
+    /sync|drive|google/i.test(area) ? "sync" : "app";
+  logDiagnostic(subsystem, error, { level: "error", context: area });
   events.unshift({
     at: new Date().toISOString(),
     area: redactDiagnosticText(area),
@@ -152,6 +150,7 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
     app: { name: "Lectio", version: APP_VERSION, desktop: isTauri() },
     device,
     events: snapshotEvents,
+    logs: diagnosticLogs(),
     runtime: {
       transcriptionProvider: state.settings.transcriptionProvider,
       localModel: state.settings.localTranscriptionModel ?? "base",
@@ -163,6 +162,7 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
       syncV2KnownOperations: syncV2State?.knownOperationIds.length ?? 0,
       recentJobs: safeJobs,
     },
+    startup: startupTimings(),
     suggestedActions: diagnosticSuggestions(snapshotEvents),
   };
 }

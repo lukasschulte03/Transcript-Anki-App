@@ -28,17 +28,24 @@ export function normalizeLibraryBackup(value: Omit<LibraryBackup, "schemaVersion
   };
 }
 
-function scopedAssets(
-  assets: StoredAsset[],
-  source: LibraryBackupSource,
-) {
-  const nodeIds = new Set(source.nodes.map((node) => node.id));
-  const lectureIds = new Set(Object.keys(source.lectures));
-  return assets.filter(
-    (asset) =>
-      lectureIds.has(asset.lectureId) ||
-      (asset.nodeId !== undefined && nodeIds.has(asset.nodeId)),
-  );
+/**
+ * A normal checkpoint only needs references, never the Blob payloads. Reading
+ * `assets.toArray()` here materialized every long recording in WebView memory
+ * and could make startup appear frozen on a realistic study library.
+ */
+async function referencedAssetIds(source: LibraryBackupSource) {
+  const ids = new Set<string>();
+  await Promise.all([
+    ...Object.keys(source.lectures).map(async (lectureId) => {
+      const keys = await db.assets.where("lectureId").equals(lectureId).primaryKeys();
+      keys.forEach((key) => ids.add(String(key)));
+    }),
+    ...source.nodes.map(async (node) => {
+      const keys = await db.assets.where("nodeId").equals(node.id).primaryKeys();
+      keys.forEach((key) => ids.add(String(key)));
+    }),
+  ]);
+  return [...ids];
 }
 
 /**
@@ -50,8 +57,7 @@ export async function createLibraryBackup(
   source: LibraryBackupSource,
   options: { retainAssets?: StoredAsset[] } = {},
 ) {
-  const allAssets = await db.assets.toArray();
-  const referenced = scopedAssets(allAssets, source);
+  const assetIds = await referencedAssetIds(source);
   const backup: LibraryBackup = {
     schemaVersion: 2,
     id: uid(),
@@ -63,8 +69,8 @@ export async function createLibraryBackup(
     markers: source.markers,
     cards: source.cards,
     settings: source.settings,
-    assetCount: referenced.length,
-    assetIds: referenced.map((asset) => asset.id),
+    assetCount: assetIds.length,
+    assetIds,
     retainedAssets: options.retainAssets?.length
       ? options.retainAssets
       : undefined,

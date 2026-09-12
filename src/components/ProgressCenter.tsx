@@ -1,5 +1,5 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, CircleX, Clock3, Download, LoaderCircle, X } from "lucide-react";
+import { Check, CircleX, Clock3, LoaderCircle, X } from "lucide-react";
 import { useEffect } from "react";
 import { useAppStore } from "../core/store";
 import type {
@@ -9,8 +9,15 @@ import type {
 } from "../core/types";
 import { cancelDownload, cancelLocalTranscription } from "../services/localStt";
 import { isTauri } from "../services/platform";
-import { cancelActiveTranscription, cancelQueuedTranscription } from "../services/transcriptionQueue";
-import { cancelActiveVision, cancelQueuedVision } from "../services/visualDescriptionQueue";
+import {
+  cancelActiveTranscription,
+  cancelQueuedTranscription,
+} from "../services/transcriptionQueue";
+import {
+  cancelActiveVision,
+  cancelQueuedVision,
+} from "../services/visualDescriptionQueue";
+import { cancelQueuedSlideIndex } from "../services/slideIndexQueue";
 
 interface NativeProgressEvent {
   id: string;
@@ -62,7 +69,12 @@ function JobRow({ job }: { job: BackgroundJob }) {
     try {
       if (job.kind === "transcription" && queued) {
         if (cancelQueuedTranscription(job.id)) {
-          upsertJob({ ...job, phase: "cancelled", status: "cancelled", detail: "Togs bort från kön." });
+          upsertJob({
+            ...job,
+            phase: "cancelled",
+            status: "cancelled",
+            detail: "Togs bort från kön.",
+          });
         }
       } else if (job.kind === "transcription" && active) {
         cancelActiveTranscription(job.id);
@@ -70,11 +82,25 @@ function JobRow({ job }: { job: BackgroundJob }) {
         upsertJob({ ...job, detail: "Avbryter transkriberingen…" });
       } else if (job.kind === "vision" && queued) {
         if (cancelQueuedVision(job.id)) {
-          upsertJob({ ...job, phase: "cancelled", status: "cancelled", detail: "Togs bort från kön." });
+          upsertJob({
+            ...job,
+            phase: "cancelled",
+            status: "cancelled",
+            detail: "Togs bort från kön.",
+          });
         }
       } else if (job.kind === "vision" && active) {
         cancelActiveVision(job.id);
         upsertJob({ ...job, detail: "Avbryter lokal bildbeskrivning…" });
+      } else if (job.kind === "library" && queued) {
+        if (cancelQueuedSlideIndex(job.id)) {
+          upsertJob({
+            ...job,
+            phase: "cancelled",
+            status: "cancelled",
+            detail: "Togs bort från kön.",
+          });
+        }
       } else if (job.kind === "download") {
         await cancelDownload(job.id);
       }
@@ -82,30 +108,31 @@ function JobRow({ job }: { job: BackgroundJob }) {
       // The native worker emits its own actionable error when applicable.
     }
   };
-  const Icon = job.status === "error"
-    ? CircleX
-    : queued
-    ? Clock3
-    : active
-    ? job.kind === "download"
-      ? Download
-      : LoaderCircle
-    : Check;
+  const Icon =
+    job.status === "error"
+      ? CircleX
+      : queued
+        ? Clock3
+        : active
+          ? LoaderCircle
+          : Check;
   const detail =
-    job.detail ??
-    (job.kind === "transcription" && job.total
-      ? `${time(job.current)} / ${time(job.total)}`
-      : job.kind === "library" && job.total
-      ? `${job.current} av ${job.total} objekt`
-      : job.total
-      ? `${bytes(job.current)} av ${bytes(job.total)}`
-      : (phaseLabel[job.phase] ?? "Arbetar…"));
+    job.kind === "download" && job.total
+      ? `${job.detail ? `${job.detail} · ` : ""}${bytes(job.current)} av ${bytes(job.total)}`
+      : (job.detail ??
+        (job.kind === "transcription" && job.total
+          ? `${time(job.current)} / ${time(job.total)}`
+          : job.kind === "library" && job.total
+            ? `${job.current} av ${job.total} objekt`
+            : job.total
+              ? `${bytes(job.current)} av ${bytes(job.total)}`
+              : (phaseLabel[job.phase] ?? "Arbetar…")));
 
   return (
     <div className="w-80 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]/95 p-3 shadow-lg backdrop-blur">
       <div className="flex items-start gap-2.5">
         <Icon
-          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active && job.kind === "transcription" ? "animate-spin text-[var(--palette-accent)]" : "text-[var(--palette-text-muted)]"}`}
+          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active ? "animate-spin text-[var(--palette-accent)]" : "text-[var(--palette-text-muted)]"}`}
         />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
@@ -118,14 +145,35 @@ function JobRow({ job }: { job: BackgroundJob }) {
               </span>
             )}
           </div>
-          <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">{detail}</p>
+          <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">
+            {detail}
+          </p>
         </div>
-        {((job.kind === "transcription" || job.kind === "vision") && (queued || active)) || (active && job.kind === "download") ? (
+        {((job.kind === "transcription" || job.kind === "vision") &&
+          (queued || active)) ||
+        (job.kind === "library" && queued) ||
+        (active && job.kind === "download") ? (
           <button
             className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
             onClick={() => void cancel()}
-            aria-label={queued ? "Ta bort från kön" : job.kind === "vision" ? "Avbryt bildbeskrivning" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
-            title={queued ? "Ta bort från kön" : job.kind === "vision" ? "Avbryt bildbeskrivning" : job.kind === "transcription" ? "Avbryt transkribering" : "Avbryt nedladdning"}
+            aria-label={
+              queued
+                ? "Ta bort från kön"
+                : job.kind === "vision"
+                  ? "Avbryt bildbeskrivning"
+                  : job.kind === "transcription"
+                    ? "Avbryt transkribering"
+                    : "Avbryt nedladdning"
+            }
+            title={
+              queued
+                ? "Ta bort från kön"
+                : job.kind === "vision"
+                  ? "Avbryt bildbeskrivning"
+                  : job.kind === "transcription"
+                    ? "Avbryt transkribering"
+                    : "Avbryt nedladdning"
+            }
           >
             <X className="size-3.5" />
           </button>
@@ -171,14 +219,33 @@ export function ProgressCenter() {
     return () => unlisten?.();
   }, [upsertJob]);
 
-  if (!jobs.length) return null;
+  const activeJobs = jobs.filter((job) => job.status === "active");
+  const queuedJobs = jobs.filter((job) => job.status === "queued");
+  const latestTerminal = jobs
+    .filter((job) => job.status !== "active" && job.status !== "queued")
+    .slice(-1);
+  // A burst of imports must not turn the corner into a stack of competing
+  // popups. Running work wins; retain only the latest completed/error state.
+  const runningSlots = Math.max(0, 3 - activeJobs.length);
+  const visibleJobs = [
+    ...activeJobs.slice(-3),
+    ...queuedJobs.slice(0, runningSlots),
+    ...latestTerminal,
+  ];
+  const hiddenQueuedCount = Math.max(0, queuedJobs.length - runningSlots);
+  if (!visibleJobs.length) return null;
   return (
     <aside className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-h-[calc(100vh-2rem)] flex-col gap-2 overflow-y-auto">
-      {jobs.slice(-4).map((job) => (
+      {visibleJobs.map((job) => (
         <div className="pointer-events-auto" key={job.id}>
           <JobRow job={job} />
         </div>
       ))}
+      {hiddenQueuedCount > 0 && (
+        <div className="pointer-events-auto self-end rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)]/95 px-3 py-2 text-xs text-[var(--palette-text-muted)] shadow-lg backdrop-blur">
+          +{hiddenQueuedCount} bildanalyser väntar i kö
+        </div>
+      )}
     </aside>
   );
 }
