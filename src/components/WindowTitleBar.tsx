@@ -2,8 +2,8 @@ import { Bug, Cloud, LoaderCircle, Minus, Square, X } from "lucide-react";
 import { useState } from "react";
 import type { Window } from "@tauri-apps/api/window";
 import { useAppStore } from "../core/store";
+import { useJobStore } from "../infrastructure/jobStore";
 import { toast } from "../services/feedbackToast";
-import { syncGoogleDrive } from "../services/googleDriveSync";
 import { isTauri } from "../services/platform";
 import { syncErrorMessage } from "../services/sync";
 
@@ -24,7 +24,7 @@ async function withCurrentWindow(
 export function WindowTitleBar({ onReportProblem }: { onReportProblem: () => void }) {
   const [syncRequested, setSyncRequested] = useState(false);
   const cloudSync = useAppStore((state) => state.settings.cloudSync);
-  const jobs = useAppStore((state) => state.jobs);
+  const jobs = useJobStore((state) => state.jobs);
   const syncActive =
     syncRequested ||
     jobs.some(
@@ -41,6 +41,7 @@ export function WindowTitleBar({ onReportProblem }: { onReportProblem: () => voi
     }
     setSyncRequested(true);
     try {
+      const { syncGoogleDrive } = await import("../services/googleDriveSync");
       await syncGoogleDrive();
       toast.success("Google Drive-synken är klar.");
     } catch (error) {

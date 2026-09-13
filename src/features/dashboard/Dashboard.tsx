@@ -10,6 +10,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
@@ -18,7 +19,15 @@ import { LectureImportAssistant } from "../library/LectureImportAssistant";
 
 export function Dashboard() {
   const [importOpen, setImportOpen] = useState(false);
-  const { nodes, cards, lectures, selectNode, setActiveView } = useAppStore();
+  const { nodes, cards, lectures, selectNode, setActiveView } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      cards: state.cards,
+      lectures: state.lectures,
+      selectNode: state.selectNode,
+      setActiveView: state.setActiveView,
+    })),
+  );
   const courseNodes = nodes.filter((node) => node.type === "course");
   const lectureNodes = nodes.filter((node) => node.type === "lecture");
   const recent = [...lectureNodes]

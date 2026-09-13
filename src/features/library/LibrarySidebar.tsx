@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Sparkles,
   Shapes,
   Trash2,
 } from "lucide-react";
@@ -49,7 +50,9 @@ const labelByType: Record<NodeType, string> = {
 };
 
 const sortNodes = (items: LibraryNode[]) =>
-  [...items].sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
+  [...items].sort(
+    (left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0),
+  );
 
 type CreateRequest = { parentId: string; type: NodeType };
 type SearchResult = {
@@ -68,24 +71,33 @@ type TreeDragHandlers = {
   onDrop: (event: DragEvent<HTMLElement>, targetId: string) => void;
 };
 
-export function LibrarySidebar() {
-  const {
-    nodes,
-    lectures,
-    segments,
-    markers,
-    cards,
-    selectedId,
-    activeView,
-    settings,
-    updateSettings,
-    addNode,
-    updateNode,
-    moveNode,
-    reorderNode,
-    selectNode,
-    removeNode,
-  } = useAppStore();
+export function LibrarySidebar({
+  embedded = false,
+  forceVisible = false,
+  onNavigate,
+}: {
+  embedded?: boolean;
+  forceVisible?: boolean;
+  onNavigate?: () => void;
+} = {}) {
+  const nodes = useAppStore((state) => state.nodes);
+  const lectures = useAppStore((state) => state.lectures);
+  const segments = useAppStore((state) => state.segments);
+  const markers = useAppStore((state) => state.markers);
+  const cards = useAppStore((state) => state.cards);
+  const selectedId = useAppStore((state) => state.selectedId);
+  const activeView = useAppStore((state) => state.activeView);
+  const setActiveView = useAppStore((state) => state.setActiveView);
+  const sidebarCollapsed = useAppStore(
+    (state) => state.settings.librarySidebarCollapsed,
+  );
+  const updateSettings = useAppStore((state) => state.updateSettings);
+  const addNode = useAppStore((state) => state.addNode);
+  const updateNode = useAppStore((state) => state.updateNode);
+  const moveNode = useAppStore((state) => state.moveNode);
+  const reorderNode = useAppStore((state) => state.reorderNode);
+  const selectNode = useAppStore((state) => state.selectNode);
+  const removeNode = useAppStore((state) => state.removeNode);
   const [query, setQuery] = useState("");
   const [createRequest, setCreateRequest] = useState<CreateRequest | null>(
     null,
@@ -102,9 +114,20 @@ export function LibrarySidebar() {
   const draggedNodeIdRef = useRef<string | null>(null);
   const root = nodes.find((node) => node.type === "workspace") ?? nodes[0];
   const courses = sortNodes(
-    nodes.filter((node) => node.type === "course" && node.parentId === root?.id),
+    nodes.filter(
+      (node) => node.type === "course" && node.parentId === root?.id,
+    ),
   );
-  const hidden = activeView !== "workspace" && activeView !== "cards";
+  const hidden =
+    !embedded &&
+    !forceVisible &&
+    activeView !== "workspace" &&
+    activeView !== "cards";
+  const openNode = (id: string) => {
+    selectNode(id);
+    setActiveView("workspace");
+    onNavigate?.();
+  };
 
   const results = useMemo(() => {
     if (query.trim().length < 2) return [];
@@ -238,8 +261,7 @@ export function LibrarySidebar() {
 
   useEffect(() => {
     const focusSearch = () => {
-      if (settings.librarySidebarCollapsed)
-        updateSettings({ librarySidebarCollapsed: false });
+      if (sidebarCollapsed) updateSettings({ librarySidebarCollapsed: false });
       window.setTimeout(() => searchInput.current?.focus(), 0);
     };
     const createSelectedChild = (event: Event) => {
@@ -266,16 +288,19 @@ export function LibrarySidebar() {
         createSelectedChild,
       );
     };
-  }, [nodes, selectedId, settings.librarySidebarCollapsed, updateSettings]);
+  }, [nodes, selectedId, sidebarCollapsed, updateSettings]);
 
-  if (settings.librarySidebarCollapsed) return null;
+  if (sidebarCollapsed && !forceVisible) return null;
 
   return (
-    <aside
+    <div
+      aria-label="Bibliotek"
       className={cn(
         hidden
           ? "hidden"
-          : "flex h-full w-[286px] shrink-0 flex-col border-r border-border bg-card",
+          : embedded
+            ? "flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-[var(--palette-surface)]"
+            : "flex h-full w-[286px] shrink-0 flex-col border-r border-border bg-card",
       )}
     >
       <div
@@ -291,6 +316,16 @@ export function LibrarySidebar() {
           {dropTargetId === root?.id ? "Släpp kursen här" : "Mina studier"}
         </div>
         <div className="flex items-center gap-1">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8"
+            onClick={() => window.dispatchEvent(new Event("lectio:open-anki"))}
+            title="Öppna Anki för valt objekt (Ctrl+3)"
+            aria-label="Öppna Anki för valt objekt"
+          >
+            <Sparkles className="size-4" />
+          </Button>
           <Button
             size="icon"
             className="size-8 rounded-full"
@@ -322,7 +357,7 @@ export function LibrarySidebar() {
                   <button
                     key={`${result.node.id}-${result.source}-${index}`}
                     onClick={() => {
-                      selectNode(result.node.id);
+                      openNode(result.node.id);
                       setQuery("");
                       if (result.time !== undefined) {
                         window.setTimeout(
@@ -373,7 +408,7 @@ export function LibrarySidebar() {
               course={course}
               nodes={nodes}
               selectedId={selectedId}
-              onSelect={selectNode}
+              onSelect={openNode}
               onCreate={setCreateRequest}
               onRename={openRename}
               onRemove={removeNode}
@@ -461,7 +496,10 @@ export function LibrarySidebar() {
               onKeyDown={(event) => event.key === "Enter" && rename()}
               aria-describedby="rename-library-node-help"
             />
-            <p id="rename-library-node-help" className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]">
+            <p
+              id="rename-library-node-help"
+              className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
+            >
               Tomma namn kan inte sparas.
             </p>
           </div>
@@ -475,7 +513,7 @@ export function LibrarySidebar() {
           </div>
         </div>
       </Dialog>
-    </aside>
+    </div>
   );
 }
 
@@ -504,7 +542,9 @@ function CourseItem({
 } & TreeDragHandlers) {
   const [expanded, setExpanded] = useState(true);
   const modules = sortNodes(
-    nodes.filter((node) => node.type === "module" && node.parentId === course.id),
+    nodes.filter(
+      (node) => node.type === "module" && node.parentId === course.id,
+    ),
   );
   return (
     <div className="mb-1">

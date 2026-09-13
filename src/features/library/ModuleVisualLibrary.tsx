@@ -1,8 +1,10 @@
 /* oxlint-disable react/set-state-in-effect -- effects synchronize object URLs and the selected visual. */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Image, Trash2, WandSparkles } from "lucide-react";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
+import { useJobStore } from "../../infrastructure/jobStore";
 import { Button } from "../../components/ui/Button";
 import {
   buildStoredSlideVisualIndex,
@@ -21,8 +23,16 @@ import { uid } from "../../lib/utils";
 import { toast } from "../../services/feedbackToast";
 
 export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
-  const { nodes, lectures, cards, settings, updateLecture, upsertJob } =
-    useAppStore();
+  const { nodes, lectures, cards, settings, updateLecture } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      lectures: state.lectures,
+      cards: state.cards,
+      settings: state.settings,
+      updateLecture: state.updateLecture,
+    })),
+  );
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const repairedLectureIds = useRef(new Set<string>());
   const candidates = useMemo(
     () => moduleVisualCandidates(nodes, lectures, moduleId),
@@ -101,7 +111,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
         detail: "Väntar på ledig bildanalys…",
       });
       queueSlideIndex(jobId, async () => {
-        useAppStore.getState().upsertJob({
+        useJobStore.getState().upsertJob({
           id: jobId,
           kind: "library",
           label: "Indexerar befintliga slidebilder",
@@ -115,7 +125,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
           const visual = await buildStoredSlideVisualIndex(
             lecture,
             (current, count, detail) => {
-              useAppStore.getState().upsertJob({
+              useJobStore.getState().upsertJob({
                 id: jobId,
                 kind: "library",
                 label: "Indexerar befintliga slidebilder",
@@ -128,7 +138,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
             },
           );
           if (!visual) {
-            useAppStore.getState().upsertJob({
+            useJobStore.getState().upsertJob({
               id: jobId,
               kind: "library",
               label: "Indexerar befintliga slidebilder",
@@ -144,7 +154,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
           // deck. Never let that empty result erase visuals the student had
           // already indexed (or manually described) earlier.
           if (!visual.candidates.length) {
-            useAppStore.getState().upsertJob({
+            useJobStore.getState().upsertJob({
               id: jobId,
               kind: "library",
               label: "Indexerar befintliga slidebilder",
@@ -182,7 +192,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
             visualIndexVersion: 2,
             visualIndexUpdatedAt: new Date().toISOString(),
           });
-          useAppStore.getState().upsertJob({
+          useJobStore.getState().upsertJob({
             id: jobId,
             kind: "library",
             label: "Indexerar befintliga slidebilder",
@@ -193,7 +203,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
             detail: `${visual.pages.length} slides analyserade · ${candidates.length} bildutklipp är klara.`,
           });
         } catch (error) {
-          useAppStore.getState().upsertJob({
+          useJobStore.getState().upsertJob({
             id: jobId,
             kind: "library",
             label: "Indexerar befintliga slidebilder",
@@ -292,8 +302,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
     }
     const jobId = `vision:${moduleId}:${uid()}`;
     const label = `Beskriver ${pendingDescriptions.length} slidebilder`;
-    const store = useAppStore.getState();
-    store.upsertJob({
+    useJobStore.getState().upsertJob({
       id: jobId,
       kind: "vision",
       label,
@@ -303,8 +312,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
       total: pendingDescriptions.length,
     });
     runExclusiveVision(jobId, async (signal) => {
-      const state = useAppStore.getState();
-      state.upsertJob({
+      useJobStore.getState().upsertJob({
         id: jobId,
         kind: "vision",
         label,
@@ -377,7 +385,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
             }
           }
           completed += 1;
-          useAppStore.getState().upsertJob({
+          useJobStore.getState().upsertJob({
             id: jobId,
             kind: "vision",
             label,
@@ -388,7 +396,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
             detail: `Beskriver bild ${completed} av ${pendingDescriptions.length} lokalt…`,
           });
         }
-        useAppStore.getState().upsertJob({
+        useJobStore.getState().upsertJob({
           id: jobId,
           kind: "vision",
           label,
@@ -403,7 +411,7 @@ export function ModuleVisualLibrary({ moduleId }: { moduleId: string }) {
         const cancelled =
           signal.aborted ||
           (error instanceof DOMException && error.name === "AbortError");
-        useAppStore.getState().upsertJob({
+        useJobStore.getState().upsertJob({
           id: jobId,
           kind: "vision",
           label,

@@ -7,8 +7,41 @@
     <meta name="theme-color" content="#7c3aed" />
     <title>Lectio – Föreläsningar till Anki</title>
   </head>
-  <body style="margin: 0; background: #0f1115;">
-    <div id="root"></div>
+  <body>
+    <div id="root">
+      <main class="lectio-bootstrap" aria-label="Lectio startar" aria-live="polite">
+        <header><strong>Lectio</strong></header>
+        <div class="lectio-bootstrap__body">
+          <nav aria-hidden="true"><span></span><span></span><span></span></nav>
+          <section>
+            <div class="lectio-bootstrap__mark" aria-hidden="true"></div>
+            <p>Startar din arbetsyta…</p>
+          </section>
+        </div>
+      </main>
+    </div>
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; background: #fafafa; color: #18181b; }
+      .lectio-bootstrap { height: 100vh; display: flex; flex-direction: column; background: #fafafa; font-family: ui-sans-serif, system-ui, sans-serif; }
+      .lectio-bootstrap header { height: 35px; flex: none; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid #e4e4e7; background: #fff; font-size: 13px; }
+      .lectio-bootstrap__body { min-height: 0; flex: 1; display: flex; }
+      .lectio-bootstrap nav { width: 52px; flex: none; border-right: 1px solid #e4e4e7; background: #fff; padding-top: 16px; }
+      .lectio-bootstrap nav span { display: block; width: 18px; height: 18px; margin: 0 auto 18px; border-radius: 5px; background: #e4e4e7; }
+      .lectio-bootstrap section { flex: 1; display: grid; place-content: center; justify-items: center; gap: 12px; }
+      .lectio-bootstrap p { margin: 0; color: #71717a; font-size: 13px; }
+      .lectio-bootstrap__mark { width: 22px; height: 22px; border: 2px solid #d4d4d8; border-top-color: #2563eb; border-radius: 999px; animation: lectio-spin .8s linear infinite; }
+      @keyframes lectio-spin { to { transform: rotate(360deg); } }
+      @media (prefers-color-scheme: dark) {
+        body, .lectio-bootstrap { background: #09090b; color: #fafafa; }
+        .lectio-bootstrap header, .lectio-bootstrap nav { background: #111113; border-color: #27272a; }
+        .lectio-bootstrap nav span { background: #27272a; }
+        .lectio-bootstrap p { color: #a1a1aa; }
+        .lectio-bootstrap__mark { border-color: #3f3f46; border-top-color: #60a5fa; }
+      }
+      @media (prefers-reduced-motion: reduce) { .lectio-bootstrap__mark { animation: none; } }
+    </style>
+    <script>window.__LECTIO_BOOTSTRAP_AT__ = performance.now();</script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -1,9 +1,10 @@
 import { toast as sonnerToast, type ExternalToast } from "sonner";
-import { recordDiagnostic } from "./diagnostics";
 
 function reportError(message: string | number, options?: ExternalToast) {
   const text = String(message);
-  recordDiagnostic("app", text);
+  void import("./diagnostics").then(({ recordDiagnostic }) =>
+    recordDiagnostic("app", text),
+  );
   return sonnerToast.error(text, {
     ...options,
     action: options?.action ?? {

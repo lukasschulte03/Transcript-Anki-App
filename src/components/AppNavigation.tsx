@@ -6,28 +6,46 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Settings,
-  Sparkles,
   Wand2,
 } from "lucide-react";
 import { useAppStore } from "../core/store";
 import { cn } from "../lib/utils";
 import { APP_VERSION } from "../lib/appVersion";
+import type { ReactNode } from "react";
 
 const navigation = [
   { id: "dashboard", label: "Översikt", icon: Home, shortcut: "Ctrl+1" },
-  { id: "workspace", label: "Bibliotek", icon: BookOpen, shortcut: "Ctrl+2" },
-  { id: "cards", label: "Anki-kort", icon: Sparkles, shortcut: "Ctrl+3" },
   { id: "inbox", label: "Inkorg", icon: Inbox, shortcut: "Ctrl+4" },
-  { id: "super-actions", label: "Super Actions", icon: Wand2, shortcut: "Ctrl+5" },
+  {
+    id: "super-actions",
+    label: "Super Actions",
+    icon: Wand2,
+    shortcut: "Ctrl+5",
+  },
 ] as const;
 
 const shortcutHintClass =
   "ml-auto hidden shrink-0 whitespace-nowrap font-sans text-[11px] leading-none font-medium tabular-nums text-[var(--palette-text-subtle)] group-hover:inline-flex group-focus-visible:inline-flex";
 
 /** Primary navigation shaped after the shadcn dashboard sidebar. */
-export function AppNavigation() {
-  const { activeView, setActiveView, settings, updateSettings } = useAppStore();
-  const collapsed = settings.librarySidebarCollapsed;
+export function AppNavigation({
+  collapsed: collapsedOverride,
+  onOpenLibrary,
+  library,
+  hideCollapseToggle = false,
+}: {
+  collapsed?: boolean;
+  onOpenLibrary?: () => void;
+  library?: ReactNode;
+  hideCollapseToggle?: boolean;
+} = {}) {
+  const activeView = useAppStore((state) => state.activeView);
+  const setActiveView = useAppStore((state) => state.setActiveView);
+  const sidebarCollapsed = useAppStore(
+    (state) => state.settings.librarySidebarCollapsed,
+  );
+  const updateSettings = useAppStore((state) => state.updateSettings);
+  const collapsed = collapsedOverride ?? sidebarCollapsed;
   const navClass = (isActive: boolean) =>
     cn(
       "group relative flex h-9 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-sm font-medium outline-none transition-[background-color,color] duration-150 focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
@@ -40,8 +58,8 @@ export function AppNavigation() {
     <nav
       aria-label="Huvudnavigation"
       className={cn(
-        "app-navigation flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--palette-border)] bg-[var(--palette-surface)] transition-[width,padding] duration-200 ease-out motion-reduce:transition-none",
-        collapsed ? "w-13 p-2" : "w-52 p-3",
+        "app-navigation flex h-full shrink-0 flex-col overflow-hidden bg-[var(--palette-surface)] transition-[padding] duration-200 ease-out motion-reduce:transition-none",
+        collapsed ? "w-full p-2" : "w-full p-3 pb-2",
       )}
     >
       <div className="space-y-1">
@@ -74,44 +92,64 @@ export function AppNavigation() {
             </kbd>
           </button>
         ))}
+        {collapsed && onOpenLibrary && (
+          <button
+            onClick={onOpenLibrary}
+            className={navClass(activeView === "workspace")}
+            title="Öppna bibliotek"
+            aria-label="Öppna bibliotek"
+          >
+            <BookOpen className="size-4 shrink-0" />
+          </button>
+        )}
       </div>
 
-      <div className="mt-auto border-t border-[var(--palette-border)] pt-3">
-        <button
-          onClick={() =>
-            updateSettings({ librarySidebarCollapsed: !collapsed })
-          }
-          className={cn(
-            "group relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
-            collapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
-          )}
-          title={`${collapsed ? "Visa" : "Dölj"} sidofält (Ctrl+B)`}
-          aria-label={`${collapsed ? "Visa" : "Dölj"} sidofält (Ctrl+B)`}
-        >
-          {collapsed ? (
-            <PanelLeftOpen className="size-4" />
-          ) : (
-            <PanelLeftClose className="size-4" />
-          )}
-          <span
+      {library && (
+        <div className="mt-2 flex min-h-0 flex-1 border-t border-[var(--palette-border)]">
+          {library}
+        </div>
+      )}
+
+      <div className="mt-auto border-t border-[var(--palette-border)] pt-2">
+        {!hideCollapseToggle && (
+          <button
+            onClick={() =>
+              updateSettings({
+                librarySidebarCollapsed: !sidebarCollapsed,
+              })
+            }
             className={cn(
-              "min-w-0 flex-1 truncate text-left transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
-              collapsed &&
-                "pointer-events-none absolute left-8 right-2 -translate-x-1 opacity-0",
+              "group relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
+              collapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
             )}
+            title={`${sidebarCollapsed ? "Visa" : "Dölj"} sidofält (Ctrl+B)`}
+            aria-label={`${sidebarCollapsed ? "Visa" : "Dölj"} sidofält (Ctrl+B)`}
           >
-            Dölj sidofält
-          </span>
-          <kbd
-            className={cn(
-              shortcutHintClass,
-              "transition-opacity duration-150 ease-out motion-reduce:transition-none",
-              collapsed && "pointer-events-none absolute right-2 opacity-0",
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="size-4" />
+            ) : (
+              <PanelLeftClose className="size-4" />
             )}
-          >
-            Ctrl+B
-          </kbd>
-        </button>
+            <span
+              className={cn(
+                "min-w-0 flex-1 truncate text-left transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none",
+                collapsed &&
+                  "pointer-events-none absolute left-8 right-2 -translate-x-1 opacity-0",
+              )}
+            >
+              Dölj sidofält
+            </span>
+            <kbd
+              className={cn(
+                shortcutHintClass,
+                "transition-opacity duration-150 ease-out motion-reduce:transition-none",
+                collapsed && "pointer-events-none absolute right-2 opacity-0",
+              )}
+            >
+              Ctrl+B
+            </kbd>
+          </button>
+        )}
         <button
           onClick={() =>
             window.dispatchEvent(new Event("lectio:show-shortcuts"))
@@ -169,15 +207,15 @@ export function AppNavigation() {
             Ctrl+,
           </kbd>
         </button>
-        <div
-          data-version={APP_VERSION}
-          className={cn(
-            "mt-3 overflow-hidden whitespace-nowrap text-xs text-[var(--palette-text-subtle)]",
-            collapsed ? "px-0 text-center text-[10px]" : "px-2",
-          )}
-        >
-          {collapsed ? `v${APP_VERSION}` : `Lectio · v${APP_VERSION}`}
-        </div>
+      </div>
+      <div
+        data-version={APP_VERSION}
+        className={cn(
+          "mt-auto overflow-hidden whitespace-nowrap pt-3 text-xs text-[var(--palette-text-subtle)]",
+          collapsed ? "px-0 text-center text-[10px]" : "px-2",
+        )}
+      >
+        {collapsed ? `v${APP_VERSION}` : `Lectio · v${APP_VERSION}`}
       </div>
     </nav>
   );

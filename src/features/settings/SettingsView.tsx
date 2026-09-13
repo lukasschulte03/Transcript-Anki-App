@@ -1,5 +1,6 @@
 /* oxlint-disable react/set-state-in-effect -- fields synchronize secure credentials and local engine status. */
 import { useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   CheckCircle2,
   AudioLines,
@@ -23,6 +24,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useAppStore } from "../../core/store";
+import { useJobStore } from "../../infrastructure/jobStore";
 import { Button } from "../../components/ui/Button";
 import { PageHeader } from "../../components/PageHeader";
 import { Dialog } from "../../components/ui/Dialog";
@@ -186,15 +188,22 @@ const unzipAsync = (data: Uint8Array) =>
 
 export function SettingsView() {
   const glossaryFileRef = useRef<HTMLInputElement>(null);
-  const store = useAppStore();
   const {
     settings,
     nodes,
     updateSettings,
     importLibrary,
     restoreLibraryBackup,
-    upsertJob,
-  } = store;
+  } = useAppStore(
+    useShallow((state) => ({
+      settings: state.settings,
+      nodes: state.nodes,
+      updateSettings: state.updateSettings,
+      importLibrary: state.importLibrary,
+      restoreLibraryBackup: state.restoreLibraryBackup,
+    })),
+  );
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const [tab, setTab] = useState("general");
   const [settingsQuery, setSettingsQuery] = useState("");
   const [ankiOk, setAnkiOk] = useState(false);
@@ -2044,7 +2053,12 @@ function formatBytes(bytes: number) {
 }
 
 function LocalModelManager() {
-  const { settings, updateSettings } = useAppStore();
+  const { settings, updateSettings } = useAppStore(
+    useShallow((state) => ({
+      settings: state.settings,
+      updateSettings: state.updateSettings,
+    })),
+  );
   const selected = settings.localTranscriptionModel ?? "base";
   const [statuses, setStatuses] = useState<
     Partial<Record<LocalModel, LocalModelStatus>>

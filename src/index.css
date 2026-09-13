@@ -163,6 +163,34 @@ select:disabled {
   }
 }
 
+.next-window-button {
+  display: grid;
+  height: 100%;
+  width: 2.75rem;
+  place-items: center;
+  color: var(--palette-text-muted);
+}
+.next-window-button:hover { background: var(--palette-surface-hover); color: var(--palette-text); }
+.next-window-button svg { width: 0.875rem; height: 0.875rem; }
+.next-window-close:hover { background: var(--palette-danger); color: var(--palette-danger-foreground); }
+.next-icon-button { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: 0.5rem; color: var(--palette-text-muted); }
+.next-icon-button:hover { background: var(--palette-surface-hover); color: var(--palette-text); }
+.next-icon-button svg { width: 1rem; height: 1rem; }
+.next-tree-row { display: flex; width: 100%; height: 2.25rem; align-items: center; gap: 0.5rem; border-radius: 0.5rem; padding-right: 0.75rem; color: var(--palette-text-muted); font-size: 0.875rem; text-align: left; }
+.next-tree-row:hover { background: var(--palette-surface-hover); color: var(--palette-text); }
+.next-tree-row-selected { background: var(--palette-primary-muted); color: var(--palette-accent); font-weight: 600; }
+.next-primary-button { display: inline-flex; height: 2.5rem; flex: none; align-items: center; gap: 0.5rem; border-radius: 0.5rem; background: var(--palette-primary); padding: 0 1rem; color: var(--palette-primary-foreground); font-size: 0.875rem; font-weight: 600; }
+.next-primary-button:hover { background: var(--palette-primary-hover); }
+.next-primary-button svg { width: 1rem; height: 1rem; }
+.next-panel { border: 1px solid var(--palette-border); border-radius: 0.75rem; background: var(--palette-surface); padding: 1.25rem; }
+.next-panel > div:first-child h2, .next-panel > h2 { font-size: 0.875rem; font-weight: 650; }
+.next-panel > div:first-child > span { color: var(--palette-text-subtle); font-size: 0.75rem; }
+.next-empty { padding: 2.5rem 0; color: var(--palette-text-muted); font-size: 0.875rem; }
+.next-material { display: flex; align-items: center; gap: 0.625rem; color: var(--palette-text-muted); font-size: 0.875rem; }
+.next-material svg { width: 1rem; height: 1rem; }
+.next-panel dt { color: var(--palette-text-subtle); font-size: 0.75rem; }
+.next-panel dd { margin-top: 0.25rem; font-size: 1.5rem; font-weight: 650; }
+
 .lecture-workspace-root {
   container-type: inline-size;
 }

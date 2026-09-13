@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   ArrowDown,
   ArrowUp,
@@ -14,6 +15,7 @@ import { Button } from "../../components/ui/Button";
 import { Input, Label, Select } from "../../components/ui/Form";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
+import { useJobStore } from "../../infrastructure/jobStore";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import { extractPdfPages, formatSlideText } from "../../services/pdf";
 import {
@@ -52,8 +54,17 @@ export function LectureImportAssistant({
     updateLecture,
     selectNode,
     setActiveView,
-    upsertJob,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      lectures: state.lectures,
+      addNode: state.addNode,
+      updateLecture: state.updateLecture,
+      selectNode: state.selectNode,
+      setActiveView: state.setActiveView,
+    })),
+  );
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const lectureNodes = nodes.filter((node) => node.type === "lecture");
   const modules = nodes.filter((node) => node.type === "module");
   const [targetId, setTargetId] = useState(lectureNodes[0]?.id ?? "new");

@@ -1,7 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Check, ChevronDown, ChevronUp, CircleX, Clock3, LoaderCircle, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useAppStore } from "../core/store";
+import { useJobStore } from "../infrastructure/jobStore";
 import type {
   BackgroundJob,
   BackgroundJobKind,
@@ -58,8 +58,8 @@ const time = (milliseconds: number) => {
 };
 
 function JobRow({ job }: { job: BackgroundJob }) {
-  const dismissJob = useAppStore((state) => state.dismissJob);
-  const upsertJob = useAppStore((state) => state.upsertJob);
+  const dismissJob = useJobStore((state) => state.dismissJob);
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const percentage = job.total
     ? Math.min(100, Math.round((job.current / job.total) * 100))
     : null;
@@ -205,8 +205,8 @@ function JobRow({ job }: { job: BackgroundJob }) {
 }
 
 export function ProgressCenter() {
-  const jobs = useAppStore((state) => state.jobs);
-  const upsertJob = useAppStore((state) => state.upsertJob);
+  const jobs = useJobStore((state) => state.jobs);
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {

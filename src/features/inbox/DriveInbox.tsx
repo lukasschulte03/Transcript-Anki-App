@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   AudioLines,
   Check,
@@ -68,7 +69,17 @@ export function DriveInbox() {
     updateLecture,
     selectNode,
     setActiveView,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      lectures: state.lectures,
+      settings: state.settings,
+      addNode: state.addNode,
+      updateLecture: state.updateLecture,
+      selectNode: state.selectNode,
+      setActiveView: state.setActiveView,
+    })),
+  );
   const [files, setFiles] = useState<InboxAudioFile[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);

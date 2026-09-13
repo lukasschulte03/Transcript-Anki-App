@@ -17,20 +17,33 @@ import {
   FileDown,
   Gauge,
   Mic,
+  MoreHorizontal,
   Pause,
   Play,
   RotateCcw,
   RotateCw,
-  Sparkles,
-  Star,
   Trash2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { db } from "../../core/database";
 import { useAppStore } from "../../core/store";
+import { useJobStore } from "../../infrastructure/jobStore";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "../../components/ui/DropdownMenu";
 import { Input, Label, Select } from "../../components/ui/Form";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../../components/ui/tooltip";
 import { confirmStorageForImport, formatTime, uid } from "../../lib/utils";
 import {
   buildTranscriptionPrompt,
@@ -100,7 +113,7 @@ export function AudioPanel({
   const updateSettings = useAppStore((s) => s.updateSettings);
   const setSegments = useAppStore((s) => s.setSegments);
   const setActiveView = useAppStore((s) => s.setActiveView);
-  const upsertJob = useAppStore((s) => s.upsertJob);
+  const upsertJob = useJobStore((s) => s.upsertJob);
   const audioParts = useMemo(() => {
     if (lecture?.audioParts?.length) return lecture.audioParts;
     return lecture?.audioAssetId
@@ -119,10 +132,7 @@ export function AudioPanel({
   // mobile recording at once can exhaust WebView2 before transcription starts.
   const activeAudioAssetId = audioParts[activeAudioPart]?.assetId;
   const asset = useLiveQuery(
-    () =>
-      activeAudioAssetId
-        ? db.assets.get(activeAudioAssetId)
-        : undefined,
+    () => (activeAudioAssetId ? db.assets.get(activeAudioAssetId) : undefined),
     [activeAudioAssetId],
   );
   const recoverableSession = useLiveQuery(async () => {
@@ -159,6 +169,9 @@ export function AudioPanel({
   const [playbackTime, setPlaybackTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [muted, setMuted] = useState(false);
+  const [skipFeedback, setSkipFeedback] = useState<number | null>(null);
+  const skipFeedbackTimer = useRef<number | null>(null);
   const cycleSpeed = () => {
     setSpeed((currentSpeed) => {
       const currentIndex = playbackSpeeds.indexOf(
@@ -254,8 +267,10 @@ export function AudioPanel({
     [],
   );
   useEffect(() => {
-    if (audio.current) audio.current.playbackRate = speed;
-  }, [speed]);
+    if (!audio.current) return;
+    audio.current.playbackRate = speed;
+    audio.current.muted = muted;
+  }, [speed, muted]);
   useEffect(() => {
     // Start a newly selected asset from its beginning. A completed recording
     // already has an elapsed duration even when its WebM container does not.
@@ -708,7 +723,9 @@ export function AudioPanel({
               throw new Error("TRANSCRIPTION_CANCELLED");
             const partAsset = await db.assets.get(part.assetId);
             if (!partAsset)
-              throw new Error("En eller flera ljuddelar kunde inte hittas lokalt");
+              throw new Error(
+                "En eller flera ljuddelar kunde inte hittas lokalt",
+              );
             upsertJob({
               id: jobId,
               kind: "transcription",
@@ -732,8 +749,7 @@ export function AudioPanel({
                 throw new Error("TRANSCRIPTION_CANCELLED");
               const cachedChunk = cachedApiChunks.find(
                 (chunk) =>
-                  chunk.assetId === part.assetId &&
-                  chunk.index === uploadIndex,
+                  chunk.assetId === part.assetId && chunk.index === uploadIndex,
               );
               if (cachedChunk) {
                 mergedSegments.push(
@@ -806,8 +822,7 @@ export function AudioPanel({
             uploadParts = [];
             const measuredDuration = part.duration ?? uploadOffset;
             const duration =
-              measuredDuration ||
-              (await measureAudioDuration(partAsset.blob));
+              measuredDuration || (await measureAudioDuration(partAsset.blob));
             updatedParts[index] = { ...part, duration };
             offset += duration;
             await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
@@ -965,6 +980,26 @@ export function AudioPanel({
   const skipAudio = useCallback(
     (seconds: number) => seekTo(current + seconds),
     [current, seekTo],
+  );
+  const performSkip = useCallback(
+    (seconds: number) => {
+      skipAudio(seconds);
+      setSkipFeedback(seconds);
+      if (skipFeedbackTimer.current)
+        window.clearTimeout(skipFeedbackTimer.current);
+      skipFeedbackTimer.current = window.setTimeout(
+        () => setSkipFeedback(null),
+        700,
+      );
+    },
+    [skipAudio],
+  );
+  useEffect(
+    () => () => {
+      if (skipFeedbackTimer.current)
+        window.clearTimeout(skipFeedbackTimer.current);
+    },
+    [],
   );
   const moveAudioPart = (index: number, direction: -1 | 1) => {
     const nextIndex = index + direction;
@@ -1205,10 +1240,10 @@ export function AudioPanel({
       togglePlayback();
     } else if (event.key === "ArrowLeft" && audioUrl) {
       event.preventDefault();
-      skipAudio(event.shiftKey ? -30 : -10);
+      performSkip(event.shiftKey ? -30 : -10);
     } else if (event.key === "ArrowRight" && audioUrl) {
       event.preventDefault();
-      skipAudio(event.shiftKey ? 30 : 10);
+      performSkip(event.shiftKey ? 30 : 10);
     } else if (event.key.toLowerCase() === "m") {
       event.preventDefault();
       markMoment();
@@ -1232,8 +1267,11 @@ export function AudioPanel({
     return () => window.removeEventListener("keydown", handleKeyboardShortcut);
   }, []);
   return (
-    <div className="palette-top-shadow border-t border-slate-200/80 bg-white px-6 py-3">
-      <div className="flex items-center gap-4">
+    <div
+      data-lectio-audio-panel
+      className="palette-top-shadow border-t border-[var(--palette-border)] bg-[var(--palette-surface)] px-3 py-3 sm:px-4"
+    >
+      <div className="flex min-w-0 items-center gap-2">
         {recording ? (
           <>
             <Button variant="danger" size="icon" onClick={stop}>
@@ -1251,12 +1289,20 @@ export function AudioPanel({
               {formatTime(elapsed)}
             </div>
           </>
-        ) : (
-          <Button variant="outline" size="sm" onClick={start} disabled={savingRecording}>
-            <Mic className="size-4" /> Spela in
+        ) : !audioUrl ? (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={start}
+            disabled={savingRecording}
+            className="max-[900px]:size-8 max-[900px]:px-0"
+            aria-label="Spela in"
+          >
+            <Mic className="size-4" />
+            <span className="max-[900px]:sr-only">Spela in</span>
           </Button>
-        )}
-        {!recording && microphones.length > 1 && (
+        ) : null}
+        {!recording && !audioUrl && microphones.length > 1 && (
           <Select
             value={selectedMicrophoneId}
             onChange={(event) => setSelectedMicrophoneId(event.target.value)}
@@ -1312,34 +1358,48 @@ export function AudioPanel({
             Sparar ljudsegment…
           </span>
         )}
-        <Button variant="outline" size="sm" asChild>
-          <label className="cursor-pointer">
-            <FileDown className="size-3.5" /> Importera ljud
-            <input
-              ref={audioImportInput}
-              type="file"
-              accept="audio/*,.m4a,.aac,.mp3,.wav,.mp4,.mpeg,.webm,.ogg,.opus,.flac"
-              multiple
-              className="hidden"
-              onChange={(e) => void importAudio(e.target.files ?? undefined)}
-            />
-          </label>
-        </Button>
+        {!audioUrl && (
+          <Button
+            variant="outline"
+            size="sm"
+            className="max-[900px]:size-8 max-[900px]:px-0"
+            onClick={() => audioImportInput.current?.click()}
+            aria-label="Importera ljud"
+          >
+            <FileDown className="size-3.5" />
+            <span className="max-[900px]:sr-only">Importera ljud</span>
+          </Button>
+        )}
+        <input
+          ref={audioImportInput}
+          type="file"
+          accept="audio/*,.m4a,.aac,.mp3,.wav,.mp4,.mpeg,.webm,.ogg,.opus,.flac"
+          multiple
+          className="hidden"
+          onChange={(e) => void importAudio(e.target.files ?? undefined)}
+        />
         {mediaSuspended && audioParts.length > 0 ? (
           <span className="min-w-0 flex-1 text-xs text-[var(--palette-text-muted)]">
             Ljudspelaren pausas tillfälligt medan transkriberingen kör.
           </span>
         ) : audioUrl ? (
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => skipAudio(-10)}
-              title="Hoppa tillbaka 10 sekunder (vänsterpil)"
-              aria-label="Hoppa tillbaka 10 sekunder"
-            >
-              <RotateCcw className="size-3.5" />
-            </Button>
+          <div
+            data-lectio-playback-controls
+            className="relative flex min-w-0 flex-1 items-center gap-1.5"
+          >
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => performSkip(-10)}
+                  aria-label="Hoppa 10 sekunder bakåt"
+                >
+                  <RotateCcw className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Hoppa 10 sekunder bakåt · ←</TooltipContent>
+            </Tooltip>
             <Button
               variant="secondary"
               size="icon"
@@ -1352,18 +1412,23 @@ export function AudioPanel({
                 <Play className="size-4" />
               )}
             </Button>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => skipAudio(10)}
-              title="Hoppa fram 10 sekunder (högerpil)"
-              aria-label="Hoppa fram 10 sekunder"
-            >
-              <RotateCw className="size-3.5" />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => performSkip(10)}
+                  aria-label="Hoppa 10 sekunder framåt"
+                >
+                  <RotateCw className="size-3.5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Hoppa 10 sekunder framåt · →</TooltipContent>
+            </Tooltip>
             <audio
               ref={audio}
               src={audioUrl}
+              muted={muted}
               className="hidden"
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
@@ -1398,6 +1463,16 @@ export function AudioPanel({
                 onTime(partOffset + e.currentTarget.currentTime);
               }}
             />
+            {skipFeedback !== null && (
+              <span
+                className="pointer-events-none absolute -top-9 left-16 z-10 rounded-md bg-[var(--palette-text)] px-2 py-1 text-[11px] font-medium tabular-nums text-[var(--palette-background)] shadow-md"
+                role="status"
+                aria-live="polite"
+              >
+                {skipFeedback > 0 ? "+" : "−"}
+                {Math.abs(skipFeedback)} s
+              </span>
+            )}
             <input
               type="range"
               min="0"
@@ -1408,10 +1483,10 @@ export function AudioPanel({
                 const value = Number(event.target.value);
                 seekTo(value);
               }}
-              className="min-w-20 flex-1 accent-violet-600"
+              className="min-w-20 flex-1 accent-[var(--palette-primary)]"
               aria-label="Ljudposition"
             />
-            <span className="w-24 text-right font-mono text-xs tabular-nums text-slate-500">
+            <span className="w-20 shrink-0 text-right font-mono text-xs tabular-nums text-[var(--palette-text-muted)]">
               {formatTime(current)} /{" "}
               {knownDuration ? formatTime(knownDuration) : "--:--"}
             </span>
@@ -1426,64 +1501,68 @@ export function AudioPanel({
               <Gauge className="size-3.5" /> {speed}×
             </Button>
             <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => setTranscribeOpen(true)}
-            >
-              <Sparkles className="size-3.5" /> Transkribera
-            </Button>
-            <Button
               variant="ghost"
               size="icon-sm"
-              onClick={() => void optimizeActiveAudio()}
-              disabled={optimizingAudio}
-              title="Optimera ljud för mindre lagring och synk"
-              aria-label="Optimera ljud för mindre lagring och synk"
+              onClick={() => setMuted((value) => !value)}
+              title={muted ? "Slå på ljud" : "Stäng av ljud"}
+              aria-label={muted ? "Slå på ljud" : "Stäng av ljud"}
             >
-              <Archive className="size-3.5" />
+              {muted ? (
+                <VolumeX className="size-3.5" />
+              ) : (
+                <Volume2 className="size-3.5" />
+              )}
             </Button>
-            {audioParts[activeAudioPart]?.originalAssetId && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => void restoreOriginalAudio()}
-                title="Återställ den sparade originalfilen"
-              >
-                <RotateCcw className="size-3.5" /> Återställ original
-              </Button>
-            )}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => void deleteAudioPart(activeAudioPart)}
-              title={
-                audioParts.length === 1
-                  ? "Ta bort ljudfil från föreläsningen"
-                  : "Ta bort aktiv ljuddel"
-              }
-              aria-label={
-                audioParts.length === 1
-                  ? "Ta bort ljudfil från föreläsningen"
-                  : "Ta bort aktiv ljuddel"
-              }
-              className="text-destructive hover:text-destructive"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  title="Fler ljudåtgärder"
+                  aria-label="Fler ljudåtgärder"
+                >
+                  <MoreHorizontal className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onSelect={() => void start()}>
+                  <Mic className="size-3.5" /> Spela in ny ljuddel
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onSelect={() => audioImportInput.current?.click()}
+                >
+                  <FileDown className="size-3.5" /> Importera ljuddel
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={optimizingAudio}
+                  onSelect={() => void optimizeActiveAudio()}
+                >
+                  <Archive className="size-3.5" /> Optimera ljud
+                </DropdownMenuItem>
+                {audioParts[activeAudioPart]?.originalAssetId && (
+                  <DropdownMenuItem
+                    onSelect={() => void restoreOriginalAudio()}
+                  >
+                    <RotateCcw className="size-3.5" /> Återställ original
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  onSelect={() => void deleteAudioPart(activeAudioPart)}
+                  className="text-[var(--palette-danger)] focus:text-[var(--palette-danger)]"
+                >
+                  <Trash2 className="size-3.5" />
+                  {audioParts.length === 1
+                    ? "Ta bort ljudfil"
+                    : "Ta bort aktiv ljuddel"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         ) : (
           <div className="flex flex-1 items-center gap-2 text-xs text-slate-400">
             <FileAudio className="size-4" /> Ingen ljudfil ännu
           </div>
         )}
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={markMoment}
-          title="Markera viktigt (M)"
-        >
-          <Star className="size-4 text-amber-500" /> Markera viktigt
-        </Button>
       </div>
       {audioParts.length > 1 && (
         <div className="mt-2 flex items-center gap-2 overflow-x-auto border-t border-slate-100 pt-2 text-xs">
@@ -1548,7 +1627,9 @@ export function AudioPanel({
         {optimizationResult && (
           <div className="space-y-4">
             <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm text-foreground">
-              <div className="font-medium">{optimizationResult.originalName}</div>
+              <div className="font-medium">
+                {optimizationResult.originalName}
+              </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 {formatAudioBytes(optimizationResult.originalBytes)} →{" "}
                 {formatAudioBytes(optimizationResult.optimized.size)} · sparar{" "}
@@ -1582,7 +1663,9 @@ export function AudioPanel({
                 Avbryt
               </Button>
               <Button
-                variant={keepOriginalAfterOptimization ? "secondary" : "destructive"}
+                variant={
+                  keepOriginalAfterOptimization ? "secondary" : "destructive"
+                }
                 onClick={() => void applyOptimization()}
               >
                 {keepOriginalAfterOptimization
@@ -1720,16 +1803,32 @@ export function AudioPanel({
                 )}
                 {transcriptionCostEstimate?.priceSource === "local-catalog" && (
                   <p className="mt-1">
-                    Pris från Lectios lokala referenskatalog ({TRANSCRIPTION_PRICE_CATALOG_VERSION}).
+                    Pris från Lectios lokala referenskatalog (
+                    {TRANSCRIPTION_PRICE_CATALOG_VERSION}).
                   </p>
                 )}
               </div>
               <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2 text-xs">
-                <span className={apiKeyConfigured ? "font-medium text-[var(--palette-success)]" : "text-muted-foreground"}>
-                  {apiKeyConfigured ? "API-nyckel sparad säkert" : "API-nyckel saknas"}
+                <span
+                  className={
+                    apiKeyConfigured
+                      ? "font-medium text-[var(--palette-success)]"
+                      : "text-muted-foreground"
+                  }
+                >
+                  {apiKeyConfigured
+                    ? "API-nyckel sparad säkert"
+                    : "API-nyckel saknas"}
                 </span>
                 {!apiKeyConfigured && (
-                  <Button size="sm" variant="outline" onClick={() => { setTranscribeOpen(false); setActiveView("settings"); }}>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setTranscribeOpen(false);
+                      setActiveView("settings");
+                    }}
+                  >
                     Lägg till i Inställningar
                   </Button>
                 )}
@@ -1752,7 +1851,11 @@ export function AudioPanel({
           )}
           <Button
             className="w-full"
-            disabled={transcribeMode === "local" ? !localInstalled : !apiKeyConfigured || apiKeyLoading}
+            disabled={
+              transcribeMode === "local"
+                ? !localInstalled
+                : !apiKeyConfigured || apiKeyLoading
+            }
             onClick={transcribe}
           >
             Lägg till i transkriptionskön

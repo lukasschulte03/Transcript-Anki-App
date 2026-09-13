@@ -1,5 +1,6 @@
 /* oxlint-disable react/set-state-in-effect, react-hooks/exhaustive-deps -- derived prompt state deliberately resets per source and uses an explicit dependency budget. */
 import { useEffect, useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   Check,
@@ -121,7 +122,7 @@ const generationPreferences = [
   "Håll svaren korta och precisa.",
 ] as const;
 
-export function CardStudio() {
+export function CardStudio({ overlay = false }: { overlay?: boolean } = {}) {
   const {
     nodes,
     lectures,
@@ -140,7 +141,27 @@ export function CardStudio() {
     updateSettings,
     inheritedContext,
     setActiveView,
-  } = useAppStore();
+  } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      lectures: state.lectures,
+      segments: state.segments,
+      markers: state.markers,
+      cards: state.cards,
+      settings: state.settings,
+      selectedId: state.selectedId,
+      addCards: state.addCards,
+      updateCard: state.updateCard,
+      updateLecture: state.updateLecture,
+      removeCard: state.removeCard,
+      pendingAnkiDeletions: state.pendingAnkiDeletions,
+      resolveAnkiNoteDeletion: state.resolveAnkiNoteDeletion,
+      markAnkiNoteDeletionError: state.markAnkiNoteDeletionError,
+      updateSettings: state.updateSettings,
+      inheritedContext: state.inheritedContext,
+      setActiveView: state.setActiveView,
+    })),
+  );
   const lecturesList = nodes.filter((n) => n.type === "lecture");
   const selectedNode = nodes.find((node) => node.id === selectedId);
   const scopedLectureIds = useMemo(() => {
@@ -177,7 +198,9 @@ export function CardStudio() {
     selectedNode?.type === "lecture" && scopedLectureIds.has(selectedNode.id)
       ? selectedNode.id
       : (scopedLectures[0]?.id ?? "");
-  const savedGeneration = resolveCardGenerationSettings(settings.cardGeneration);
+  const savedGeneration = resolveCardGenerationSettings(
+    settings.cardGeneration,
+  );
   const [density, setDensity] = useState<"few" | "balanced" | "many">(
     () => savedGeneration.density,
   );
@@ -224,14 +247,18 @@ export function CardStudio() {
     [lecture?.visualIndex, lectureId, lectures, moduleId, node?.title, nodes],
   );
   const visualSources = useMemo(
-    () => new Map(moduleVisuals.map((candidate) => [candidate.id, candidate.lectureId])),
+    () =>
+      new Map(
+        moduleVisuals.map((candidate) => [candidate.id, candidate.lectureId]),
+      ),
     [moduleVisuals],
   );
   const rankedModuleVisuals = useMemo(
     () =>
       [...moduleVisuals].sort(
         (left, right) =>
-          Number(right.lectureId === lectureId) - Number(left.lectureId === lectureId) ||
+          Number(right.lectureId === lectureId) -
+            Number(left.lectureId === lectureId) ||
           left.slidePage - right.slidePage,
       ),
     [lectureId, moduleVisuals],
@@ -332,9 +359,7 @@ export function CardStudio() {
   const [contextLevels, setContextLevels] = useState(
     () => savedGeneration.contextLevels,
   );
-  const updateGenerationDefaults = (
-    patch: Partial<CardGenerationSettings>,
-  ) => {
+  const updateGenerationDefaults = (patch: Partial<CardGenerationSettings>) => {
     const current = resolveCardGenerationSettings(settings.cardGeneration);
     updateSettings({
       cardGeneration: {
@@ -495,7 +520,9 @@ export function CardStudio() {
     [selectedTranscript],
   );
   const activeChunk =
-    generationChunks[Math.min(clipboardChunkIndex, generationChunks.length - 1)];
+    generationChunks[
+      Math.min(clipboardChunkIndex, generationChunks.length - 1)
+    ];
   useEffect(() => {
     setClipboardChunkIndex(0);
   }, [lectureId, sources.transcript]);
@@ -568,7 +595,10 @@ export function CardStudio() {
           types,
           preferences,
           cardStyle: inheritedSettings.cardStyle,
-          existingCards: courseCards.map(({ front, back }) => ({ front, back })),
+          existingCards: courseCards.map(({ front, back }) => ({
+            front,
+            back,
+          })),
         })
       : "";
   const prompt = useMemo(
@@ -702,7 +732,9 @@ export function CardStudio() {
     sources,
     types,
   ]);
-  const formattedGenerationCost = formatCardGenerationCost(generationCostEstimate);
+  const formattedGenerationCost = formatCardGenerationCost(
+    generationCostEstimate,
+  );
   const importResponse = () => {
     try {
       const importLimit =
@@ -998,35 +1030,56 @@ export function CardStudio() {
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
       <PageHeader
         title="Anki-kort"
+        className={overlay ? "pr-14" : undefined}
         description={
           <SourceSummary
             compact
             items={[
-              { label: "Ljud", available: Boolean(lecture?.audioAssetId || lecture?.audioParts?.length), icon: AudioLines },
-              { label: "Slides", available: Boolean(lecture?.slideAssetId || lecture?.slideText?.trim()), icon: Presentation },
-              { label: "Transkript", available: segments.some((item) => item.lectureId === lectureId), icon: FileText },
+              {
+                label: "Ljud",
+                available: Boolean(
+                  lecture?.audioAssetId || lecture?.audioParts?.length,
+                ),
+                icon: AudioLines,
+              },
+              {
+                label: "Slides",
+                available: Boolean(
+                  lecture?.slideAssetId || lecture?.slideText?.trim(),
+                ),
+                icon: Presentation,
+              },
+              {
+                label: "Transkript",
+                available: segments.some(
+                  (item) => item.lectureId === lectureId,
+                ),
+                icon: FileText,
+              },
             ]}
           />
         }
-        actions={<>
-          {pendingSyncCount > 0 && (
+        actions={
+          <>
+            {pendingSyncCount > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void syncApproved(true)}
+                disabled={busy}
+              >
+                Försök igen ({pendingSyncCount})
+              </Button>
+            )}
             <Button
-              variant="outline"
-              size="sm"
-              onClick={() => void syncApproved(true)}
+              variant="secondary"
+              onClick={() => void syncApproved()}
               disabled={busy}
             >
-              Försök igen ({pendingSyncCount})
+              <Send className="size-4" /> Synka godkända
             </Button>
-          )}
-          <Button
-            variant="secondary"
-            onClick={() => void syncApproved()}
-            disabled={busy}
-          >
-            <Send className="size-4" /> Synka godkända
-          </Button>
-        </>}
+          </>
+        }
       />
       <div className="card-studio-layout grid min-h-0 flex-1 grid-cols-[300px_1fr] gap-px bg-border">
         <aside className="overflow-auto bg-card p-5">
@@ -1560,41 +1613,63 @@ export function CardStudio() {
           ) : (
             <div className="rounded-xl border border-border bg-muted/40 p-4">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-                <span>{settings.aiProvider} · {settings.aiModel}</span>
+                <span>
+                  {settings.aiProvider} · {settings.aiModel}
+                </span>
                 {apiKeyConfigured ? (
-                  <span className="font-medium text-[var(--palette-success)]">API-nyckel sparad</span>
+                  <span className="font-medium text-[var(--palette-success)]">
+                    API-nyckel sparad
+                  </span>
                 ) : (
-                  <Button variant="outline" size="sm" onClick={() => setActiveView("settings")}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      window.dispatchEvent(new Event("lectio:close-anki"));
+                      setActiveView("settings");
+                    }}
+                  >
                     Lägg till API-nyckel
                   </Button>
                 )}
               </div>
               <div className="mb-3 rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
                 <div className="font-medium text-foreground">
-                  Uppskattad API-kostnad: {formattedGenerationCost ?? "Pris saknas"}
+                  Uppskattad API-kostnad:{" "}
+                  {formattedGenerationCost ?? "Pris saknas"}
                 </div>
                 <p className="mt-1">
-                  Cirka {generationCostEstimate.inputTokens.toLocaleString("sv-SE")} input-token och{" "}
-                  {generationCostEstimate.outputTokens.toLocaleString("sv-SE")} output-token
+                  Cirka{" "}
+                  {generationCostEstimate.inputTokens.toLocaleString("sv-SE")}{" "}
+                  input-token och{" "}
+                  {generationCostEstimate.outputTokens.toLocaleString("sv-SE")}{" "}
+                  output-token
                   {generationChunks.length > 1
                     ? ` över ${generationChunks.length} delar`
                     : ""}
-                  . Beräknas lokalt innan inget material eller någon nyckel skickas.
+                  . Beräknas lokalt innan inget material eller någon nyckel
+                  skickas.
                 </p>
                 {generationCostEstimate.priceSource === "local-catalog" && (
                   <p className="mt-1">
-                    Pris från Lectios lokala referenskatalog ({CARD_GENERATION_PRICE_CATALOG_VERSION}); kontrollera alltid providerns faktiska pris före större körningar.
+                    Pris från Lectios lokala referenskatalog (
+                    {CARD_GENERATION_PRICE_CATALOG_VERSION}); kontrollera alltid
+                    providerns faktiska pris före större körningar.
                   </p>
                 )}
                 {!formattedGenerationCost && (
                   <p className="mt-1">
-                    Lectio har ingen verifierad prisuppgift för vald modell. Du kan
-                    fortfarande generera kort.
+                    Lectio har ingen verifierad prisuppgift för vald modell. Du
+                    kan fortfarande generera kort.
                   </p>
                 )}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <Button className="sm:ml-auto" onClick={generateApi} disabled={busy || !apiKeyConfigured || apiKeyLoading}>
+                <Button
+                  className="sm:ml-auto"
+                  onClick={generateApi}
+                  disabled={busy || !apiKeyConfigured || apiKeyLoading}
+                >
                   {busy ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
@@ -1607,7 +1682,8 @@ export function CardStudio() {
               </div>
               {generationProgress && (
                 <p className="mt-2 text-xs text-muted-foreground">
-                  Delarna bearbetas en i taget så att hela föreläsningen får plats.
+                  Delarna bearbetas en i taget så att hela föreläsningen får
+                  plats.
                 </p>
               )}
             </div>

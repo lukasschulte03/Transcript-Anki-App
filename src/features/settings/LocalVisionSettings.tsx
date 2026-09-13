@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { Check, DownloadCloud, Image, LoaderCircle } from "lucide-react";
 import { useAppStore } from "../../core/store";
 import { Button } from "../../components/ui/Button";
@@ -11,7 +12,12 @@ import {
 
 /** A single opt-in flow: Lectio owns the local Nvidia vision package. */
 export function LocalVisionSettings() {
-  const { settings, updateSettings } = useAppStore();
+  const { settings, updateSettings } = useAppStore(
+    useShallow((state) => ({
+      settings: state.settings,
+      updateSettings: state.updateSettings,
+    })),
+  );
   const [status, setStatus] = useState<LocalVisionStatus>();
   const [working, setWorking] = useState(false);
   const refresh = () =>

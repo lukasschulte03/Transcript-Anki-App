@@ -67,6 +67,32 @@ workflows, not error states.
 - Settings remain a searchable destination so configuration can be found
   without expanding the primary workspace controls.
 
+### Unified sidebar and Anki workspace
+
+- Global destinations and the course tree share one permanent sidebar. The
+  destinations stay compact at the top, the tree owns the scrollable middle,
+  and help/settings remain anchored at the bottom.
+- Library is not a global destination. Selecting a course, module, topic or
+  lecture changes scope and opens that object's workspace; scope and task view
+  remain independent state.
+- In collapsed or narrow layouts, the icon rail opens the same library tree as
+  a temporary panel. No second tree implementation is allowed.
+- Anki generation, review, approval and sync use one near-fullscreen workspace
+  layered over the current object. Closing it restores the exact underlying
+  view, scroll and media state.
+- The Anki workspace is loaded on demand and can be opened contextually from
+  the selected object or with Ctrl+3.
+
+### Lecture playback
+
+- The persistent audio footer is a transport surface only: play/pause, time,
+  scrubber, compact skip controls, speed and volume/mute.
+- Transcription and marking belong to their corresponding transcript and
+  marker panels. A marker action always captures the current audio position.
+- Secondary file actions live in the audio overflow menu. At narrow widths,
+  labels may collapse to icons while transport controls remain available and
+  the footer must never create horizontal page overflow.
+
 ## Component architecture
 
 Use a three-layer system:

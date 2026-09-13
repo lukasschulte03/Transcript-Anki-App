@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import {
   BookText,
   ChevronRight,
@@ -15,7 +16,9 @@ import {
   Trash2,
 } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAppStore } from "../../core/store";
+import { useJobStore } from "../../infrastructure/jobStore";
 import { db } from "../../core/database";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -86,42 +89,55 @@ export function LectureWorkspace({
   lectureId: string;
   mediaSuspended?: boolean;
 }) {
-  const {
-    nodes,
-    lectures,
-    segments,
-    markers,
-    cards,
-    settings,
-    updateNode,
-    updateLecture,
-    updateSegment,
-    removeSegment,
-    setSegmentQualityFlag,
-    updateMarker,
-    removeMarker,
-    removeSuspiciousSegments,
-    setSegments,
-    setActiveView,
-    upsertJob,
-  } = useAppStore();
+  const nodes = useAppStore((state) => state.nodes);
+  const lectures = useAppStore((state) => state.lectures);
+  const segments = useAppStore((state) => state.segments);
+  const markers = useAppStore((state) => state.markers);
+  const cards = useAppStore((state) => state.cards);
+  const settings = useAppStore((state) => state.settings);
+  const updateNode = useAppStore((state) => state.updateNode);
+  const updateLecture = useAppStore((state) => state.updateLecture);
+  const updateSegment = useAppStore((state) => state.updateSegment);
+  const removeSegment = useAppStore((state) => state.removeSegment);
+  const setSegmentQualityFlag = useAppStore(
+    (state) => state.setSegmentQualityFlag,
+  );
+  const updateMarker = useAppStore((state) => state.updateMarker);
+  const removeMarker = useAppStore((state) => state.removeMarker);
+  const removeSuspiciousSegments = useAppStore(
+    (state) => state.removeSuspiciousSegments,
+  );
+  const setSegments = useAppStore((state) => state.setSegments);
+  const upsertJob = useJobStore((state) => state.upsertJob);
   const node = nodes.find((n) => n.id === lectureId)!;
   const lecture = lectures[lectureId] ?? { lectureId, notes: "" };
-  const transcript = segments
-    .filter((s) => s.lectureId === lectureId)
-    .sort((a, b) => a.start - b.start);
-  const marks = markers
-    .filter((m) => m.lectureId === lectureId)
-    .sort((a, b) => a.time - b.time);
-  const lectureCards = cards.filter((card) => card.lectureId === lectureId);
+  const transcript = useMemo(
+    () =>
+      segments
+        .filter((segment) => segment.lectureId === lectureId)
+        .sort((left, right) => left.start - right.start),
+    [lectureId, segments],
+  );
+  const marks = useMemo(
+    () =>
+      markers
+        .filter((marker) => marker.lectureId === lectureId)
+        .sort((left, right) => left.time - right.time),
+    [lectureId, markers],
+  );
+  const lectureCards = useMemo(
+    () => cards.filter((card) => card.lectureId === lectureId),
+    [cards, lectureId],
+  );
   const hasAudio = Boolean(lecture.audioAssetId || lecture.audioParts?.length);
-  const nextAction = !hasAudio && !lecture.slideAssetId
-    ? { label: "Lägg till material", target: "Slides" }
-    : hasAudio && !transcript.length
-      ? { label: "Transkribera ljud", target: "Transkript" }
-      : !lectureCards.length
-        ? { label: "Skapa Anki-kort", target: "Kort" }
-        : { label: "Granska Anki-kort", target: "Kort" };
+  const nextAction =
+    !hasAudio && !lecture.slideAssetId
+      ? { label: "Lägg till material", target: "Slides" }
+      : hasAudio && !transcript.length
+        ? { label: "Transkribera ljud", target: "Transkript" }
+        : !lectureCards.length
+          ? { label: "Skapa Anki-kort", target: "Kort" }
+          : { label: "Granska Anki-kort", target: "Kort" };
   const slideAsset = useLiveQuery(
     () =>
       lecture.slideAssetId ? db.assets.get(lecture.slideAssetId) : undefined,
@@ -163,10 +179,18 @@ export function LectureWorkspace({
     },
     [slideUrl],
   );
-  const activeSegment = useMemo(
-    () => transcript.find((s) => time >= s.start && time < s.end)?.id,
-    [time, transcript],
-  );
+  const activeSegment = useMemo(() => {
+    let low = 0;
+    let high = transcript.length - 1;
+    while (low <= high) {
+      const middle = Math.floor((low + high) / 2);
+      const segment = transcript[middle];
+      if (time < segment.start) high = middle - 1;
+      else if (time >= segment.end) low = middle + 1;
+      else return segment.id;
+    }
+    return undefined;
+  }, [time, transcript]);
   const matchingSegmentIds = (
     query: string,
     source = transcript,
@@ -191,7 +215,22 @@ export function LectureWorkspace({
       ),
     [showOnlySuspicious, transcript, transcriptQuery, searchResultIds],
   );
-  const suspiciousSegments = transcript.filter((segment) => segment.suspicious);
+  // oxlint-disable-next-line react/incompatible-library -- TanStack Virtual deliberately owns mutable measurement callbacks; React Compiler safely skips this component.
+  const transcriptVirtualizer = useVirtualizer({
+    count: visibleTranscript.length,
+    getScrollElement: () => transcriptPane.current,
+    estimateSize: () => 58,
+    getItemKey: (index) => visibleTranscript[index]?.id ?? index,
+    overscan: 12,
+    // React 19 warns when a virtualizer calls flushSync while row measurements
+    // arrive during a lifecycle pass. Normal scheduled updates are both safer
+    // and smoother in WebView2.
+    useFlushSync: false,
+  });
+  const suspiciousSegments = useMemo(
+    () => transcript.filter((segment) => segment.suspicious),
+    [transcript],
+  );
   const glossary = useMemo(
     () => inheritedGlossary(nodes, lectureId, settings.transcriptionPrompt),
     [lectureId, nodes, settings.transcriptionPrompt],
@@ -200,17 +239,18 @@ export function LectureWorkspace({
     () => suggestTerminologyCorrections(transcript, glossary.terms),
     [glossary.terms, transcript],
   );
-  const qualitySummary = suspiciousSegments.reduce<Record<string, number>>(
-    (summary, segment) => {
-      (segment.qualityFlags?.length
-        ? segment.qualityFlags
-        : ["needs-review"]
-      ).forEach((flag) => {
-        summary[flag] = (summary[flag] ?? 0) + 1;
-      });
-      return summary;
-    },
-    {},
+  const qualitySummary = useMemo(
+    () =>
+      suspiciousSegments.reduce<Record<string, number>>((summary, segment) => {
+        (segment.qualityFlags?.length
+          ? segment.qualityFlags
+          : ["needs-review"]
+        ).forEach((flag) => {
+          summary[flag] = (summary[flag] ?? 0) + 1;
+        });
+        return summary;
+      }, {}),
+    [suspiciousSegments],
   );
   const slideMappings = lecture.slideMappings ?? {};
   const suggestSlides = () => {
@@ -220,11 +260,13 @@ export function LectureWorkspace({
     toast.success(`${Object.keys(mappings).length} slidekopplingar föreslogs`);
   };
   useEffect(() => {
-    if (activeSegment)
-      transcriptPane.current
-        ?.querySelector(`[data-segment="${activeSegment}"]`)
-        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [activeSegment]);
+    if (!activeSegment) return;
+    const index = visibleTranscript.findIndex(
+      (segment) => segment.id === activeSegment,
+    );
+    if (index >= 0)
+      transcriptVirtualizer.scrollToIndex(index, { align: "auto" });
+  }, [activeSegment, transcriptVirtualizer, visibleTranscript]);
   useEffect(() => {
     const focusTranscriptSearch = () => {
       document
@@ -517,7 +559,7 @@ export function LectureWorkspace({
         new CustomEvent("lectio:mark-moment", { detail: { lectureId } }),
       );
     } else {
-      setActiveView("cards");
+      window.dispatchEvent(new Event("lectio:open-anki"));
     }
   };
   const replaceTranscriptMatches = () => {
@@ -567,10 +609,7 @@ export function LectureWorkspace({
           />
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            onClick={() => runStatusAction(nextAction.target)}
-          >
+          <Button size="sm" onClick={() => runStatusAction(nextAction.target)}>
             <BookText className="size-4" /> {nextAction.label}
           </Button>
           <Button
@@ -588,10 +627,28 @@ export function LectureWorkspace({
           compact
           items={[
             { label: "Ljud", available: hasAudio, icon: Clock3 },
-            { label: "Slides", available: Boolean(lecture.slideAssetId), icon: Presentation },
-            { label: "Transkript", available: transcript.length > 0, detail: `${transcript.length}`, icon: MessageSquareText },
-            { label: "Anteckningar", available: Boolean(lecture.notes?.trim()), icon: BookText },
-            { label: "Markeringar", available: marks.length > 0, detail: `${marks.length}`, icon: Star },
+            {
+              label: "Slides",
+              available: Boolean(lecture.slideAssetId),
+              icon: Presentation,
+            },
+            {
+              label: "Transkript",
+              available: transcript.length > 0,
+              detail: `${transcript.length}`,
+              icon: MessageSquareText,
+            },
+            {
+              label: "Anteckningar",
+              available: Boolean(lecture.notes?.trim()),
+              icon: BookText,
+            },
+            {
+              label: "Markeringar",
+              available: marks.length > 0,
+              detail: `${marks.length}`,
+              icon: Star,
+            },
           ]}
         />
       </div>
@@ -702,6 +759,23 @@ export function LectureWorkspace({
                       : `Granska ${suspiciousSegments.length}`}
                   </Button>
                 )}
+                {hasAudio && (
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() =>
+                      window.dispatchEvent(
+                        new CustomEvent("lectio:open-transcription", {
+                          detail: { lectureId },
+                        }),
+                      )
+                    }
+                    title="Transkribera ljud"
+                    aria-label="Transkribera ljud"
+                  >
+                    <Wand2 className="size-3.5" />
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -746,88 +820,117 @@ export function LectureWorkspace({
             )}
             <div
               ref={transcriptPane}
+              data-lectio-transcript-scroll
               className="min-h-0 flex-1 overflow-y-auto p-3"
             >
               {transcript.length ? (
                 visibleTranscript.length ? (
-                  visibleTranscript.map((s) => (
-                    <div
-                      key={s.id}
-                      data-segment={s.id}
-                      className={`group flex items-start gap-3 rounded-lg border px-2 py-2 transition-colors ${activeSegment === s.id ? "border-[var(--palette-border-strong)] bg-[var(--palette-primary-muted)]" : "border-transparent hover:bg-[var(--palette-surface-hover)]"}`}
-                    >
-                      <button
-                        onClick={() => seek(s.start)}
-                        className="mt-0.5 shrink-0 font-mono text-xs font-medium text-[var(--palette-accent)]"
-                      >
-                        {formatTime(s.start)}
-                      </button>
-                      {editingSegmentId === s.id ? (
-                        <textarea
-                          autoFocus
-                          value={segmentDraft}
-                          onChange={(event) =>
-                            setSegmentDraft(event.target.value)
-                          }
-                          onBlur={() => finishSegmentEdit(s)}
-                          rows={Math.min(
-                            5,
-                            Math.max(1, Math.ceil(segmentDraft.length / 65)),
-                          )}
-                          className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
-                        />
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => beginSegmentEdit(s)}
-                          className="min-w-0 flex-1 whitespace-pre-wrap text-left text-sm leading-5 text-[var(--palette-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--palette-focus-ring)]"
-                          title="Klicka för att redigera"
-                        >
-                          {highlightedTranscriptText(s.text, transcriptQuery)}
-                        </button>
-                      )}
-                      {s.suspicious && (
-                        <button
-                          className="mt-1 shrink-0 rounded bg-[var(--palette-warning-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--palette-warning)]"
-                          onClick={() => setQualityReviewOpen(true)}
-                          title="Granska transkriptkvalitet"
-                        >
-                          Kontrollera
-                        </button>
-                      )}
-                      {lecture.slidePages?.length && (
-                        <div className="flex shrink-0 items-center gap-1">
-                          {slideMappings[s.id] && (
-                            <span
-                              className="text-[10px] tabular-nums text-[var(--palette-text-subtle)]"
-                              title="Matchningssäkerhet från slide-text"
-                            >
-                              {slideMappings[s.id].confidence}%
-                            </span>
-                          )}
-                          <Select
-                            value={slideMappings[s.id]?.page ?? 0}
-                            onChange={(event) => {
-                              const page = Number(event.target.value);
-                              const next = { ...slideMappings };
-                              if (page) next[s.id] = { page, confidence: 100 };
-                              else delete next[s.id];
-                              updateLecture(lectureId, { slideMappings: next });
+                  <div
+                    className="relative w-full"
+                    style={{ height: transcriptVirtualizer.getTotalSize() }}
+                  >
+                    {transcriptVirtualizer
+                      .getVirtualItems()
+                      .map((virtualRow) => {
+                        const s = visibleTranscript[virtualRow.index];
+                        return (
+                          <div
+                            key={s.id}
+                            data-index={virtualRow.index}
+                            ref={transcriptVirtualizer.measureElement}
+                            className="absolute left-0 top-0 w-full pb-1"
+                            style={{
+                              transform: `translateY(${virtualRow.start}px)`,
                             }}
-                            className="mt-0.5 h-7 w-24 py-1 text-xs"
-                            title="Kopplad slide"
                           >
-                            <option value={0}>Ingen slide</option>
-                            {lecture.slidePages.map((_, index) => (
-                              <option key={index} value={index + 1}>
-                                Slide {index + 1}
-                              </option>
-                            ))}
-                          </Select>
-                        </div>
-                      )}
-                    </div>
-                  ))
+                            <div
+                              data-segment={s.id}
+                              className={`group flex items-start gap-3 rounded-lg border px-2 py-2 transition-colors ${activeSegment === s.id ? "border-[var(--palette-border-strong)] bg-[var(--palette-primary-muted)]" : "border-transparent hover:bg-[var(--palette-surface-hover)]"}`}
+                            >
+                              <button
+                                onClick={() => seek(s.start)}
+                                className="mt-0.5 shrink-0 font-mono text-xs font-medium text-[var(--palette-accent)]"
+                              >
+                                {formatTime(s.start)}
+                              </button>
+                              {editingSegmentId === s.id ? (
+                                <textarea
+                                  autoFocus
+                                  value={segmentDraft}
+                                  onChange={(event) =>
+                                    setSegmentDraft(event.target.value)
+                                  }
+                                  onBlur={() => finishSegmentEdit(s)}
+                                  rows={Math.min(
+                                    5,
+                                    Math.max(
+                                      1,
+                                      Math.ceil(segmentDraft.length / 65),
+                                    ),
+                                  )}
+                                  className="max-h-28 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent text-sm leading-5 text-[var(--palette-text)] outline-none"
+                                />
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => beginSegmentEdit(s)}
+                                  className="min-w-0 flex-1 whitespace-pre-wrap text-left text-sm leading-5 text-[var(--palette-text)] outline-none focus-visible:ring-2 focus-visible:ring-[var(--palette-focus-ring)]"
+                                  title="Klicka för att redigera"
+                                >
+                                  {highlightedTranscriptText(
+                                    s.text,
+                                    transcriptQuery,
+                                  )}
+                                </button>
+                              )}
+                              {s.suspicious && (
+                                <button
+                                  className="mt-1 shrink-0 rounded bg-[var(--palette-warning-muted)] px-1.5 py-0.5 text-[10px] font-medium text-[var(--palette-warning)]"
+                                  onClick={() => setQualityReviewOpen(true)}
+                                  title="Granska transkriptkvalitet"
+                                >
+                                  Kontrollera
+                                </button>
+                              )}
+                              {lecture.slidePages?.length && (
+                                <div className="flex shrink-0 items-center gap-1">
+                                  {slideMappings[s.id] && (
+                                    <span
+                                      className="text-[10px] tabular-nums text-[var(--palette-text-subtle)]"
+                                      title="Matchningssäkerhet från slide-text"
+                                    >
+                                      {slideMappings[s.id].confidence}%
+                                    </span>
+                                  )}
+                                  <Select
+                                    value={slideMappings[s.id]?.page ?? 0}
+                                    onChange={(event) => {
+                                      const page = Number(event.target.value);
+                                      const next = { ...slideMappings };
+                                      if (page)
+                                        next[s.id] = { page, confidence: 100 };
+                                      else delete next[s.id];
+                                      updateLecture(lectureId, {
+                                        slideMappings: next,
+                                      });
+                                    }}
+                                    className="mt-0.5 h-7 w-24 py-1 text-xs"
+                                    title="Kopplad slide"
+                                  >
+                                    <option value={0}>Ingen slide</option>
+                                    {lecture.slidePages.map((_, index) => (
+                                      <option key={index} value={index + 1}>
+                                        Slide {index + 1}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
                 ) : (
                   <p className="p-6 text-center text-xs text-slate-400">
                     Inga segment matchar sökningen.
@@ -835,15 +938,31 @@ export function LectureWorkspace({
                 )
               ) : (
                 <div className="grid h-full place-items-center px-8 text-center">
-                  <div>
+                  <div className="flex flex-col items-center">
                     <MessageSquareText className="mx-auto size-8 text-slate-300" />
                     <p className="mt-3 text-sm font-medium text-slate-600">
                       Inget transkript ännu
                     </p>
                     <p className="mt-1 text-xs leading-5 text-slate-400">
-                      Importera tidsstämplad text eller transkribera ljudet med
-                      en valfri API-provider.
+                      Importera tidsstämplad text eller skapa ett transkript
+                      från föreläsningens ljud.
                     </p>
+                    {hasAudio && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="mt-3"
+                        onClick={() =>
+                          window.dispatchEvent(
+                            new CustomEvent("lectio:open-transcription", {
+                              detail: { lectureId },
+                            }),
+                          )
+                        }
+                      >
+                        <Wand2 className="size-3.5" /> Transkribera ljud
+                      </Button>
+                    )}
                   </div>
                 </div>
               )}
@@ -865,9 +984,27 @@ export function LectureWorkspace({
               />
             </div>
             <div className="flex min-h-0 flex-col overflow-hidden bg-card">
-              <div className="flex h-10 items-center gap-2 border-b border-slate-100 px-4 text-xs font-semibold text-slate-700">
-                <Star className="size-4 text-amber-500" /> Markeringar{" "}
-                <span className="text-slate-400">{marks.length}</span>
+              <div className="flex h-10 items-center justify-between gap-2 border-b border-slate-100 px-3 text-xs font-semibold text-slate-700">
+                <div className="flex items-center gap-2">
+                  <Star className="size-4 text-amber-500" /> Markeringar{" "}
+                  <span className="text-slate-400">{marks.length}</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent("lectio:mark-moment", {
+                        detail: { lectureId },
+                      }),
+                    )
+                  }
+                  disabled={!hasAudio}
+                  title="Markera viktigt vid aktuell ljudposition (M)"
+                  aria-label="Markera viktigt vid aktuell ljudposition"
+                >
+                  <Plus className="size-3.5" />
+                </Button>
               </div>
               <div className="min-h-0 flex-1 overflow-auto p-2">
                 {marks.map((m) => (
@@ -894,9 +1031,25 @@ export function LectureWorkspace({
                   </div>
                 ))}
                 {!marks.length && (
-                  <p className="p-4 text-center text-xs leading-5 text-slate-400">
-                    Tryck “Markera viktigt” under föreläsningen.
-                  </p>
+                  <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
+                    <p className="text-xs leading-5 text-slate-400">
+                      Markera en viktig del medan ljudet spelas.
+                    </p>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        window.dispatchEvent(
+                          new CustomEvent("lectio:mark-moment", {
+                            detail: { lectureId },
+                          }),
+                        )
+                      }
+                      disabled={!hasAudio}
+                    >
+                      <Star className="size-3.5" /> Markera aktuell tid
+                    </Button>
+                  </div>
                 )}
               </div>
             </div>
@@ -1232,7 +1385,14 @@ export function LectureWorkspace({
 }
 
 export function ObjectOverview({ nodeId }: { nodeId: string }) {
-  const { nodes, updateNode, removeNode, inheritedContext } = useAppStore();
+  const { nodes, updateNode, removeNode, inheritedContext } = useAppStore(
+    useShallow((state) => ({
+      nodes: state.nodes,
+      updateNode: state.updateNode,
+      removeNode: state.removeNode,
+      inheritedContext: state.inheritedContext,
+    })),
+  );
   const node = nodes.find((n) => n.id === nodeId)!;
   const children = nodes.filter((n) => n.parentId === nodeId);
   const context = inheritedContext(nodeId);
@@ -1308,36 +1468,47 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
   return (
     <div className="ui-app-bg min-w-0 flex-1 overflow-auto">
       <div className="mx-auto max-w-5xl px-6 py-8 lg:px-10">
-        <div className="flex items-start justify-between">
+        <div className="flex items-start justify-between gap-3">
           <div>
             <input
               value={node.title}
               onChange={(e) => updateNode(node.id, { title: e.target.value })}
-            className="w-full border-0 bg-transparent text-2xl font-semibold tracking-tight text-foreground outline-none"
+              className="w-full border-0 bg-transparent text-2xl font-semibold tracking-tight text-foreground outline-none"
             />
             <p className="mt-2 text-sm text-slate-500">
               {children.length} underobjekt · lokal lagring
             </p>
           </div>
-          {node.type !== "workspace" && (
+          <div className="flex shrink-0 items-center gap-2">
             <Button
-              variant="danger"
+              variant="secondary"
               size="sm"
               onClick={() =>
-                confirm(`Ta bort ${node.title} och allt innehåll?`) &&
-                removeNode(node.id)
+                window.dispatchEvent(new Event("lectio:open-anki"))
               }
             >
-              <Trash2 className="size-4" /> Ta bort
+              <Wand2 className="size-4" /> Anki-kort
             </Button>
-          )}
+            {node.type !== "workspace" && (
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() =>
+                  confirm(`Ta bort ${node.title} och allt innehåll?`) &&
+                  removeNode(node.id)
+                }
+              >
+                <Trash2 className="size-4" /> Ta bort
+              </Button>
+            )}
+          </div>
         </div>
         <div className="mt-8 space-y-10">
           <div className="space-y-10">
             <section>
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <MessageSquareText className="size-4 text-[var(--palette-accent)]" /> Kontext
-                för detta objekt
+                <MessageSquareText className="size-4 text-[var(--palette-accent)]" />{" "}
+                Kontext för detta objekt
               </div>
               <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 Ärvs av alla underliggande objekt och används vid AI-generering.
@@ -1420,8 +1591,8 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             )}
             <section className="border-t border-border pt-8">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <Settings2 className="size-4 text-[var(--palette-accent)]" /> Egna
-                inställningar
+                <Settings2 className="size-4 text-[var(--palette-accent)]" />{" "}
+                Egna inställningar
               </div>
               <p className="mt-1 text-xs leading-5 text-slate-400">
                 Tomma fält använder inställningen från närmaste överordnade
@@ -1495,7 +1666,8 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             </summary>
             <div className="mt-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <Settings2 className="size-4 text-muted-foreground" /> Från överordnade nivåer
+                <Settings2 className="size-4 text-muted-foreground" /> Från
+                överordnade nivåer
               </div>
               <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
                 {context.map((c) => (
@@ -1516,7 +1688,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                   return (
                     <div
                       key={file.id}
-                    className="border-b border-border py-3 text-xs last:border-0"
+                      className="border-b border-border py-3 text-xs last:border-0"
                     >
                       <div className="flex items-center gap-1.5 font-semibold text-slate-600">
                         <FileText className="size-3.5 shrink-0" />
