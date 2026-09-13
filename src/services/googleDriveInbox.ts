@@ -8,7 +8,7 @@ import {
   googleDriveRequest,
   type DriveFile,
 } from "./googleDriveSync";
-import { useAppStore } from "../core/store";
+import { libraryRepository } from "../infrastructure/libraryRepository";
 import { db } from "../core/database";
 
 export type InboxAudioFile = Required<Pick<DriveFile, "id" | "name">> &
@@ -20,7 +20,7 @@ const audioExtension = /\.(m4a|mp3|wav|aac|ogg|opus|flac|webm|mp4)$/i;
 
 async function inboxFolders(token: string) {
   const rootPath =
-    useAppStore.getState().settings.cloudSync.remotePath.trim() || "Lectio";
+    libraryRepository.getState().settings.cloudSync.remotePath.trim() || "Lectio";
   const root = await ensurePath(rootPath, token);
   const inbox = await ensureFolder("Inbox", root, token);
   const media = await ensureFolder("media", root, token);

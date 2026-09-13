@@ -1,5 +1,6 @@
 import { db } from "../core/database";
-import { useAppStore } from "../core/store";
+import { libraryRepository } from "../infrastructure/libraryRepository";
+import { useJobStore } from "../infrastructure/jobStore";
 import type { AppSettings, BackgroundJob, StoredAsset } from "../core/types";
 import { uid } from "../lib/utils";
 import { hasStorageCapacity } from "../lib/utils";
@@ -54,7 +55,7 @@ export type DriveFile = {
 };
 
 function syncJob(patch: Record<string, unknown>) {
-  useAppStore.getState().upsertJob({
+  useJobStore.getState().upsertJob({
     id: "sync:google-drive",
     kind: "library",
     label: "Google Drive-synk",
@@ -354,8 +355,8 @@ async function downloadRemoteLibrary(
   remote: Pick<SyncV2Checkpoint, "snapshot" | "assets">,
 ) {
   await downloadMissingRemoteAssets(token, remote.assets, remote.snapshot);
-  const localCloud = useAppStore.getState().settings.cloudSync;
-  useAppStore.getState().importLibrary({
+  const localCloud = libraryRepository.getState().settings.cloudSync;
+  libraryRepository.getState().importLibrary({
     ...remote.snapshot,
     settings: { ...remote.snapshot.settings, cloudSync: localCloud },
   });
@@ -427,7 +428,7 @@ export function syncGoogleDrive() {
 }
 
 async function syncGoogleDriveInternal() {
-  const state = useAppStore.getState();
+  const state = libraryRepository.getState();
   const token = await getGoogleDriveAccessToken();
   const rootPath = state.settings.cloudSync.remotePath.trim() || "Lectio";
   syncJob({
@@ -475,9 +476,9 @@ async function syncGoogleDriveInternal() {
         checkpoint.checkpoint.assets,
         checkpoint.checkpoint.knownOperationIds,
       );
-      useAppStore.getState().updateSettings({
+      libraryRepository.getState().updateSettings({
         cloudSync: {
-          ...useAppStore.getState().settings.cloudSync,
+          ...libraryRepository.getState().settings.cloudSync,
           remotePath: rootPath,
           lastSyncedAt: new Date().toISOString(),
         },
@@ -552,9 +553,9 @@ async function syncGoogleDriveInternal() {
         checkpoint?.checkpoint.assets.length === v2State.assets.length
       ) {
         const completedAt = new Date().toISOString();
-        useAppStore.getState().updateSettings({
+        libraryRepository.getState().updateSettings({
           cloudSync: {
-            ...useAppStore.getState().settings.cloudSync,
+            ...libraryRepository.getState().settings.cloudSync,
             remotePath: rootPath,
             lastSyncedAt: completedAt,
           },
@@ -572,7 +573,7 @@ async function syncGoogleDriveInternal() {
       // any remote operation or mutating the sync base.
       await createLibraryBackup(
         "manual",
-        backupSourceFromState(useAppStore.getState()),
+        backupSourceFromState(libraryRepository.getState()),
       );
     }
     const syncAssets = assets.filter((asset) =>
@@ -643,14 +644,14 @@ async function syncGoogleDriveInternal() {
     // The v2 checkpoint is complete before the legacy manifest is removed.
     // A failed deletion merely leaves a harmless old recovery file behind.
     if (legacyManifestFile) await deleteFile(token, legacyManifestFile.id);
-    const localCloud = useAppStore.getState().settings.cloudSync;
-    useAppStore.getState().importLibrary({
+    const localCloud = libraryRepository.getState().settings.cloudSync;
+    libraryRepository.getState().importLibrary({
       ...snapshot,
       settings: { ...snapshot.settings, cloudSync: localCloud },
     });
-    useAppStore.getState().updateSettings({
+    libraryRepository.getState().updateSettings({
       cloudSync: {
-        ...useAppStore.getState().settings.cloudSync,
+        ...libraryRepository.getState().settings.cloudSync,
         remotePath: rootPath,
         lastSyncedAt: completedAt,
       },

@@ -2,7 +2,6 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type {
   AppSettings,
-  BackgroundJob,
   LibraryBackup,
   Flashcard,
   LectureData,
@@ -15,127 +14,65 @@ import { defaultCardGenerationSettings } from "./types";
 import { uid } from "../lib/utils";
 import { db } from "./database";
 import { normalizePalette } from "./theme";
-import { backupSourceFromState, createLibraryBackup } from "../services/libraryBackup";
-import { markStartup } from "../services/startupMetrics";
+import {
+  backupSourceFromState,
+  createLibraryBackup,
+} from "../services/libraryBackup";
+import {
+  finishStartupPhase,
+  markStartup,
+  startStartupPhase,
+} from "../services/startupMetrics";
+import { createDeferredLocalStorage } from "./deferredStorage";
+import { STATE_STORAGE_KEY } from "../runtimeProfile";
+import {
+  persistedAppState,
+  type PersistedAppState,
+} from "../infrastructure/persistence";
+import {
+  moveLibraryNode,
+  reorderLibraryNode,
+} from "../domain/libraryTree";
+
+export {
+  canMoveLibraryNode,
+  canReorderLibraryNode,
+  moveLibraryNode,
+  reorderLibraryNode,
+} from "../domain/libraryTree";
 
 const now = () => new Date().toISOString();
 const workspaceId = "workspace-main";
+let storeHydrationComplete = false;
+const storeHydrationListeners = new Set<() => void>();
 
-/** Returns whether a node can be placed below the requested parent. */
-export function canMoveLibraryNode(
-  nodes: LibraryNode[],
-  nodeId: string,
-  parentId: string,
-) {
-  const node = nodes.find((item) => item.id === nodeId);
-  const parent = nodes.find((item) => item.id === parentId);
-  const allowedParents: Partial<Record<NodeType, NodeType[]>> = {
-    course: ["workspace"],
-    module: ["course"],
-    topic: ["module"],
-    lecture: ["module"],
+export function hasStoreHydrated() {
+  return storeHydrationComplete;
+}
+
+export function onStoreHydrated(listener: () => void) {
+  storeHydrationListeners.add(listener);
+  return () => {
+    storeHydrationListeners.delete(listener);
   };
-  if (
-    !node ||
-    !parent ||
-    node.id === parent.id ||
-    node.parentId === parent.id ||
-    !allowedParents[node.type]?.includes(parent.type)
-  ) {
-    return false;
-  }
-
-  // Keep the tree acyclic even if future node types gain more flexible nesting.
-  const seen = new Set<string>();
-  let current: LibraryNode | undefined = parent;
-  while (current && !seen.has(current.id)) {
-    if (current.id === node.id) return false;
-    seen.add(current.id);
-    current = current.parentId
-      ? nodes.find((item) => item.id === current!.parentId)
-      : undefined;
-  }
-  return true;
 }
 
-export function canReorderLibraryNode(
-  nodes: LibraryNode[],
-  nodeId: string,
-  targetId: string,
-) {
-  const node = nodes.find((item) => item.id === nodeId);
-  const target = nodes.find((item) => item.id === targetId);
-  const isLeaf = (type: NodeType) => type === "topic" || type === "lecture";
-  return Boolean(
-    node &&
-    target &&
-    node.id !== target.id &&
-    node.parentId === target.parentId &&
-    (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
+function completeStoreHydration(error?: unknown) {
+  storeHydrationComplete = true;
+  finishStartupPhase(
+    "library-state-hydration",
+    error ? "recovered-error" : "ok",
   );
-}
-
-function orderedSiblings(nodes: LibraryNode[], parentId: string | null) {
-  return nodes
-    .filter((node) => node.parentId === parentId)
-    .sort((left, right) => (left.sortIndex ?? 0) - (right.sortIndex ?? 0));
-}
-
-function normalizeSiblingOrder(
-  nodes: LibraryNode[],
-  parentIds: Array<string | null>,
-) {
-  const positions = new Map<string, number>();
-  [...new Set(parentIds)].forEach((parentId) => {
-    orderedSiblings(nodes, parentId).forEach((node, index) =>
-      positions.set(node.id, index),
+  markStartup("library-state-hydrated");
+  storeHydrationListeners.forEach((listener) => listener());
+  storeHydrationListeners.clear();
+  if (error) {
+    void import("../services/diagnostics").then(({ recordDiagnostic }) =>
+      recordDiagnostic("startup:library-state-hydration", error),
     );
-  });
-  return nodes.map((node) =>
-    positions.has(node.id)
-      ? { ...node, sortIndex: positions.get(node.id) }
-      : node,
-  );
+  }
 }
 
-/** Moves a node to the end of a valid new parent and keeps both sibling lists stable. */
-export function moveLibraryNode(
-  nodes: LibraryNode[],
-  nodeId: string,
-  parentId: string,
-) {
-  if (!canMoveLibraryNode(nodes, nodeId, parentId)) return nodes;
-  const node = nodes.find((item) => item.id === nodeId)!;
-  const appendIndex = orderedSiblings(nodes, parentId).length;
-  const moved = nodes.map((item) =>
-    item.id === nodeId ? { ...item, parentId, sortIndex: appendIndex } : item,
-  );
-  return normalizeSiblingOrder(moved, [node.parentId, parentId]);
-}
-
-/** Inserts a sibling immediately before the target while preserving all other order. */
-export function reorderLibraryNode(
-  nodes: LibraryNode[],
-  nodeId: string,
-  targetId: string,
-) {
-  if (!canReorderLibraryNode(nodes, nodeId, targetId)) return nodes;
-  const node = nodes.find((item) => item.id === nodeId)!;
-  const siblings = orderedSiblings(nodes, node.parentId).filter(
-    (item) => item.id !== nodeId,
-  );
-  siblings.splice(
-    siblings.findIndex((item) => item.id === targetId),
-    0,
-    node,
-  );
-  const positions = new Map(siblings.map((item, index) => [item.id, index]));
-  return nodes.map((item) =>
-    positions.has(item.id)
-      ? { ...item, sortIndex: positions.get(item.id) }
-      : item,
-  );
-}
 const initialPaletteId =
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-color-scheme: dark)").matches
@@ -153,7 +90,7 @@ const seedNodes: LibraryNode[] = [
   },
 ];
 
-interface AppState {
+export interface AppState {
   nodes: LibraryNode[];
   lectures: Record<string, LectureData>;
   segments: TranscriptSegment[];
@@ -167,9 +104,14 @@ interface AppState {
     updatedAt?: string;
   }[];
   selectedId: string;
-  activeView: "dashboard" | "workspace" | "cards" | "inbox" | "super-actions" | "settings";
+  activeView:
+    | "dashboard"
+    | "workspace"
+    | "cards"
+    | "inbox"
+    | "super-actions"
+    | "settings";
   settings: AppSettings;
-  jobs: BackgroundJob[];
   addNode: (parentId: string | null, type: NodeType, title: string) => string;
   updateNode: (id: string, patch: Partial<LibraryNode>) => void;
   moveNode: (id: string, parentId: string) => boolean;
@@ -196,12 +138,6 @@ interface AppState {
   resolveAnkiNoteDeletion: (ankiId: number) => void;
   markAnkiNoteDeletionError: (ankiId: number, error: string) => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
-  upsertJob: (
-    job: Omit<BackgroundJob, "startedAt" | "updatedAt"> & {
-      startedAt?: string;
-    },
-  ) => void;
-  dismissJob: (id: string) => void;
   inheritedContext: (
     nodeId: string,
   ) => { title: string; context: string; type: NodeType }[];
@@ -209,8 +145,10 @@ interface AppState {
   restoreLibraryBackup: (backup: LibraryBackup) => void;
 }
 
+startStartupPhase("library-state-hydration");
+
 export const useAppStore = create<AppState>()(
-  persist(
+  persist<AppState, [], [], PersistedAppState>(
     (set, get) => ({
       nodes: seedNodes,
       lectures: {},
@@ -250,7 +188,6 @@ export const useAppStore = create<AppState>()(
         },
         backupLimit: 10,
       },
-      jobs: [],
       addNode: (parentId, type, title) => {
         const resolvedParentId = parentId ?? workspaceId;
         const parent = get().nodes.find((node) => node.id === resolvedParentId);
@@ -374,7 +311,9 @@ export const useAppStore = create<AppState>()(
               db.recordingSessions,
               db.recordingChunks,
               async () => {
-                await db.assets.bulkDelete(affectedAssets.map((asset) => asset.id));
+                await db.assets.bulkDelete(
+                  affectedAssets.map((asset) => asset.id),
+                );
                 if (affectedAssets.length)
                   await db.visualThumbnails
                     .where("assetId")
@@ -507,24 +446,6 @@ export const useAppStore = create<AppState>()(
         })),
       updateSettings: (patch) =>
         set((s) => ({ settings: { ...s.settings, ...patch } })),
-      upsertJob: (job) =>
-        set((s) => {
-          const existing = s.jobs.find((item) => item.id === job.id);
-          const timestamp = now();
-          const next = {
-            ...existing,
-            ...job,
-            startedAt: existing?.startedAt ?? job.startedAt ?? timestamp,
-            updatedAt: timestamp,
-          } satisfies BackgroundJob;
-          return {
-            jobs: existing
-              ? s.jobs.map((item) => (item.id === job.id ? next : item))
-              : [...s.jobs, next],
-          };
-        }),
-      dismissJob: (id) =>
-        set((s) => ({ jobs: s.jobs.filter((job) => job.id !== id) })),
       inheritedContext: (nodeId) => {
         const { nodes } = get();
         const chain: LibraryNode[] = [];
@@ -570,20 +491,25 @@ export const useAppStore = create<AppState>()(
         }),
     }),
     {
-      name: "lectio-state-v1",
+      name: STATE_STORAGE_KEY,
       version: 16,
+      storage: createDeferredLocalStorage<PersistedAppState>(),
+      partialize: persistedAppState,
       // Native operations cannot survive a process restart. In particular, an
       // interrupted Drive sync used to be rehydrated as an active job and
       // locked the entire UI even though no sync worker was running.
       merge: (persistedState, currentState) => ({
         ...currentState,
-        ...(persistedState as Partial<AppState>),
-        jobs: [],
+        ...(persistedState as PersistedAppState),
       }),
-      onRehydrateStorage: () => () => markStartup("library-state-hydrated"),
+      onRehydrateStorage: () => (_state, error) =>
+        completeStoreHydration(error),
       migrate: (persistedState) => {
-        const previous = persistedState as AppState;
-        const legacySettings = previous.settings as Omit<AppSettings, "localVisualDescriptions"> & {
+        const previous = persistedState as PersistedAppState;
+        const legacySettings = previous.settings as Omit<
+          AppSettings,
+          "localVisualDescriptions"
+        > & {
           aiMode?: string;
           aiProvider?: string;
           transcriptionProvider?: string;
@@ -596,7 +522,9 @@ export const useAppStore = create<AppState>()(
           settings: {
             ...legacySettings,
             aiMode:
-              legacySettings.aiMode === "api" ? "api" : ("clipboard" as const),
+              legacySettings.aiMode === "api"
+                ? ("api" as const)
+                : ("clipboard" as const),
             aiProvider: [
               "openai",
               "anthropic",
@@ -623,8 +551,8 @@ export const useAppStore = create<AppState>()(
             localVisualDescriptions:
               legacySettings.localVisualDescriptions === "local" ||
               legacySettings.localVisualDescriptions === "nvidia"
-                ? "nvidia"
-                : "off",
+                ? ("nvidia" as const)
+                : ("off" as const),
             cloudSync: (() => {
               const legacyCloud = legacySettings.cloudSync as Partial<
                 AppSettings["cloudSync"]
@@ -664,9 +592,6 @@ export const useAppStore = create<AppState>()(
           // Visa den nya översikten en gång efter uppgraderingen. Allt lokalt
           // kursmaterial ligger kvar i samma lagring.
           activeView: "dashboard" as const,
-          // Ett pågående native-jobb överlever inte en omstart. Rensa därför
-          // gamla indikatorer i stället för att visa ett falskt förlopp.
-          jobs: [],
           pendingAnkiDeletions: (previous.pendingAnkiDeletions ?? []).map(
             (pending) =>
               typeof pending === "number" ? { ankiId: pending } : pending,

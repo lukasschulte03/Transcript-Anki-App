@@ -14,7 +14,7 @@ import {
   canMoveLibraryNode,
   moveLibraryNode,
   reorderLibraryNode,
-} from "../core/store";
+} from "../domain/libraryTree";
 import {
   createCardPrompt,
   cardPromptSummary,

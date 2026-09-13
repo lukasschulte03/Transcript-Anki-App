@@ -1,9 +1,7 @@
-import {
-  resolveCardGenerationSettings,
-  type LibraryNode,
-} from "../core/types";
+import { resolveCardGenerationSettings, type LibraryNode } from "../core/types";
 import { db } from "../core/database";
-import { useAppStore } from "../core/store";
+import { libraryRepository } from "../infrastructure/libraryRepository";
+import { DATA_PROFILE } from "../runtimeProfile";
 import { uid } from "../lib/utils";
 import {
   createCardPrompt,
@@ -55,7 +53,10 @@ export type BatchJob = {
   overwrite?: boolean;
 };
 
-const storageKey = "lectio-batch-jobs-v1";
+const storageKey =
+  DATA_PROFILE === "main" || DATA_PROFILE === "stability"
+    ? "lectio-batch-jobs-v1"
+    : `lectio-batch-jobs-v1:${DATA_PROFILE}`;
 let jobs: BatchJob[] = [];
 let running = false;
 let loaded = false;
@@ -111,7 +112,7 @@ export function subscribeBatchJobs(listener: (value: BatchJob[]) => void) {
 }
 
 function audioParts(lectureId: string) {
-  const lecture = useAppStore.getState().lectures[lectureId];
+  const lecture = libraryRepository.getState().lectures[lectureId];
   if (lecture?.audioParts?.length) return lecture.audioParts;
   return lecture?.audioAssetId
     ? [
@@ -146,7 +147,7 @@ async function duration(blob: Blob) {
 
 async function transcribe(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-  const state = useAppStore.getState();
+  const state = libraryRepository.getState();
   const parts = audioParts(job.lectureId);
   if (!parts.length) throw new Error("Föreläsningen saknar ljud.");
   const apiMode = state.settings.transcriptionProvider !== "local";
@@ -225,7 +226,7 @@ async function transcribe(job: BatchJob) {
     // decoders and buffers before the next lecture/part starts.
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
   }
-  const latest = useAppStore.getState();
+  const latest = libraryRepository.getState();
   latest.updateLecture(job.lectureId, {
     audioParts: updatedParts,
     audioDuration: offset,
@@ -253,7 +254,7 @@ function courseId(nodes: LibraryNode[], lectureId: string) {
 
 async function generate(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-  const state = useAppStore.getState();
+  const state = libraryRepository.getState();
   const generation = resolveCardGenerationSettings(
     state.settings.cardGeneration,
   );
@@ -284,7 +285,8 @@ async function generate(job: BatchJob) {
   );
   const rankedVisuals = [...visuals].sort(
     (left, right) =>
-      Number(right.lectureId === job.lectureId) - Number(left.lectureId === job.lectureId) ||
+      Number(right.lectureId === job.lectureId) -
+        Number(left.lectureId === job.lectureId) ||
       left.slidePage - right.slidePage,
   );
   const contextFiles = await db.assets
@@ -315,7 +317,9 @@ async function generate(job: BatchJob) {
           )
           .map((item) => item.context),
         ...contextFiles
-          .filter((file) => !file.nodeId || enabledContextNodeIds.has(file.nodeId))
+          .filter(
+            (file) => !file.nodeId || enabledContextNodeIds.has(file.nodeId),
+          )
           .map((file) => file.extractedText ?? ""),
       ]
         .filter((text) => text.trim())
@@ -368,7 +372,11 @@ async function generate(job: BatchJob) {
         : [],
       density: generation.density,
       count: chunkCardCeiling(
-        generation.density === "few" ? 18 : generation.density === "many" ? 54 : 36,
+        generation.density === "few"
+          ? 18
+          : generation.density === "many"
+            ? 54
+            : 36,
         chunk,
       ),
       types: generation.types,
@@ -386,7 +394,11 @@ async function generate(job: BatchJob) {
       .slice(
         0,
         chunkCardCeiling(
-          generation.density === "few" ? 18 : generation.density === "many" ? 54 : 36,
+          generation.density === "few"
+            ? 18
+            : generation.density === "many"
+              ? 54
+              : 36,
           chunk,
         ),
       )
@@ -406,13 +418,13 @@ async function generate(job: BatchJob) {
       }),
     );
   }
-  useAppStore.getState().addCards(generated);
+  libraryRepository.getState().addCards(generated);
   return `${generated.length} nya kort skapades för granskning.`;
 }
 
 async function approve(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-  const state = useAppStore.getState();
+  const state = libraryRepository.getState();
   const cards = state.cards.filter(
     (card) => card.lectureId === job.lectureId && card.status === "generated",
   );
@@ -422,7 +434,7 @@ async function approve(job: BatchJob) {
 
 async function sync(job: BatchJob) {
   if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
-  let state = useAppStore.getState();
+  let state = libraryRepository.getState();
   await testAnki(state.settings.ankiUrl);
   const deletions = state.pendingAnkiDeletions.filter(
     (item) => item.lectureId === job.lectureId,
@@ -432,16 +444,16 @@ async function sync(job: BatchJob) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
       await deleteNote(state.settings.ankiUrl, deletion.ankiId);
-      useAppStore.getState().resolveAnkiNoteDeletion(deletion.ankiId);
+      libraryRepository.getState().resolveAnkiNoteDeletion(deletion.ankiId);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      useAppStore
+      libraryRepository
         .getState()
         .markAnkiNoteDeletionError(deletion.ankiId, message);
       failures.push(message);
     }
   }
-  state = useAppStore.getState();
+  state = libraryRepository.getState();
   const deck = await ensureDeck(
     state.settings.ankiUrl,
     lectureDeckName(state.nodes, job.lectureId, state.settings.defaultDeck),
@@ -466,7 +478,7 @@ async function sync(job: BatchJob) {
         { ...card, tags },
         media,
       );
-      useAppStore.getState().updateCard(card.id, {
+      libraryRepository.getState().updateCard(card.id, {
         status: "synced",
         ankiId,
         ankiDeck: deck,
@@ -477,7 +489,7 @@ async function sync(job: BatchJob) {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      useAppStore.getState().updateCard(card.id, {
+      libraryRepository.getState().updateCard(card.id, {
         ankiSyncError: message,
         ankiSyncErrorAt: new Date().toISOString(),
       });
@@ -488,7 +500,7 @@ async function sync(job: BatchJob) {
     throw new Error(
       `${failures.length} Anki-ändringar misslyckades: ${failures[0]}`,
     );
-  useAppStore.getState().updateLecture(job.lectureId, {
+  libraryRepository.getState().updateLecture(job.lectureId, {
     ankiLastSyncedAt: new Date().toISOString(),
   });
   return `${cards.length} kort synkades${deletions.length ? ` och ${deletions.length} raderades` : ""}.`;

@@ -1,13 +1,14 @@
-import * as Sentry from "@sentry/react";
 import { invoke } from "@tauri-apps/api/core";
 import { downloadText } from "../lib/utils";
 import { APP_VERSION } from "../lib/appVersion";
-import { useAppStore } from "../core/store";
+import { libraryRepository } from "../infrastructure/libraryRepository";
+import { useJobStore } from "../infrastructure/jobStore";
 import { db } from "../core/database";
+import { getStateRepositoryStatus } from "../core/deferredStorage";
 import { isTauri } from "./platform";
 import { diagnosticLogs, logDiagnostic, type DiagnosticLogEntry, type DiagnosticSubsystem } from "./diagnosticLog";
 import { redactDiagnosticText } from "./diagnosticRedaction";
-import { startupTimings } from "./startupMetrics";
+import { startupTimings, type StartupTiming } from "./startupMetrics";
 export { redactDiagnosticText } from "./diagnosticRedaction";
 
 const MAX_EVENTS = 30;
@@ -44,8 +45,9 @@ export type DiagnosticSnapshot = {
     syncProtocol: "legacy" | "v2";
     syncV2KnownOperations: number;
     recentJobs: SafeJob[];
+    stateRepository: ReturnType<typeof getStateRepositoryStatus>;
   };
-  startup: Array<{ stage: string; elapsedMs: number }>;
+  startup: StartupTiming[];
   suggestedActions: string[];
 };
 
@@ -96,9 +98,10 @@ export function recordDiagnostic(area: string, error: unknown) {
   events.splice(MAX_EVENTS);
 }
 
-export function initializeDiagnostics() {
+export async function initializeDiagnostics() {
   const dsn = import.meta.env.VITE_SENTRY_DSN?.trim();
   if (!dsn) return false;
+  const Sentry = await import("@sentry/react");
   Sentry.init({
     dsn,
     release: `lectio@${APP_VERSION}`,
@@ -129,13 +132,13 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
       recordDiagnostic("diagnostics", error);
     }
   }
-  const state = useAppStore.getState();
+  const state = libraryRepository.getState();
   const syncV2State = await db.syncV2States
     .get(
       `google-drive-v2:${(state.settings.cloudSync.remotePath.trim() || "Lectio").toLocaleLowerCase()}`,
     )
     .catch(() => undefined);
-  const safeJobs: SafeJob[] = state.jobs.slice(-8).map((job) => ({
+  const safeJobs: SafeJob[] = useJobStore.getState().jobs.slice(-8).map((job) => ({
     kind: job.kind,
     phase: job.phase,
     status: job.status,
@@ -161,6 +164,7 @@ export async function createDiagnosticSnapshot(): Promise<DiagnosticSnapshot> {
       syncProtocol: syncV2State ? "v2" : "legacy",
       syncV2KnownOperations: syncV2State?.knownOperationIds.length ?? 0,
       recentJobs: safeJobs,
+      stateRepository: getStateRepositoryStatus(),
     },
     startup: startupTimings(),
     suggestedActions: diagnosticSuggestions(snapshotEvents),
@@ -187,6 +191,7 @@ export async function sendFeedback(input: {
     ? await createDiagnosticSnapshot()
     : undefined;
   if (!reportingEnabled()) return { delivered: false, snapshot };
+  const Sentry = await import("@sentry/react");
   Sentry.withScope((scope) => {
     scope.setTag("feedback.category", input.category);
     scope.setContext("lectio_feedback", {

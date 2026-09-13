@@ -6,6 +6,7 @@ import type {
   StoredAsset,
 } from "./types";
 import type { SyncV2State } from "../services/syncV2";
+import { ASSET_DATABASE_NAME } from "../runtimeProfile";
 
 export type InboxImportReceipt = {
   id: string;
@@ -21,9 +22,22 @@ export type VisualThumbnail = {
   createdAt: string;
 };
 
-export const DATABASE_NAME = import.meta.env.VITE_STABILITY_TEST === "true"
-  ? "lectio-assets-stability"
-  : "lectio-assets";
+export type LibraryStateRecord = {
+  id: string;
+  serialized: string;
+  schemaVersion: number;
+  updatedAt: string;
+  verifiedAt?: string;
+};
+
+export type StateMigrationBackup = {
+  id: string;
+  storageKey: string;
+  serialized: string;
+  createdAt: string;
+};
+
+export const DATABASE_NAME = ASSET_DATABASE_NAME;
 
 export const db = new Dexie(DATABASE_NAME) as Dexie & {
   assets: EntityTable<StoredAsset, "id">;
@@ -33,6 +47,8 @@ export const db = new Dexie(DATABASE_NAME) as Dexie & {
   syncV2States: EntityTable<SyncV2State, "id">;
   inboxImports: EntityTable<InboxImportReceipt, "id">;
   visualThumbnails: EntityTable<VisualThumbnail, "id">;
+  libraryStates: EntityTable<LibraryStateRecord, "id">;
+  stateMigrationBackups: EntityTable<StateMigrationBackup, "id">;
 };
 db.version(1).stores({ assets: "id, lectureId, kind, createdAt" });
 db.version(2).stores({
@@ -94,4 +110,16 @@ db.version(9).stores({
   syncV2States: "id, libraryId, updatedAt",
   inboxImports: "id, importedAt, lectureId",
   visualThumbnails: "id, assetId, visualId, createdAt",
+});
+db.version(10).stores({
+  assets: "id, lectureId, nodeId, kind, createdAt",
+  recordingSessions: "id, lectureId, status, createdAt",
+  recordingChunks: "id, sessionId, [sessionId+sequence]",
+  backups: "id, createdAt, reason",
+  syncBases: null,
+  syncV2States: "id, libraryId, updatedAt",
+  inboxImports: "id, importedAt, lectureId",
+  visualThumbnails: "id, assetId, visualId, createdAt",
+  libraryStates: "id, updatedAt",
+  stateMigrationBackups: "id, storageKey, createdAt",
 });
