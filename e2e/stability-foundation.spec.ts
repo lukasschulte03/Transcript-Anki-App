@@ -53,7 +53,9 @@ base(
     await baseExpect(
       page.getByRole("heading", { name: "Lectio stötte på ett problem" }),
     ).toBeVisible();
-    await baseExpect(page.locator("#root")).toHaveScreenshot("error-boundary.png", {
+    // A page screenshot is reliable here. Chromium can capture an empty
+    // element image for #root immediately after React replaces a crashed tree.
+    await baseExpect(page).toHaveScreenshot("error-boundary.png", {
       animations: "disabled",
     });
     await page.evaluate(() =>

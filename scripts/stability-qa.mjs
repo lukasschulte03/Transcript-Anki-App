@@ -54,7 +54,12 @@ async function purgeStaleTestRoots() {
     if (!entry.isDirectory() || entry.name === runId) continue;
     const candidate = path.join(tempParent, entry.name);
     const marker = path.join(candidate, ".lectio-stability-root");
-    if (!(await stat(marker).then(() => true).catch(() => false))) continue;
+    if (
+      !(await stat(marker)
+        .then(() => true)
+        .catch(() => false))
+    )
+      continue;
     assertSafeStabilityRoot(candidate, {
       tempDir: os.tmpdir(),
       homeDir: os.homedir(),
@@ -335,6 +340,13 @@ try {
     label: "Vitest",
     program: "pnpm",
     args: ["test"],
+  });
+  await runPhase({
+    id: "frontends",
+    label: "Frontendkontrakt och isolerade entrypoints",
+    program: "pnpm",
+    args: ["qa:frontends"],
+    timeoutMs: 15 * 60_000,
   });
   const build = await runPhase({
     id: "build",

@@ -3,12 +3,6 @@ import type { Page } from "@playwright/test";
 
 const views = [
   { label: "Översikt", ready: "Översikt", snapshot: "view-dashboard.png" },
-  { label: "Bibliotek", ready: "Akut buk", snapshot: "view-library.png" },
-  {
-    label: "Anki-kort",
-    ready: "Generera nya kort",
-    snapshot: "view-cards.png",
-  },
   {
     label: "Inkorg",
     ready: "Koppla din Google Drive-inkorg",
@@ -57,19 +51,31 @@ test("kritiska vyer har granskade visuella baslinjer", async ({ page }) => {
         ? page.getByRole("button", { name: /^Inställningar/ })
         : page.getByRole("button", { name: view.label, exact: true });
     await navigationButton.click();
-    if (view.label === "Bibliotek") {
-      await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
-    } else {
-      await expect(
-        page.getByText(view.ready, { exact: true }).first(),
-      ).toBeVisible();
-    }
+    await expect(
+      page.getByText(view.ready, { exact: true }).first(),
+    ).toBeVisible();
     await expectViewportFilled(page);
     await expect(page.locator("#root")).toHaveScreenshot(view.snapshot, {
       animations: "disabled",
       mask: [page.getByText(/Lectio · v/)],
     });
   }
+
+  await page.getByRole("button", { name: "Akut buk", exact: true }).click();
+  await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
+  await expect(page.locator("#root")).toHaveScreenshot("view-library.png", {
+    animations: "disabled",
+    mask: [page.getByText(/Lectio · v/)],
+  });
+  await page.keyboard.press("Control+3");
+  await expect(
+    page.getByRole("dialog", { name: "Anki-arbetsyta" }),
+  ).toBeVisible();
+  await expect(page.getByText("Generera nya kort")).toBeVisible();
+  await expect(page.locator("#root")).toHaveScreenshot("view-cards.png", {
+    animations: "disabled",
+    mask: [page.getByText(/Lectio · v/)],
+  });
 });
 
 test("arbetsytan håller ihop i mörkt och smalt läge", async ({ page }) => {
@@ -81,16 +87,21 @@ test("arbetsytan håller ihop i mörkt och smalt läge", async ({ page }) => {
   await page.getByRole("button", { name: /^Inställningar/ }).click();
   await page.getByRole("combobox").filter({ hasText: "Kalk" }).click();
   await page.getByRole("option", { name: "Grafit", exact: true }).click();
-  await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
+  await page.keyboard.press("Control+2");
   await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
   await expectViewportFilled(page);
-  await expect(page.locator("#root")).toHaveScreenshot("workspace-dark-narrow.png", {
-    animations: "disabled",
-    mask: [page.getByText(/Lectio · v/)],
-  });
+  await expect(page.locator("#root")).toHaveScreenshot(
+    "workspace-dark-narrow.png",
+    {
+      animations: "disabled",
+      mask: [page.getByText(/Lectio · v/)],
+    },
+  );
 });
 
-test("slides utan ljud eller transkript är ett fullvärdigt arbetsflöde", async ({ page }) => {
+test("slides utan ljud eller transkript är ett fullvärdigt arbetsflöde", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await seedLibrary(page);
@@ -103,12 +114,17 @@ test("slides utan ljud eller transkript är ett fullvärdigt arbetsflöde", asyn
   });
   await page.reload();
   await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
-  await expect(page.getByRole("button", { name: /Skapa Anki-kort/ })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /Skapa Anki-kort/ }),
+  ).toBeVisible();
   await expect(page.getByText("Inget transkript ännu")).toBeVisible();
-  await expect(page.locator("#root")).toHaveScreenshot("workspace-slides-only.png", {
-    animations: "disabled",
-    mask: [page.getByText(/Lectio · v/)],
-  });
+  await expect(page.locator("#root")).toHaveScreenshot(
+    "workspace-slides-only.png",
+    {
+      animations: "disabled",
+      mask: [page.getByText(/Lectio · v/)],
+    },
+  );
 });
 
 test("navigation, sidofält och föreläsningsyta förblir stabila under lång körning", async ({
@@ -119,22 +135,19 @@ test("navigation, sidofält och föreläsningsyta förblir stabila under lång k
   await seedLibrary(page);
   await page.reload();
 
-  const sequence = [
-    "Bibliotek",
-    "Anki-kort",
-    "Inkorg",
-    "Super Actions",
-    "Översikt",
-  ] as const;
+  const sequence = ["Inkorg", "Super Actions", "Översikt"] as const;
   for (let iteration = 0; iteration < 15; iteration += 1) {
     const label = sequence[iteration % sequence.length];
     await page.getByRole("button", { name: label, exact: true }).click();
-    if (label === "Bibliotek") {
-      await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
-    } else {
+    await expect(
+      page.getByRole("button", { name: label, exact: true }),
+    ).toBeVisible();
+    if (iteration % 5 === 0) {
+      await page.keyboard.press("Control+3");
       await expect(
-        page.getByRole("button", { name: label, exact: true }),
+        page.getByRole("dialog", { name: "Anki-arbetsyta" }),
       ).toBeVisible();
+      await page.getByRole("button", { name: "Stäng Anki-arbetsytan" }).click();
     }
     if (iteration % 3 === 0) {
       await page.keyboard.press("Control+B");
@@ -178,13 +191,14 @@ test("dialoger och kortkommandon kan öppnas och stängas utan att lämna UI:t l
   await page.goto("/");
   await seedLibrary(page);
   await page.reload();
+  await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
 
   await page.keyboard.press("?");
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog")).toBeHidden();
 
-  await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
+  await page.keyboard.press("Control+2");
   await page.getByRole("button", { name: "Akut buk", exact: true }).click();
   await page.getByRole("button", { name: "Importera text" }).click();
   await expect(page.getByRole("dialog")).toBeVisible();

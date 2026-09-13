@@ -9,8 +9,15 @@ describe("Lectio Windows desktop", () => {
     await shell.waitForDisplayed();
     const overview = await browser.$('[aria-label="Översikt"]');
     await overview.waitForDisplayed({ timeout: 30_000 });
+    const startupReadyMs = await browser.execute(() =>
+      Number(document.documentElement.dataset.lectioStartupReadyMs),
+    );
+    expect(startupReadyMs).toBeGreaterThanOrEqual(0);
+    expect(startupReadyMs).toBeLessThan(3_000);
 
-    await (await browser.$('[aria-label="Anki-kort"]')).click();
+    await (
+      await browser.$('[aria-label="Öppna Anki för valt objekt"]')
+    ).click();
     await browser.waitUntil(
       async () => {
         const source = await browser.getPageSource();
@@ -24,6 +31,8 @@ describe("Lectio Windows desktop", () => {
         timeoutMsg: "Anki-vyn öppnades inte i Tauri-fönstret",
       },
     );
+
+    await (await browser.$('[aria-label="Stäng Anki-arbetsytan"]')).click();
 
     await (await browser.$("//button[contains(., 'Inställningar')]")).click();
     await browser.waitUntil(

@@ -13,8 +13,12 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
     mimeType: "audio/wav",
     buffer: Buffer.from("RIFF0000WAVEfmt "),
   });
-  await expect(page.getByText("Transkribera", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Granska Anki-kort", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Transkribera ljud" }).first(),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Granska Anki-kort", exact: true })
+    .click();
   await expect(page.getByText("Generera nya kort")).toBeVisible();
   await page.getByRole("button", { name: "Fortsätt" }).click();
   await page
@@ -57,12 +61,11 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
   await page.getByRole("button", { name: "Radera visade" }).click();
   await expect(page.getByText("Inga kort här ännu")).toBeVisible();
 
-  await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
+  await page.getByRole("button", { name: "Stäng Anki-arbetsytan" }).click();
   await page.getByRole("button", { name: "Akut buk", exact: true }).click();
   page.once("dialog", (dialog) => dialog.accept());
-  await page
-    .getByRole("button", { name: "Ta bort ljudfil från föreläsningen" })
-    .evaluate((button: HTMLButtonElement) => button.click());
+  await page.getByRole("button", { name: "Fler ljudåtgärder" }).click();
+  await page.getByRole("menuitem", { name: "Ta bort ljudfil" }).click();
   await expect(page.getByText("Ingen ljudfil ännu")).toBeVisible();
 });
 
@@ -75,7 +78,9 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
     mimeType: "audio/wav",
     buffer: Buffer.from("RIFF0000WAVEfmt "),
   });
-  await expect(page.getByText("Transkribera", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Transkribera ljud" }).first(),
+  ).toBeVisible();
   await page.getByRole("button", { name: /Inställningar/ }).click();
   await page.getByRole("button", { name: "Allmänt" }).click();
 
