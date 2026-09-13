@@ -35,6 +35,7 @@ import { extractPptxImages } from "../../services/pptx";
 import { AudioPanel } from "./AudioPanel";
 import { PdfSlideViewer } from "./PdfSlideViewer";
 import { toast } from "../../services/feedbackToast";
+import { SourceSummary } from "../../components/WorkspacePatterns";
 import {
   formatGlossary,
   inheritedGlossary,
@@ -113,39 +114,14 @@ export function LectureWorkspace({
     .filter((m) => m.lectureId === lectureId)
     .sort((a, b) => a.time - b.time);
   const lectureCards = cards.filter((card) => card.lectureId === lectureId);
-  const statusItems = [
-    {
-      label: "Ljud",
-      ready: Boolean(lecture.audioAssetId || lecture.audioParts?.length),
-      action: "Importera eller spela in",
-    },
-    {
-      label: "Slides",
-      ready: Boolean(lecture.slideAssetId),
-      action: "Lägg till slides",
-    },
-    {
-      label: "Transkript",
-      ready: transcript.length > 0,
-      action: "Transkribera",
-    },
-    {
-      label: "Anteckningar",
-      ready: Boolean(lecture.notes?.trim()),
-      action: "Skriv en kort anteckning",
-    },
-    {
-      label: "Markeringar",
-      ready: marks.length > 0,
-      action: "Markera viktiga moment",
-    },
-    { label: "Kort", ready: lectureCards.length > 0, action: "Skapa kort" },
-    {
-      label: "Anki",
-      ready: lectureCards.some((card) => card.status === "synced"),
-      action: "Godkänn och synka kort",
-    },
-  ];
+  const hasAudio = Boolean(lecture.audioAssetId || lecture.audioParts?.length);
+  const nextAction = !hasAudio && !lecture.slideAssetId
+    ? { label: "Lägg till material", target: "Slides" }
+    : hasAudio && !transcript.length
+      ? { label: "Transkribera ljud", target: "Transkript" }
+      : !lectureCards.length
+        ? { label: "Skapa Anki-kort", target: "Kort" }
+        : { label: "Granska Anki-kort", target: "Kort" };
   const slideAsset = useLiveQuery(
     () =>
       lecture.slideAssetId ? db.assets.get(lecture.slideAssetId) : undefined,
@@ -573,7 +549,7 @@ export function LectureWorkspace({
     setSearchResultIds(matchingSegmentIds(transcriptQuery, updatedTranscript));
   };
   return (
-    <div className="flex h-full min-w-0 flex-1 flex-col">
+    <div className="lecture-workspace-root relative flex h-full min-w-0 flex-1 flex-col">
       <header className="flex h-16 shrink-0 items-center justify-between border-b border-border bg-card px-6">
         <div className="min-w-0">
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -592,11 +568,10 @@ export function LectureWorkspace({
         </div>
         <div className="flex items-center gap-2">
           <Button
-            variant="secondary"
             size="sm"
-            onClick={() => setActiveView("cards")}
+            onClick={() => runStatusAction(nextAction.target)}
           >
-            <BookText className="size-4" /> Skapa kort
+            <BookText className="size-4" /> {nextAction.label}
           </Button>
           <Button
             variant="ghost"
@@ -608,29 +583,20 @@ export function LectureWorkspace({
           </Button>
         </div>
       </header>
-      <div className="flex shrink-0 items-center gap-2 overflow-x-auto border-b border-border bg-card px-6 py-2">
-        <span className="mr-1 text-xs font-medium text-muted-foreground">
-          Nästa steg
-        </span>
-        {statusItems.map((item) => (
-          <button
-            key={item.label}
-            type="button"
-            onClick={() => !item.ready && runStatusAction(item.label)}
-            className={`shrink-0 rounded-md px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--palette-focus-ring)] ${item.ready ? "cursor-default bg-[var(--palette-success-muted)] text-[var(--palette-success)]" : "bg-muted text-muted-foreground hover:bg-[var(--palette-primary-muted)] hover:text-[var(--palette-text)]"}`}
-            title={item.ready ? `${item.label} är klar` : item.action}
-          >
-            {item.ready ? "✓" : "○"} {item.label}
-          </button>
-        ))}
-        {!statusItems.every((item) => item.ready) && (
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">
-            {statusItems.find((item) => !item.ready)?.action}
-          </span>
-        )}
+      <div className="shrink-0 border-b border-border bg-card px-6 py-2">
+        <SourceSummary
+          compact
+          items={[
+            { label: "Ljud", available: hasAudio, icon: Clock3 },
+            { label: "Slides", available: Boolean(lecture.slideAssetId), icon: Presentation },
+            { label: "Transkript", available: transcript.length > 0, detail: `${transcript.length}`, icon: MessageSquareText },
+            { label: "Anteckningar", available: Boolean(lecture.notes?.trim()), icon: BookText },
+            { label: "Markeringar", available: marks.length > 0, detail: `${marks.length}`, icon: Star },
+          ]}
+        />
       </div>
-      <main className="ui-app-bg grid min-h-0 flex-1 grid-cols-[minmax(320px,1fr)_minmax(360px,0.9fr)] gap-3 overflow-hidden p-3">
-        <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)]">
+      <main className="lecture-workspace-grid ui-app-bg grid min-h-0 flex-1 grid-cols-[minmax(320px,1.08fr)_minmax(360px,0.92fr)] gap-px overflow-hidden bg-border">
+        <section className="flex min-h-0 flex-col overflow-hidden bg-[var(--palette-surface-muted)]">
           <div className="flex h-11 items-center justify-between border-b border-[var(--palette-border)] bg-[var(--palette-surface)] px-4">
             <div className="flex min-w-0 items-center gap-2 text-xs font-semibold text-[var(--palette-text)]">
               <Presentation className="size-4 shrink-0 text-[var(--palette-text-subtle)]" />
@@ -657,7 +623,7 @@ export function LectureWorkspace({
               </label>
             </Button>
           </div>
-          <div className="grid min-h-0 flex-1 place-items-center p-3">
+          <div className="grid min-h-0 flex-1 place-items-center p-2">
             {mediaSuspended && slideAsset ? (
               <div className="max-w-56 text-center text-xs leading-5 text-[var(--palette-text-muted)]">
                 Slides pausas tillfälligt medan transkriberingen använder minne.
@@ -697,8 +663,8 @@ export function LectureWorkspace({
             )}
           </div>
         </section>
-        <section className="grid min-h-0 grid-rows-[minmax(240px,1.1fr)_minmax(180px,0.8fr)] gap-3 bg-transparent">
-          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+        <section className="grid min-h-0 grid-rows-[minmax(240px,1.1fr)_minmax(180px,0.8fr)] gap-px bg-border">
+          <div className="flex min-h-0 flex-col overflow-hidden bg-card">
             <div className="flex h-11 items-center justify-between border-b border-slate-100 px-4">
               <div className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <MessageSquareText className="size-4 text-slate-400" />{" "}
@@ -883,8 +849,8 @@ export function LectureWorkspace({
               )}
             </div>
           </div>
-          <div className="grid min-h-0 grid-cols-2 gap-3 bg-transparent">
-            <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+          <div className="grid min-h-0 grid-cols-2 gap-px bg-border">
+            <div className="flex min-h-0 flex-col overflow-hidden bg-card">
               <div className="flex h-10 items-center gap-2 border-b border-slate-100 px-4 text-xs font-semibold text-slate-700">
                 <BookText className="size-4 text-slate-400" /> Anteckningar
               </div>
@@ -898,7 +864,7 @@ export function LectureWorkspace({
                 className="min-h-0 flex-1 rounded-none border-0 p-4 shadow-none focus:ring-0"
               />
             </div>
-            <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-slate-200/80 bg-white">
+            <div className="flex min-h-0 flex-col overflow-hidden bg-card">
               <div className="flex h-10 items-center gap-2 border-b border-slate-100 px-4 text-xs font-semibold text-slate-700">
                 <Star className="size-4 text-amber-500" /> Markeringar{" "}
                 <span className="text-slate-400">{marks.length}</span>
@@ -1341,13 +1307,13 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
   };
   return (
     <div className="ui-app-bg min-w-0 flex-1 overflow-auto">
-      <div className="mx-auto max-w-4xl px-8 py-10">
+      <div className="mx-auto max-w-5xl px-6 py-8 lg:px-10">
         <div className="flex items-start justify-between">
           <div>
             <input
               value={node.title}
               onChange={(e) => updateNode(node.id, { title: e.target.value })}
-              className="w-full border-0 bg-transparent text-3xl font-bold tracking-tight text-slate-900 outline-none"
+            className="w-full border-0 bg-transparent text-2xl font-semibold tracking-tight text-foreground outline-none"
             />
             <p className="mt-2 text-sm text-slate-500">
               {children.length} underobjekt · lokal lagring
@@ -1366,14 +1332,14 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
             </Button>
           )}
         </div>
-        <div className="mt-8 space-y-5">
-          <div className="space-y-5">
-            <div className="rounded-xl border border-slate-200 bg-white p-6">
+        <div className="mt-8 space-y-10">
+          <div className="space-y-10">
+            <section>
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <MessageSquareText className="size-4 text-violet-500" /> Kontext
+                <MessageSquareText className="size-4 text-[var(--palette-accent)]" /> Kontext
                 för detta objekt
               </div>
-              <p className="mt-1 text-xs leading-5 text-slate-400">
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
                 Ärvs av alla underliggande objekt och används vid AI-generering.
               </p>
               <Textarea
@@ -1384,7 +1350,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 }
                 placeholder="Exempel: Kursens lärandemål, notation, tentamensformat eller särskilda instruktioner…"
               />
-              <div className="mt-4 border-t border-[var(--palette-border)] pt-4">
+              <div className="mt-6 border-t border-[var(--palette-border)] pt-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <div className="text-xs font-semibold text-[var(--palette-text)]">
@@ -1448,13 +1414,13 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                   </p>
                 )}
               </div>
-            </div>
+            </section>
             {node.type === "module" && (
               <ModuleVisualLibrary moduleId={node.id} />
             )}
-            <div className="rounded-xl border border-slate-200 bg-white p-6">
+            <section className="border-t border-border pt-8">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <Settings2 className="size-4 text-violet-500" /> Egna
+                <Settings2 className="size-4 text-[var(--palette-accent)]" /> Egna
                 inställningar
               </div>
               <p className="mt-1 text-xs leading-5 text-slate-400">
@@ -1521,17 +1487,21 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 Anki-lekar följer alltid bibliotekets Kurs → Modul →
                 Föreläsning-struktur.
               </p>
-            </div>
+            </section>
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white p-6">
+          <details className="border-t border-border pt-6">
+            <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
+              Ärvt context och filer
+            </summary>
+            <div className="mt-4">
               <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                <Settings2 className="size-4 text-slate-400" /> Ärvt context
+                <Settings2 className="size-4 text-muted-foreground" /> Från överordnade nivåer
               </div>
               <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
                 {context.map((c) => (
                   <div
                     key={`${c.type}-${c.title}`}
-                    className="rounded-lg bg-slate-50 p-2 text-xs"
+                    className="border-b border-border py-3 text-xs last:border-0"
                   >
                     <div className="font-semibold text-slate-600">
                       {c.title}
@@ -1546,7 +1516,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                   return (
                     <div
                       key={file.id}
-                      className="rounded-lg bg-slate-50 p-2 text-xs"
+                    className="border-b border-border py-3 text-xs last:border-0"
                     >
                       <div className="flex items-center gap-1.5 font-semibold text-slate-600">
                         <FileText className="size-3.5 shrink-0" />
@@ -1568,13 +1538,7 @@ export function ObjectOverview({ nodeId }: { nodeId: string }) {
                 )}
               </div>
             </div>
-          <div className="rounded-xl bg-violet-600 p-6 text-white">
-            <div className="text-sm font-semibold">Modulärt bibliotek</div>
-            <p className="mt-2 text-xs leading-5 text-violet-100">
-              Varje nivå kan ha egen kontext och egna inställningar som ärvs
-              nedåt i kursstrukturen.
-            </p>
-          </div>
+          </details>
         </div>
       </div>
     </div>

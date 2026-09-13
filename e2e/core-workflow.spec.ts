@@ -14,7 +14,7 @@ test("studentens lokala kärnflöde: material, kortgranskning och mockad Anki-sy
     buffer: Buffer.from("RIFF0000WAVEfmt "),
   });
   await expect(page.getByText("Transkribera", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Skapa kort" }).click();
+  await page.getByRole("button", { name: "Granska Anki-kort", exact: true }).click();
   await expect(page.getByText("Generera nya kort")).toBeVisible();
   await page.getByRole("button", { name: "Fortsätt" }).click();
   await page

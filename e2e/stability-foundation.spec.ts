@@ -35,6 +35,10 @@ test("stability-profilen isolerar biblioteket och visar bakgrundsjobb", async ({
   });
   await expect(page.getByText("Stability-transkribering")).toBeVisible();
   await expect(page.getByText("30%")).toBeVisible();
+  await expect(page.locator("#root")).toHaveScreenshot("progress-active.png", {
+    animations: "disabled",
+    mask: [page.getByText(/Lectio · v/)],
+  });
 });
 
 base(
@@ -49,6 +53,9 @@ base(
     await baseExpect(
       page.getByRole("heading", { name: "Lectio stötte på ett problem" }),
     ).toBeVisible();
+    await baseExpect(page.locator("#root")).toHaveScreenshot("error-boundary.png", {
+      animations: "disabled",
+    });
     await page.evaluate(() =>
       sessionStorage.removeItem("lectio-stability-force-render-error"),
     );

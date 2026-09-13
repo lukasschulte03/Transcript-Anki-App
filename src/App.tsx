@@ -3,7 +3,6 @@ import {
   lazy,
   Suspense,
   useEffect,
-  useRef,
   useState,
 } from "react";
 import { useAppStore } from "./core/store";
@@ -118,8 +117,6 @@ export default function App() {
     activeView === "workspace" || activeView === "cards";
   // Keep the tree mounted after its first use. Hidden views reclaim the full
   // workspace while the tree keeps its expanded state and returns instantly.
-  const librarySidebarWasMounted = useRef(showLibrarySidebar);
-  if (showLibrarySidebar) librarySidebarWasMounted.current = true;
   useEffect(() => {
     markStartup("app-mounted");
     return scheduleIdleWork(() => {
@@ -255,7 +252,7 @@ export default function App() {
   }, [selected?.type]);
   return (
     <TooltipProvider>
-      <div className="ui-app-bg flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden text-slate-900">
+      <div className="ui-app-bg flex h-full min-h-0 min-w-0 w-full flex-col overflow-hidden text-foreground">
         <WindowTitleBar
           onReportProblem={() => {
             setFeedbackError(undefined);
@@ -265,7 +262,7 @@ export default function App() {
         <div className="flex min-h-0 flex-1 overflow-hidden">
           <AppNavigation />
           <Suspense fallback={<ViewLoader />}>
-            {librarySidebarWasMounted.current && (
+            {showLibrarySidebar && (
               <LibrarySidebar />
             )}
             {activeView === "dashboard" ? (

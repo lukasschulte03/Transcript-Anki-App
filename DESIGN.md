@@ -50,7 +50,22 @@ workflows, not error states.
   settings and destructive actions. It is revealed on demand through a panel,
   menu or dialog; it does not permanently compete with the primary task.
 - The **progress layer** is non-blocking. Jobs remain visible in a compact
-  corner surface and can expand for details, errors, cancellation or resume.
+  lower-right surface, reserved above the persistent audio footer so the two
+  layers never overlap. It can expand for details, errors, cancellation or
+  resume without blocking the workspace.
+
+### Shipped #142 surface contract
+
+- The lecture header's adaptive next action is the workspace's sole primary
+  action.
+- A compact source summary directly below the header shows which lecture
+  material is available.
+- Recording is available without competing with the lecture's adaptive primary
+  action: the idle **Spela in** control uses the outline treatment. Only an
+  active recording escalates stop and live-status feedback to urgent styling.
+- Global navigation collapses to an icon rail below 1100 px.
+- Settings remain a searchable destination so configuration can be found
+  without expanding the primary workspace controls.
 
 ## Component architecture
 
@@ -70,6 +85,8 @@ dropdown, card, form or status styles.
 ## Hierarchy and layout
 
 - A screen has one primary user goal and at most one visually primary action.
+- Persistent bottom controls reserve the lower-right corner for job feedback;
+  floating progress surfaces must sit above that footer, never cover it.
 - Use spacing, typography and alignment before adding another border or card.
 - Cards represent an independent object or task. Do not use cards merely to
   make a section look separated.

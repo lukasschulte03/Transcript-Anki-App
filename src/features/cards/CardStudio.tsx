@@ -17,6 +17,9 @@ import {
   Send,
   Sparkles,
   Trash2,
+  AudioLines,
+  FileText,
+  Presentation,
 } from "lucide-react";
 import { useAppStore } from "../../core/store";
 import { db } from "../../core/database";
@@ -28,6 +31,8 @@ import {
 } from "../../core/types";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/EmptyState";
+import { PageHeader } from "../../components/PageHeader";
+import { SourceSummary } from "../../components/WorkspacePatterns";
 import { Dialog } from "../../components/ui/Dialog";
 import { Input, Label, Select, Textarea } from "../../components/ui/Form";
 import {
@@ -991,11 +996,19 @@ export function CardStudio() {
     );
   return (
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
-      <header className="flex h-16 items-center justify-between border-b border-slate-200 bg-white px-6">
-        <div>
-          <h1 className="text-lg font-semibold text-slate-900">Anki-kort</h1>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        title="Anki-kort"
+        description={
+          <SourceSummary
+            compact
+            items={[
+              { label: "Ljud", available: Boolean(lecture?.audioAssetId || lecture?.audioParts?.length), icon: AudioLines },
+              { label: "Slides", available: Boolean(lecture?.slideAssetId || lecture?.slideText?.trim()), icon: Presentation },
+              { label: "Transkript", available: segments.some((item) => item.lectureId === lectureId), icon: FileText },
+            ]}
+          />
+        }
+        actions={<>
           {pendingSyncCount > 0 && (
             <Button
               variant="outline"
@@ -1013,10 +1026,10 @@ export function CardStudio() {
           >
             <Send className="size-4" /> Synka godkända
           </Button>
-        </div>
-      </header>
-      <div className="grid min-h-0 flex-1 grid-cols-[330px_1fr] gap-px bg-slate-200">
-        <aside className="overflow-auto bg-white p-6">
+        </>}
+      />
+      <div className="card-studio-layout grid min-h-0 flex-1 grid-cols-[300px_1fr] gap-px bg-border">
+        <aside className="overflow-auto bg-card p-5">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
             <Sparkles className="size-4 text-violet-500" /> Generera nya kort
           </div>
@@ -1277,7 +1290,7 @@ export function CardStudio() {
             <Sparkles className="size-4" /> Fortsätt
           </Button>
         </aside>
-        <main className="ui-app-bg min-w-0 overflow-auto p-6">
+        <main className="ui-app-bg min-w-0 overflow-auto p-5 sm:p-6">
           <details
             className="mb-4 rounded-lg border border-border bg-card"
             open={syncStatuses.some(

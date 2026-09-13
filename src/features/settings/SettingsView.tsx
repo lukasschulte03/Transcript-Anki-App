@@ -18,6 +18,7 @@ import {
   HardDrive,
   LoaderCircle,
   Unplug,
+  Search,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useLiveQuery } from "dexie-react-hooks";
@@ -194,7 +195,8 @@ export function SettingsView() {
     restoreLibraryBackup,
     upsertJob,
   } = store;
-  const [tab, setTab] = useState("profile");
+  const [tab, setTab] = useState("general");
+  const [settingsQuery, setSettingsQuery] = useState("");
   const [ankiOk, setAnkiOk] = useState(false);
   const [ankiDecks, setAnkiDecks] = useState<string[]>([]);
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -672,18 +674,42 @@ export function SettingsView() {
     }
   };
   const tabs = [
-    { id: "general", label: "Allmänt", icon: Languages },
-    { id: "sync", label: "Lagring & synk", icon: DownloadCloud },
-    { id: "transcription", label: "Ljud & transkribering", icon: AudioLines },
-    { id: "anki", label: "AI & Anki", icon: PlugZap },
+    { id: "general", label: "Allmänt", icon: Languages, keywords: "språk tema palett import export bibliotek" },
+    { id: "sync", label: "Lagring & synk", icon: DownloadCloud, keywords: "google drive moln backup säkerhetskopia" },
+    { id: "transcription", label: "Ljud & transkribering", icon: AudioLines, keywords: "mikrofon whisper nvidia modell fraslexikon vision bilder" },
+    { id: "anki", label: "AI & Anki", icon: PlugZap, keywords: "api nyckel provider modell kortlek ankiconnect prompt" },
   ];
+  const visibleTabs = tabs.filter((item) =>
+    `${item.label} ${item.keywords}`.toLocaleLowerCase("sv-SE").includes(settingsQuery.trim().toLocaleLowerCase("sv-SE")),
+  );
   return (
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
-      <PageHeader title="Inställningar" />
+      <PageHeader
+        title="Inställningar"
+        actions={
+          <label className="relative block w-64 max-w-[45vw]">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={settingsQuery}
+              onChange={(event) => {
+                const value = event.target.value;
+                setSettingsQuery(value);
+                const normalized = value.trim().toLocaleLowerCase("sv-SE");
+                const firstMatch = tabs.find((item) =>
+                  `${item.label} ${item.keywords}`.toLocaleLowerCase("sv-SE").includes(normalized),
+                );
+                if (normalized && firstMatch) setTab(firstMatch.id);
+              }}
+              placeholder="Sök inställningar"
+              className="h-9 pl-8"
+            />
+          </label>
+        }
+      />
       <div className="grid min-h-0 flex-1 grid-rows-[auto_1fr] xl:grid-cols-[240px_minmax(0,1fr)] xl:grid-rows-1">
         <aside className="overflow-x-auto border-b border-border bg-card p-2 xl:overflow-visible xl:border-b-0 xl:border-r xl:p-3">
           <nav className="flex min-w-max gap-1 xl:block xl:min-w-0">
-            {tabs.map(({ id, label, icon: Icon }) => (
+            {visibleTabs.map(({ id, label, icon: Icon }) => (
               <button
                 key={id}
                 onClick={() => setTab(id)}
@@ -693,6 +719,9 @@ export function SettingsView() {
                 {label}
               </button>
             ))}
+            {!visibleTabs.length && (
+              <p className="px-3 py-4 text-xs leading-5 text-muted-foreground">Ingen kategori matchar sökningen.</p>
+            )}
           </nav>
         </aside>
         <main className="overflow-auto p-4 sm:p-6 xl:p-8">

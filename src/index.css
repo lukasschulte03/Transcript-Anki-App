@@ -110,6 +110,106 @@ h3 {
   letter-spacing: -0.015em;
 }
 
+::selection {
+  background: var(--palette-primary-muted);
+  color: var(--palette-text);
+}
+
+* {
+  scrollbar-color: var(--palette-border-strong) transparent;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: var(--palette-border-strong);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--palette-text-subtle);
+}
+
+button,
+a,
+input,
+textarea,
+select,
+summary {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled,
+select:disabled {
+  cursor: not-allowed;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+.lecture-workspace-root {
+  container-type: inline-size;
+}
+
+@container (max-width: 820px) {
+  .lecture-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(300px, 1fr) minmax(300px, 1fr);
+    overflow-y: auto;
+  }
+}
+
+@media (max-width: 980px) {
+  .card-studio-layout {
+    grid-template-columns: minmax(240px, 280px) minmax(440px, 1fr);
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 1100px) {
+  .app-navigation {
+    width: 3.25rem !important;
+    padding: 0.5rem !important;
+  }
+
+  .app-navigation button {
+    justify-content: center !important;
+    padding-inline: 0 !important;
+  }
+
+  .app-navigation button > span,
+  .app-navigation kbd {
+    display: none !important;
+  }
+
+  .app-navigation > div:last-child > div:last-child {
+    padding-inline: 0 !important;
+    text-align: center;
+    font-size: 0;
+  }
+
+  .app-navigation > div:last-child > div:last-child::after {
+    content: "v" attr(data-version);
+    font-size: 10px;
+  }
+}
+
 :root[data-palette-tone="dark"] {
   color-scheme: dark;
 }

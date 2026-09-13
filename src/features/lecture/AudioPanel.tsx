@@ -1252,7 +1252,7 @@ export function AudioPanel({
             </div>
           </>
         ) : (
-          <Button size="sm" onClick={start} disabled={savingRecording}>
+          <Button variant="outline" size="sm" onClick={start} disabled={savingRecording}>
             <Mic className="size-4" /> Spela in
           </Button>
         )}

@@ -13,7 +13,6 @@ import { useState } from "react";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/EmptyState";
 import { PageHeader } from "../../components/PageHeader";
-import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { useAppStore } from "../../core/store";
 import { LectureImportAssistant } from "../library/LectureImportAssistant";
 
@@ -60,19 +59,19 @@ export function Dashboard() {
           </Button>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-3">
+        <section className="flex flex-wrap divide-x divide-border border-y border-border py-4">
           <Stat icon={BookOpen} label="Kurser" value={courseNodes.length} hint="i ditt bibliotek" />
           <Stat icon={FileText} label="Föreläsningar" value={lectureNodes.length} hint={`${Object.values(lectures).filter((item) => item.audioAssetId).length} med ljud`} />
           <Stat icon={CheckCircle2} label="Redo för Anki" value={approved} hint={`${cards.filter((card) => card.status === "synced").length} redan synkade`} />
         </section>
 
-        <section className="mt-8 grid gap-8 xl:grid-cols-[minmax(0,1fr)_20rem]">
+        <section className="mt-8 grid gap-10 xl:grid-cols-[minmax(0,1fr)_18rem]">
           <div className="min-w-0">
             <SectionHeading title="Senaste föreläsningar" action="Visa biblioteket" onAction={() => setActiveView("workspace")} />
             {recent.length ? (
-              <div className="grid gap-px overflow-hidden rounded-xl border border-border bg-border sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {recent.map((node) => (
-                  <button key={node.id} onClick={() => { selectNode(node.id); setActiveView("workspace"); }} className="group flex min-w-0 items-center gap-3 bg-card p-4 text-left transition-colors hover:bg-muted focus-visible:z-10 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <button key={node.id} onClick={() => { selectNode(node.id); setActiveView("workspace"); }} className="group flex min-w-0 items-center gap-3 rounded-lg border border-border bg-card p-4 text-left transition-colors hover:bg-muted focus-visible:z-10 focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground group-hover:bg-primary group-hover:text-primary-foreground"><FileText className="size-4" /></span>
                     <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium text-foreground">{node.title}</span><span className="mt-0.5 block text-xs text-muted-foreground">{new Date(node.createdAt).toLocaleDateString("sv-SE")}</span></span>
                     <ArrowRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
@@ -97,19 +96,17 @@ export function Dashboard() {
             </details>
           </div>
 
-          <aside className="space-y-6">
-            <Card className="gap-0 border border-border py-0 shadow-none">
-              <CardHeader className="border-b border-border py-4"><CardTitle className="flex items-center gap-2"><Keyboard className="size-4 text-muted-foreground" /> Användbara genvägar</CardTitle></CardHeader>
-              <CardContent className="space-y-3 py-4">
+          <aside className="space-y-6 border-l border-border pl-6">
+              <div className="flex items-center gap-2 text-sm font-semibold text-foreground"><Keyboard className="size-4 text-muted-foreground" /> Genvägar</div>
+              <div className="space-y-3">
                 <Shortcut keys={["Ctrl", "1–5"]} label="Växla mellan översikt, bibliotek, Anki, Inkorg och Super Actions" />
                 <Shortcut keys={["Ctrl", "N"]} label="Skapa nästa objekt i strukturen" />
                 <Shortcut keys={["Mellanslag"]} label="Spela upp eller pausa ljud" />
                 <Shortcut keys={["M"]} label="Markera viktigt ögonblick" />
                 <Shortcut keys={["Ctrl", "B"]} label="Visa eller dölj sidofält" />
                 <Button variant="outline" size="sm" className="mt-1 w-full" onClick={() => window.dispatchEvent(new Event("lectio:show-shortcuts"))}>Visa alla kortkommandon</Button>
-              </CardContent>
-            </Card>
-            <div className="border-l-2 border-primary-muted pl-4">
+              </div>
+            <div className="border-t border-border pt-5">
               <p className="text-sm leading-6 text-muted-foreground">Inspelningar och ditt bibliotek lagras lokalt. När du väljer en moln-AI visas vilka källor som skickas innan något genereras.</p>
             </div>
           </aside>
@@ -125,7 +122,7 @@ function SectionHeading({ title, action, onAction }: { title: string; action?: s
 }
 
 function Stat({ icon: Icon, label, value, hint }: { icon: typeof BookOpen; label: string; value: number; hint: string }) {
-  return <Card className="flex-row items-center gap-4 border border-border p-4 shadow-none"><div className="grid size-10 place-items-center rounded-lg bg-muted text-muted-foreground"><Icon className="size-5" /></div><div><div className="text-2xl font-semibold tracking-tight text-foreground">{value}</div><div className="text-xs text-muted-foreground"><span className="font-medium">{label}</span> · {hint}</div></div></Card>;
+  return <div className="flex min-w-48 flex-1 items-center gap-3 px-5 first:pl-0"><Icon className="size-4 text-muted-foreground" /><div><div className="text-lg font-semibold tabular-nums text-foreground">{value} <span className="text-sm font-medium">{label.toLocaleLowerCase("sv-SE")}</span></div><div className="text-xs text-muted-foreground">{hint}</div></div></div>;
 }
 
 function WorkflowStep({ icon: Icon, title, text }: { icon: typeof Mic; title: string; text: string }) {

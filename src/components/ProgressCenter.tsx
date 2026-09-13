@@ -1,6 +1,6 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, CircleX, Clock3, LoaderCircle, X } from "lucide-react";
-import { useEffect } from "react";
+import { Check, ChevronDown, ChevronUp, CircleX, Clock3, LoaderCircle, X } from "lucide-react";
+import { useEffect, useState } from "react";
 import { useAppStore } from "../core/store";
 import type {
   BackgroundJob,
@@ -207,6 +207,7 @@ function JobRow({ job }: { job: BackgroundJob }) {
 export function ProgressCenter() {
   const jobs = useAppStore((state) => state.jobs);
   const upsertJob = useAppStore((state) => state.upsertJob);
+  const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
     const receiveTestProgress = (event: Event) => {
@@ -238,15 +239,32 @@ export function ProgressCenter() {
   // A burst of imports must not turn the corner into a stack of competing
   // popups. Running work wins; retain only the latest completed/error state.
   const runningSlots = Math.max(0, 3 - activeJobs.length);
-  const visibleJobs = [
+  const allVisibleJobs = [
     ...activeJobs.slice(-3),
     ...queuedJobs.slice(0, runningSlots),
     ...latestTerminal,
   ];
+  const visibleJobs = expanded
+    ? allVisibleJobs
+    : allVisibleJobs.filter((job, index) =>
+        index === 0 || (job.status === "error" && index === allVisibleJobs.length - 1),
+      ).slice(0, 2);
   const hiddenQueuedCount = Math.max(0, queuedJobs.length - runningSlots);
-  if (!visibleJobs.length) return null;
+  if (!allVisibleJobs.length) return null;
   return (
-    <aside className="pointer-events-none fixed bottom-4 right-4 z-50 flex max-h-[calc(100vh-2rem)] flex-col gap-2 overflow-y-auto">
+    <aside className="pointer-events-none fixed bottom-20 right-4 z-50 flex max-h-[calc(100vh-6rem)] flex-col gap-2 overflow-y-auto">
+      {allVisibleJobs.length > 1 && (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="pointer-events-auto ml-auto flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground shadow-md hover:bg-muted"
+          aria-expanded={expanded}
+        >
+          {activeJobs.length ? `${activeJobs.length} aktiva` : `${allVisibleJobs.length} händelser`}
+          {queuedJobs.length ? ` · ${queuedJobs.length} i kö` : ""}
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+        </button>
+      )}
       {visibleJobs.map((job) => (
         <div className="pointer-events-auto" key={job.id}>
           <JobRow job={job} />

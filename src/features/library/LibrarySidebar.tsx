@@ -8,7 +8,6 @@ import {
   GraduationCap,
   Layers3,
   MoreHorizontal,
-  PanelLeftClose,
   Pencil,
   Plus,
   Search,
@@ -293,16 +292,6 @@ export function LibrarySidebar() {
         </div>
         <div className="flex items-center gap-1">
           <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => updateSettings({ librarySidebarCollapsed: true })}
-            className="size-8 text-[var(--palette-text-subtle)]"
-            title="Dölj bibliotek"
-            aria-label="Dölj bibliotek"
-          >
-            <PanelLeftClose className="size-4" />
-          </Button>
-          <Button
             size="icon"
             className="size-8 rounded-full"
             onClick={() =>
@@ -352,7 +341,7 @@ export function LibrarySidebar() {
                     }}
                     className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-primary-muted)] focus-visible:bg-[var(--palette-primary-muted)]"
                   >
-                    <Icon className="size-4 text-violet-500" />
+                    <Icon className="size-4 text-[var(--palette-text-subtle)]" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate font-medium text-slate-700">
                         {result.node.title}
@@ -396,9 +385,9 @@ export function LibrarySidebar() {
             onClick={() =>
               root && setCreateRequest({ parentId: root.id, type: "course" })
             }
-            className="mx-2 flex w-[calc(100%-16px)] flex-col items-center rounded-xl border border-dashed border-slate-200 px-6 py-8 text-center hover:border-violet-300 hover:bg-violet-50/40"
+            className="mx-2 flex w-[calc(100%-16px)] flex-col items-center px-6 py-8 text-center hover:bg-[var(--palette-surface-hover)]"
           >
-            <div className="grid size-10 place-items-center rounded-xl bg-violet-50 text-violet-600">
+            <div className="grid size-10 place-items-center rounded-lg bg-[var(--palette-primary-muted)] text-[var(--palette-accent)]">
               <BookOpen className="size-5" />
             </div>
             <span className="mt-3 text-sm font-semibold text-slate-700">
@@ -549,7 +538,7 @@ function CourseItem({
           title="Dra kursen till Mina studier"
         >
           <GripVertical className="size-3.5 shrink-0 text-[var(--palette-text-subtle)] opacity-0 transition-opacity group-hover:opacity-100" />
-          <BookOpen className="size-4 shrink-0 text-violet-500" />
+          <BookOpen className="size-4 shrink-0 text-[var(--palette-text-subtle)]" />
           <span className="truncate">{course.title}</span>
         </button>
         <NodeMenu

@@ -25,7 +25,6 @@ const views = [
     snapshot: "view-settings.png",
   },
 ] as const;
-const stabilityMode = process.env.VITE_STABILITY_TEST === "true";
 
 async function expectViewportFilled(page: Page) {
   // This declaration is replaced below by the browser-side assertion; keeping
@@ -46,10 +45,7 @@ async function expectViewportFilled(page: Page) {
 }
 
 test("kritiska vyer har granskade visuella baslinjer", async ({ page }) => {
-  test.skip(
-    stabilityMode,
-    "Nuvarande visuella baslinjer ska ersättas av den granskade designen i #142.",
-  );
+  test.setTimeout(90_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
   await seedLibrary(page);
@@ -74,6 +70,45 @@ test("kritiska vyer har granskade visuella baslinjer", async ({ page }) => {
       mask: [page.getByText(/Lectio · v/)],
     });
   }
+});
+
+test("arbetsytan håller ihop i mörkt och smalt läge", async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.setViewportSize({ width: 1024, height: 720 });
+  await page.goto("/");
+  await seedLibrary(page);
+  await page.reload();
+  await page.getByRole("button", { name: /^Inställningar/ }).click();
+  await page.getByRole("combobox").filter({ hasText: "Kalk" }).click();
+  await page.getByRole("option", { name: "Grafit", exact: true }).click();
+  await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
+  await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
+  await expectViewportFilled(page);
+  await expect(page.locator("#root")).toHaveScreenshot("workspace-dark-narrow.png", {
+    animations: "disabled",
+    mask: [page.getByText(/Lectio · v/)],
+  });
+});
+
+test("slides utan ljud eller transkript är ett fullvärdigt arbetsflöde", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/");
+  await seedLibrary(page);
+  await page.evaluate(() => {
+    const key = "lectio-state-v1";
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
+    stored.state.segments = [];
+    stored.state.cards = [];
+    localStorage.setItem(key, JSON.stringify(stored));
+  });
+  await page.reload();
+  await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: /Skapa Anki-kort/ })).toBeVisible();
+  await expect(page.getByText("Inget transkript ännu")).toBeVisible();
+  await expect(page.locator("#root")).toHaveScreenshot("workspace-slides-only.png", {
+    animations: "disabled",
+    mask: [page.getByText(/Lectio · v/)],
+  });
 });
 
 test("navigation, sidofält och föreläsningsyta förblir stabila under lång körning", async ({

@@ -22,7 +22,7 @@ const navigation = [
 ] as const;
 
 const shortcutHintClass =
-  "ml-auto inline-flex shrink-0 whitespace-nowrap rounded border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] px-1.5 py-0.5 font-sans text-[11px] leading-none font-medium tabular-nums text-[var(--palette-text-subtle)]";
+  "ml-auto hidden shrink-0 whitespace-nowrap font-sans text-[11px] leading-none font-medium tabular-nums text-[var(--palette-text-subtle)] group-hover:inline-flex group-focus-visible:inline-flex";
 
 /** Primary navigation shaped after the shadcn dashboard sidebar. */
 export function AppNavigation() {
@@ -30,7 +30,7 @@ export function AppNavigation() {
   const collapsed = settings.librarySidebarCollapsed;
   const navClass = (isActive: boolean) =>
     cn(
-      "relative flex h-9 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-sm font-medium outline-none transition-[background-color,color] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
+      "group relative flex h-9 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-sm font-medium outline-none transition-[background-color,color] duration-150 focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
       collapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
       isActive
         ? "bg-[var(--palette-primary-muted)] text-[var(--palette-accent)]"
@@ -38,9 +38,10 @@ export function AppNavigation() {
     );
   return (
     <nav
+      aria-label="Huvudnavigation"
       className={cn(
-        "flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--palette-border)] bg-[var(--palette-surface)] transition-[width,padding] duration-200 ease-out motion-reduce:transition-none",
-        collapsed ? "w-14 p-2" : "w-56 p-3",
+        "app-navigation flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--palette-border)] bg-[var(--palette-surface)] transition-[width,padding] duration-200 ease-out motion-reduce:transition-none",
+        collapsed ? "w-13 p-2" : "w-52 p-3",
       )}
     >
       <div className="space-y-1">
@@ -81,7 +82,7 @@ export function AppNavigation() {
             updateSettings({ librarySidebarCollapsed: !collapsed })
           }
           className={cn(
-            "relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
+            "group relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
             collapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
           )}
           title={`${collapsed ? "Visa" : "Dölj"} sidofält (Ctrl+B)`}
@@ -116,11 +117,11 @@ export function AppNavigation() {
             window.dispatchEvent(new Event("lectio:show-shortcuts"))
           }
           className={cn(
-            "relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
+            "group relative mb-1 flex h-8 w-full items-center overflow-hidden rounded-md whitespace-nowrap text-xs font-medium text-[var(--palette-text-muted)] outline-none transition-colors hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)] focus-visible:ring-[3px] focus-visible:ring-[var(--palette-focus-ring)]",
             collapsed ? "justify-center px-0" : "justify-start gap-2 px-2",
           )}
           title={collapsed ? "Kortkommandon" : undefined}
-          aria-label={collapsed ? "Kortkommandon" : undefined}
+          aria-label="Kortkommandon"
         >
           <Keyboard className="size-3.5" />
           <span
@@ -146,7 +147,7 @@ export function AppNavigation() {
           onClick={() => setActiveView("settings")}
           className={navClass(activeView === "settings")}
           title={collapsed ? "Inställningar (Ctrl+,)" : undefined}
-          aria-label={collapsed ? "Inställningar (Ctrl+,)" : undefined}
+          aria-label="Inställningar (Ctrl+,)"
         >
           <Settings className="size-4 shrink-0" />
           <span
@@ -169,6 +170,7 @@ export function AppNavigation() {
           </kbd>
         </button>
         <div
+          data-version={APP_VERSION}
           className={cn(
             "mt-3 overflow-hidden whitespace-nowrap text-xs text-[var(--palette-text-subtle)]",
             collapsed ? "px-0 text-center text-[10px]" : "px-2",

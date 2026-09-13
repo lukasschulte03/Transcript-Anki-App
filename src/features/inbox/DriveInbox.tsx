@@ -213,8 +213,9 @@ export function DriveInbox() {
 
   if (!connected) {
     return (
-      <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto p-6">
-        <div className="mx-auto flex min-h-full max-w-2xl items-center justify-center">
+      <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto">
+        <PageHeader title="Inkorg" />
+        <div className="mx-auto flex min-h-[calc(100%-3.5rem)] max-w-2xl items-center justify-center p-6">
           <EmptyState
             icon={InboxIcon}
             title="Koppla din Google Drive-inkorg"
@@ -228,8 +229,7 @@ export function DriveInbox() {
   }
 
   return (
-    <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto p-6">
-      <div className="mx-auto max-w-5xl space-y-6">
+    <main className="ui-app-bg min-w-0 flex-1 overflow-y-auto">
         <PageHeader
           title="Inkorg"
           description={`Nya ljudfiler från ${(settings.cloudSync.remotePath.trim() || "Lectio") + "/Inbox"}`}
@@ -244,6 +244,7 @@ export function DriveInbox() {
             </Button>
           }
         />
+      <div className="mx-auto max-w-5xl space-y-6 p-6">
 
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
           <section className="overflow-hidden rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]">
@@ -322,7 +323,7 @@ export function DriveInbox() {
             )}
           </section>
 
-          <aside className="h-fit rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] p-4">
+          <aside className="h-fit border-l border-[var(--palette-border)] pl-5">
             <h2 className="text-sm font-semibold text-[var(--palette-text)]">
               Lägg till i biblioteket
             </h2>

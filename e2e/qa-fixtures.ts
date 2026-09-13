@@ -64,7 +64,7 @@ export async function seedLibrary(page: Page) {
           lectureId: "lecture",
           notes: "Buksmärta och differentialdiagnoser.",
           slideAssetId: "slide-asset",
-          slideName: "akut-buk.png",
+          slideName: "akut-buk.svg",
           visualIndex: [
             {
               id: "visual-akut-buk",
@@ -119,9 +119,11 @@ export async function seedLibrary(page: Page) {
       id: "slide-asset",
       lectureId: "lecture",
       kind: "slides",
-      name: "akut-buk.png",
-      mimeType: "image/png",
-      blob: new Blob(["fixture-slide-image"], { type: "image/png" }),
+      name: "akut-buk.svg",
+      mimeType: "image/svg+xml",
+      blob: new Blob([
+        `<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675"><rect width="1200" height="675" fill="#f8fafc"/><text x="70" y="95" font-family="Arial" font-size="42" font-weight="700" fill="#172033">Akut buk</text><text x="70" y="145" font-family="Arial" font-size="22" fill="#536174">Systematisk initial bedömning</text><rect x="70" y="205" width="480" height="300" rx="20" fill="#e7eef6"/><circle cx="310" cy="355" r="105" fill="#c9d8e8"/><path d="M250 295c80-55 160 35 105 110-55 70-155 5-105-110Z" fill="#6d86a3"/><text x="620" y="245" font-family="Arial" font-size="28" fill="#172033">ABCDE</text><text x="620" y="300" font-family="Arial" font-size="22" fill="#536174">• Vitalparametrar</text><text x="620" y="345" font-family="Arial" font-size="22" fill="#536174">• Bukstatus</text><text x="620" y="390" font-family="Arial" font-size="22" fill="#536174">• Tidig smärtlindring</text><rect x="620" y="445" width="390" height="54" rx="10" fill="#172033"/><text x="645" y="480" font-family="Arial" font-size="20" fill="white">Uteslut tidskritisk sjukdom</text></svg>`,
+      ], { type: "image/svg+xml" }),
       createdAt: "2026-01-01T00:00:00.000Z",
     });
     await new Promise<void>((resolve, reject) => {
