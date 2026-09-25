@@ -13,8 +13,12 @@ const dataProfile =
 
 // https://vite.dev/config/
 export default defineConfig({
+  // Browser QA and the user's running dev app must not rewrite each other's
+  // dependency cache (which can force a reload in the middle of recording).
+  cacheDir: process.env.VITE_NEXT_E2E === "true" ? "node_modules/.vite-next-e2e" : "node_modules/.vite",
   plugins: [react(), tailwindcss()],
   resolve: {
+    dedupe: ["react", "react-dom"],
     alias: {
       "@": path.resolve(import.meta.dirname, "./src"),
       "@lectio-frontend": path.resolve(
@@ -25,6 +29,9 @@ export default defineConfig({
   },
   clearScreen: false,
   optimizeDeps: {
+    // Tabs are lazy in next. Optimize them with React up front so the first
+    // lecture does not introduce a second React module during a dev recrawl.
+    include: ["react", "react-dom/client", "@radix-ui/react-tabs"],
     // Vite's default waits for the complete dependency crawl before exposing
     // the first optimized result. Lectio has several large, lazy-only modules
     // (PDF, OCR and diagnostics), so a cold dev cache could leave Tauri on its

@@ -46,10 +46,10 @@ export function canReorderLibraryNode(
   const isLeaf = (type: NodeType) => type === "topic" || type === "lecture";
   return Boolean(
     node &&
-      target &&
-      node.id !== target.id &&
-      node.parentId === target.parentId &&
-      (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
+    target &&
+    node.id !== target.id &&
+    node.parentId === target.parentId &&
+    (node.type === target.type || (isLeaf(node.type) && isLeaf(target.type))),
   );
 }
 
@@ -94,17 +94,15 @@ export function reorderLibraryNode(
   nodes: LibraryNode[],
   nodeId: string,
   targetId: string,
+  position: "before" | "after" = "before",
 ) {
   if (!canReorderLibraryNode(nodes, nodeId, targetId)) return nodes;
   const node = nodes.find((item) => item.id === nodeId)!;
   const siblings = orderedSiblings(nodes, node.parentId).filter(
     (item) => item.id !== nodeId,
   );
-  siblings.splice(
-    siblings.findIndex((item) => item.id === targetId),
-    0,
-    node,
-  );
+  const targetIndex = siblings.findIndex((item) => item.id === targetId);
+  siblings.splice(targetIndex + (position === "after" ? 1 : 0), 0, node);
   const positions = new Map(siblings.map((item, index) => [item.id, index]));
   return nodes.map((item) =>
     positions.has(item.id)

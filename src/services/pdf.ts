@@ -45,24 +45,27 @@ export function formatSlideText(pages: string[]) {
     .join("\n\n");
 }
 
-export async function extractPdfPages(blob: Blob): Promise<string[]> {
+export async function extractPdfPages(
+  blob: Blob,
+  options: { ocr?: boolean } = {},
+): Promise<string[]> {
   const { getDocument } = await loadPdfRuntime();
   const bytes = new Uint8Array(await blob.arrayBuffer());
   const task = getDocument({ data: bytes });
   try {
     const document = await task.promise;
-    const pages = await Promise.all(
-      Array.from({ length: document.numPages }, async (_, index) => {
-        const page = await document.getPage(index + 1);
-        const content = await page.getTextContent();
-        const text = content.items
-          .map((item) => ("str" in item ? item.str : ""))
-          .join(" ")
-          .replace(/\s+/g, " ")
-          .trim();
-        return text || ocrPdfPage(page);
-      }),
-    );
+    const pages: string[] = [];
+    for (let index = 0; index < document.numPages; index++) {
+      const page = await document.getPage(index + 1);
+      const content = await page.getTextContent();
+      const text = content.items
+        .map((item) => ("str" in item ? item.str : ""))
+        .join(" ")
+        .replace(/\s+/g, " ")
+        .trim();
+      pages.push(text || (options.ocr === false ? "" : await ocrPdfPage(page)));
+      page.cleanup();
+    }
     return pages;
   } finally {
     await task.destroy();

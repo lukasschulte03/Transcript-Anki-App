@@ -184,9 +184,9 @@ export const lectioClient: LectioClient = {
         () => libraryRepository.getState().moveNode(id, parentId),
         "Objektet kunde inte flyttas.",
       ),
-    reorderNode: (id, targetId) =>
+    reorderNode: (id, targetId, position = "before") =>
       command(
-        () => libraryRepository.getState().reorderNode(id, targetId),
+        () => libraryRepository.getState().reorderNode(id, targetId, position),
         "Objektet kunde inte sorteras om.",
       ),
     removeNode: async (id) =>
@@ -210,6 +210,13 @@ export const lectioClient: LectioClient = {
       ),
   },
   assets: {
+    read: (id) =>
+      asyncCommand(async () => {
+        const { db } = await import("../core/database");
+        const asset = await db.assets.get(id);
+        if (!asset) throw new Error("Filen kunde inte hittas");
+        return asset.blob;
+      }, "Filen kunde inte öppnas."),
     importAudio: (lectureId, input) =>
       asyncCommand(async () => {
         const [{ db }, { uid }, audio] = await Promise.all([
@@ -301,13 +308,42 @@ export const lectioClient: LectioClient = {
         ) {
           const { extractPdfPages, formatSlideText } =
             await import("../services/pdf");
-          const pages = await extractPdfPages(blob);
+          const pages = await extractPdfPages(blob, { ocr: false });
           patch.slidePages = pages;
           patch.slideText = formatSlideText(pages);
         }
         libraryRepository.getState().updateLecture(lectureId, patch);
         return id;
       }, "Slides kunde inte importeras."),
+  },
+  recordings: {
+    start: (lectureId, mimeType) =>
+      asyncCommand(async () => {
+        const { startRecording } = await import("../services/lectureRecording");
+        return startRecording(lectureId, mimeType);
+      }, "Inspelningen kunde inte startas."),
+    append: (id, sequence, blob, duration) =>
+      asyncCommand(async () => {
+        const { appendRecording } =
+          await import("../services/lectureRecording");
+        await appendRecording(id, sequence, blob, duration);
+      }, "Ljuddelen kunde inte sparas. Inspelningen har stoppats."),
+    finish: (id, duration) =>
+      asyncCommand(async () => {
+        const { finishRecording } =
+          await import("../services/lectureRecording");
+        return finishRecording(id, duration);
+      }, "Inspelningen kunde inte slutföras. Sparade ljuddelar finns kvar."),
+    pending: (lectureId) =>
+      asyncCommand(async () => {
+        const { db } = await import("../core/database");
+        return (
+          await db.recordingSessions
+            .where("lectureId")
+            .equals(lectureId)
+            .toArray()
+        ).map(({ id, name }) => ({ id, name }));
+      }, "Sparade inspelningar kunde inte läsas."),
   },
   session: {
     getSnapshot: () => previousSession,
@@ -345,6 +381,82 @@ export const lectioClient: LectioClient = {
         () => libraryRepository.getState().updateSettings(patch),
         "Inställningen kunde inte sparas.",
       ),
+  },
+  credentials: {
+    read: (key) =>
+      asyncCommand(async () => {
+        const { readCredential } = await import("../services/credentials");
+        return Boolean(await readCredential(key));
+      }, "Den sparade API-nyckeln kunde inte läsas."),
+    write: (key, secret) =>
+      asyncCommand(async () => {
+        const { writeCredential } = await import("../services/credentials");
+        await writeCredential(key, secret);
+      }, "API-nyckeln kunde inte sparas säkert."),
+    remove: (key) =>
+      asyncCommand(async () => {
+        const { deleteCredential } = await import("../services/credentials");
+        await deleteCredential(key);
+      }, "API-nyckeln kunde inte tas bort."),
+  },
+  localTranscription: {
+    status: (model) =>
+      asyncCommand(async () => {
+        const { getLocalEngineStatus, getLocalModelStatus } =
+          await import("../services/localStt");
+        const [engine, selected] = await Promise.all([
+          getLocalEngineStatus(),
+          getLocalModelStatus(model),
+        ]);
+        return {
+          model,
+          installed: selected.installed,
+          size: selected.size,
+          nvidiaDetected: engine.nvidiaDetected,
+          nvidiaRuntimeInstalled: engine.nvidiaRuntimeInstalled,
+          nvidiaRuntimeReady: engine.nvidiaRuntimeReady,
+          nvidiaName: engine.nvidiaName,
+        };
+      }, "Den lokala transkriptionsmotorn kunde inte kontrolleras."),
+    download: (model) =>
+      asyncCommand(async () => {
+        const { downloadLocalModel, getLocalEngineStatus } =
+          await import("../services/localStt");
+        const selected = await downloadLocalModel(model);
+        const engine = await getLocalEngineStatus();
+        return {
+          model,
+          installed: selected.installed,
+          size: selected.size,
+          nvidiaDetected: engine.nvidiaDetected,
+          nvidiaRuntimeInstalled: engine.nvidiaRuntimeInstalled,
+          nvidiaRuntimeReady: engine.nvidiaRuntimeReady,
+          nvidiaName: engine.nvidiaName,
+        };
+      }, "Whisper-modellen kunde inte laddas ned."),
+    remove: (model) =>
+      asyncCommand(async () => {
+        const { removeLocalModel } = await import("../services/localStt");
+        await removeLocalModel(model);
+      }, "Whisper-modellen kunde inte tas bort."),
+    installNvidia: () =>
+      asyncCommand(async () => {
+        const { getLocalModelStatus, installNvidiaRuntime } =
+          await import("../services/localStt");
+        const engine = await installNvidiaRuntime();
+        const model =
+          libraryRepository.getState().settings.localTranscriptionModel;
+        const selected = await getLocalModelStatus(model);
+        return {
+          model,
+          installed: selected.installed,
+          size: selected.size,
+          nvidiaDetected: engine.nvidiaDetected,
+          nvidiaRuntimeInstalled: engine.nvidiaRuntimeInstalled,
+          nvidiaRuntimeReady: engine.nvidiaRuntimeReady,
+          nvidiaName: engine.nvidiaName,
+        };
+      }, "NVIDIA-stödet kunde inte installeras."),
   },
   transcript: {
     replace: (lectureId, segments) =>
@@ -431,6 +543,29 @@ export const lectioClient: LectioClient = {
       ),
   },
   workflows: {
+    exportLibrary: (progress) =>
+      asyncCommand(async () => {
+        const { exportLibrary } = await import("../services/libraryTransfer");
+        await exportLibrary(progress);
+      }, "Biblioteket kunde inte exporteras."),
+    importLibraryFile: (file, name, progress) =>
+      asyncCommand(async () => {
+        const { importLibraryFile } =
+          await import("../services/libraryTransfer");
+        await importLibraryFile(file, name, progress);
+      }, "Biblioteket kunde inte importeras."),
+    listBackups: () =>
+      asyncCommand(async () => {
+        const { listLibraryBackups } =
+          await import("../services/libraryTransfer");
+        return listLibraryBackups();
+      }, "Återställningspunkterna kunde inte läsas."),
+    restoreBackup: (id) =>
+      asyncCommand(async () => {
+        const { restoreLibraryCheckpoint } =
+          await import("../services/libraryTransfer");
+        await restoreLibraryCheckpoint(id);
+      }, "Biblioteket kunde inte återställas."),
     enqueue: async (action, lectureIds, overwrite = false) =>
       asyncCommand(async () => {
         const nodes = libraryRepository.getState().nodes;
@@ -447,6 +582,48 @@ export const lectioClient: LectioClient = {
         const { syncGoogleDrive } = await import("../services/googleDriveSync");
         await syncGoogleDrive();
       }, "Biblioteket kunde inte synkas."),
+    connectGoogleDrive: () =>
+      asyncCommand(async () => {
+        const { connectGoogleDrive } = await import("../services/sync");
+        const connection = await connectGoogleDrive();
+        const state = libraryRepository.getState();
+        state.updateSettings({
+          cloudSync: {
+            ...state.settings.cloudSync,
+            accountLabel: connection.accountLabel,
+            connectedAt: new Date().toISOString(),
+          },
+        });
+        return { accountLabel: connection.accountLabel };
+      }, "Google Drive kunde inte anslutas."),
+    cancelGoogleDriveConnection: () =>
+      asyncCommand(async () => {
+        const { cancelGoogleDriveConnection } =
+          await import("../services/sync");
+        return cancelGoogleDriveConnection();
+      }, "Google-inloggningen kunde inte avbrytas."),
+    disconnectGoogleDrive: () =>
+      asyncCommand(async () => {
+        const { disconnectGoogleDrive } = await import("../services/sync");
+        await disconnectGoogleDrive();
+        const state = libraryRepository.getState();
+        state.updateSettings({
+          cloudSync: {
+            ...state.settings.cloudSync,
+            accountLabel: undefined,
+            connectedAt: undefined,
+            lastSyncedAt: undefined,
+          },
+        });
+      }, "Google Drive kunde inte kopplas bort."),
+    testAnki: () =>
+      asyncCommand(async () => {
+        const { getDecks, testAnki } = await import("../services/anki");
+        const url = libraryRepository.getState().settings.ankiUrl;
+        const version = await testAnki(url);
+        const decks = await getDecks(url);
+        return { version, decks };
+      }, "Anki kunde inte nås. Kontrollera att Anki och AnkiConnect är öppna."),
     createBackup: () =>
       asyncCommand(async () => {
         const { backupSourceFromState, createLibraryBackup } =

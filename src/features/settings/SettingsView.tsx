@@ -242,9 +242,13 @@ export function SettingsView() {
       if (result.source === "provider")
         toast.success("Modellistan har uppdaterats från providern.");
       else if (!apiKey)
-        toast.message("Spara en API-nyckel för att läsa modellistan från providern.");
+        toast.message(
+          "Spara en API-nyckel för att läsa modellistan från providern.",
+        );
       else if (result.error)
-        toast.warning("Kunde inte läsa providerlistan. Lectios förslag används i stället.");
+        toast.warning(
+          "Kunde inte läsa providerlistan. Lectios förslag används i stället.",
+        );
     } finally {
       setAiModelsBusy(false);
     }
@@ -476,7 +480,7 @@ export function SettingsView() {
       customPalettes: settings.customPalettes.filter(
         (palette) => palette.id !== settings.selectedPaletteId,
       ),
-      selectedPaletteId: "chalk-neutral",
+      selectedPaletteId: "blue-light",
     });
   };
   const exportAll = async () => {
@@ -683,13 +687,35 @@ export function SettingsView() {
     }
   };
   const tabs = [
-    { id: "general", label: "Allmänt", icon: Languages, keywords: "språk tema palett import export bibliotek" },
-    { id: "sync", label: "Lagring & synk", icon: DownloadCloud, keywords: "google drive moln backup säkerhetskopia" },
-    { id: "transcription", label: "Ljud & transkribering", icon: AudioLines, keywords: "mikrofon whisper nvidia modell fraslexikon vision bilder" },
-    { id: "anki", label: "AI & Anki", icon: PlugZap, keywords: "api nyckel provider modell kortlek ankiconnect prompt" },
+    {
+      id: "general",
+      label: "Allmänt",
+      icon: Languages,
+      keywords: "språk tema palett import export bibliotek",
+    },
+    {
+      id: "sync",
+      label: "Lagring & synk",
+      icon: DownloadCloud,
+      keywords: "google drive moln backup säkerhetskopia",
+    },
+    {
+      id: "transcription",
+      label: "Ljud & transkribering",
+      icon: AudioLines,
+      keywords: "mikrofon whisper nvidia modell fraslexikon vision bilder",
+    },
+    {
+      id: "anki",
+      label: "AI & Anki",
+      icon: PlugZap,
+      keywords: "api nyckel provider modell kortlek ankiconnect prompt",
+    },
   ];
   const visibleTabs = tabs.filter((item) =>
-    `${item.label} ${item.keywords}`.toLocaleLowerCase("sv-SE").includes(settingsQuery.trim().toLocaleLowerCase("sv-SE")),
+    `${item.label} ${item.keywords}`
+      .toLocaleLowerCase("sv-SE")
+      .includes(settingsQuery.trim().toLocaleLowerCase("sv-SE")),
   );
   return (
     <div className="ui-app-bg flex min-w-0 flex-1 flex-col">
@@ -705,7 +731,9 @@ export function SettingsView() {
                 setSettingsQuery(value);
                 const normalized = value.trim().toLocaleLowerCase("sv-SE");
                 const firstMatch = tabs.find((item) =>
-                  `${item.label} ${item.keywords}`.toLocaleLowerCase("sv-SE").includes(normalized),
+                  `${item.label} ${item.keywords}`
+                    .toLocaleLowerCase("sv-SE")
+                    .includes(normalized),
                 );
                 if (normalized && firstMatch) setTab(firstMatch.id);
               }}
@@ -729,7 +757,9 @@ export function SettingsView() {
               </button>
             ))}
             {!visibleTabs.length && (
-              <p className="px-3 py-4 text-xs leading-5 text-muted-foreground">Ingen kategori matchar sökningen.</p>
+              <p className="px-3 py-4 text-xs leading-5 text-muted-foreground">
+                Ingen kategori matchar sökningen.
+              </p>
             )}
           </nav>
         </aside>
@@ -745,7 +775,9 @@ export function SettingsView() {
                     <Select
                       value={settings.locale}
                       onChange={(e) =>
-                        updateSettings({ locale: e.target.value as "sv" | "en" })
+                        updateSettings({
+                          locale: e.target.value as "sv" | "en",
+                        })
                       }
                     >
                       <option value="sv">Svenska</option>
@@ -1180,245 +1212,250 @@ export function SettingsView() {
                   title="Kortgenerering"
                   description="Välj hur föreläsningsmaterial skickas till en språkmodell."
                 >
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <ChoiceCard
-                    selected={settings.aiMode === "clipboard"}
-                    icon={KeyRound}
-                    title="Copy/paste"
-                    description="Standard · använd en befintlig AI-prenumeration"
-                    onClick={() => updateSettings({ aiMode: "clipboard" })}
-                  />
-                  <ChoiceCard
-                    selected={settings.aiMode === "api"}
-                    icon={Zap}
-                    title="Eget API"
-                    description="Direkt generering med en sparad API-nyckel"
-                    onClick={() => updateSettings({ aiMode: "api" })}
-                  />
-                </div>
-                {settings.aiMode === "clipboard" ? (
-                  <InfoPanel
-                    icon={ShieldCheck}
-                    title="Ingen API-nyckel behövs"
-                    text="Lectio skapar en komplett prompt. Du väljer själv ChatGPT, Claude eller Gemini och klistrar tillbaka svaret för granskning."
-                  />
-                ) : (
-                  <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <Field label="AI-provider">
-                        <Select
-                          value={settings.aiProvider}
-                          onChange={(event) => {
-                            const provider = event.target
-                              .value as typeof settings.aiProvider;
-                            const suggestedModel =
-                              fallbackModelOptions(provider)[0]?.id;
-                            updateSettings({
-                              aiProvider: provider,
-                              aiBaseUrl: aiBaseUrls[provider],
-                              aiModel: suggestedModel ?? settings.aiModel,
-                            });
-                          }}
-                        >
-                          <option value="openai">OpenAI</option>
-                          <option value="anthropic">Anthropic</option>
-                          <option value="gemini">Gemini</option>
-                          <option value="groq">Groq</option>
-                          <option value="custom">OpenAI-kompatibel</option>
-                        </Select>
-                      </Field>
-                      <Field label="Modell">
-                        <>
-                          <Input
-                            list="lectio-ai-model-suggestions"
-                            value={settings.aiModel}
-                            onChange={(event) =>
-                              updateSettings({ aiModel: event.target.value })
-                            }
-                            placeholder={
-                              settings.aiProvider === "custom"
-                                ? "Exempel: min-lokala-modell"
-                                : "Välj eller skriv modell-ID"
-                            }
-                            aria-describedby="ai-model-help"
-                          />
-                          <datalist id="lectio-ai-model-suggestions">
-                            {aiModels.map((model) => (
-                              <option
-                                key={model.id}
-                                value={model.id}
-                                label={model.label}
-                              />
-                            ))}
-                          </datalist>
-                          {aiModels.some((model) => model.tier !== "available") && (
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              {aiModels
-                                .filter((model) => model.tier !== "available")
-                                .slice(0, 3)
-                                .map((model) => (
-                                  <Button
-                                    key={model.id}
-                                    type="button"
-                                    size="sm"
-                                    variant={
-                                      settings.aiModel === model.id
-                                        ? "secondary"
-                                        : "outline"
-                                    }
-                                    title={model.description}
-                                    onClick={() =>
-                                      updateSettings({ aiModel: model.id })
-                                    }
-                                  >
-                                    {model.label}
-                                    <span className="text-[10px] text-muted-foreground">
-                                      {model.tier === "budget"
-                                        ? "Billig"
-                                        : model.tier === "powerful"
-                                          ? "Kraftfull"
-                                          : "Rekommenderad"}
-                                    </span>
-                                  </Button>
-                                ))}
-                            </div>
-                          )}
-                          <p
-                            id="ai-model-help"
-                            className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
-                          >
-                            {aiModels.length
-                              ? `${aiModelsSource === "provider" ? "Tillgängliga modeller har hämtats från din provider." : "Lectios granskade modellförslag visas lokalt."} Du kan alltid skriva ett eget modell-ID.`
-                              : "Skriv modell-ID:t från din tjänst. Egna modellnamn bevaras."}
-                          </p>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            className="mt-1 px-0"
-                            onClick={() => void refreshAiModels()}
-                            disabled={aiModelsBusy}
-                          >
-                            {aiModelsBusy && <LoaderCircle className="size-3.5 animate-spin" />}
-                            Uppdatera modeller från provider
-                          </Button>
-                          {aiModelsError && (
-                            <p className="text-xs text-muted-foreground">
-                              Senaste uppdatering misslyckades ({aiModelsError}).
-                            </p>
-                          )}
-                        </>
-                      </Field>
-                    </div>
-                    {settings.aiProvider === "custom" && (
-                      <Field label="Bas-URL för OpenAI-kompatibelt API">
-                        <Input
-                          type="url"
-                          value={settings.aiBaseUrl}
-                          onChange={(event) =>
-                            updateSettings({ aiBaseUrl: event.target.value })
-                          }
-                          placeholder="https://api.exempel.se/v1"
-                          aria-describedby="ai-base-url-help"
-                        />
-                        <p
-                          id="ai-base-url-help"
-                          className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
-                        >
-                          Använd en endpoint som stöder OpenAI-formatet för chat
-                          completions.
-                        </p>
-                      </Field>
-                    )}
-                    <ApiKeyField
-                      credentialKey={`ai:${settings.aiProvider}`}
-                      provider={settings.aiProvider}
-                      className="mt-4"
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChoiceCard
+                      selected={settings.aiMode === "clipboard"}
+                      icon={KeyRound}
+                      title="Copy/paste"
+                      description="Standard · använd en befintlig AI-prenumeration"
+                      onClick={() => updateSettings({ aiMode: "clipboard" })}
+                    />
+                    <ChoiceCard
+                      selected={settings.aiMode === "api"}
+                      icon={Zap}
+                      title="Eget API"
+                      description="Direkt generering med en sparad API-nyckel"
+                      onClick={() => updateSettings({ aiMode: "api" })}
                     />
                   </div>
-                )}
-                <Field label="Global context för Anki">
-                  <Textarea
-                    className="min-h-32"
-                    value={settings.userContext}
-                    onChange={(e) =>
-                      updateSettings({ userContext: e.target.value })
-                    }
-                    placeholder="Exempel: Svara på svenska och prioritera kliniska samband."
-                  />
-                </Field>
+                  {settings.aiMode === "clipboard" ? (
+                    <InfoPanel
+                      icon={ShieldCheck}
+                      title="Ingen API-nyckel behövs"
+                      text="Lectio skapar en komplett prompt. Du väljer själv ChatGPT, Claude eller Gemini och klistrar tillbaka svaret för granskning."
+                    />
+                  ) : (
+                    <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field label="AI-provider">
+                          <Select
+                            value={settings.aiProvider}
+                            onChange={(event) => {
+                              const provider = event.target
+                                .value as typeof settings.aiProvider;
+                              const suggestedModel =
+                                fallbackModelOptions(provider)[0]?.id;
+                              updateSettings({
+                                aiProvider: provider,
+                                aiBaseUrl: aiBaseUrls[provider],
+                                aiModel: suggestedModel ?? settings.aiModel,
+                              });
+                            }}
+                          >
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="gemini">Gemini</option>
+                            <option value="groq">Groq</option>
+                            <option value="custom">OpenAI-kompatibel</option>
+                          </Select>
+                        </Field>
+                        <Field label="Modell">
+                          <>
+                            <Input
+                              list="lectio-ai-model-suggestions"
+                              value={settings.aiModel}
+                              onChange={(event) =>
+                                updateSettings({ aiModel: event.target.value })
+                              }
+                              placeholder={
+                                settings.aiProvider === "custom"
+                                  ? "Exempel: min-lokala-modell"
+                                  : "Välj eller skriv modell-ID"
+                              }
+                              aria-describedby="ai-model-help"
+                            />
+                            <datalist id="lectio-ai-model-suggestions">
+                              {aiModels.map((model) => (
+                                <option
+                                  key={model.id}
+                                  value={model.id}
+                                  label={model.label}
+                                />
+                              ))}
+                            </datalist>
+                            {aiModels.some(
+                              (model) => model.tier !== "available",
+                            ) && (
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {aiModels
+                                  .filter((model) => model.tier !== "available")
+                                  .slice(0, 3)
+                                  .map((model) => (
+                                    <Button
+                                      key={model.id}
+                                      type="button"
+                                      size="sm"
+                                      variant={
+                                        settings.aiModel === model.id
+                                          ? "secondary"
+                                          : "outline"
+                                      }
+                                      title={model.description}
+                                      onClick={() =>
+                                        updateSettings({ aiModel: model.id })
+                                      }
+                                    >
+                                      {model.label}
+                                      <span className="text-[10px] text-muted-foreground">
+                                        {model.tier === "budget"
+                                          ? "Billig"
+                                          : model.tier === "powerful"
+                                            ? "Kraftfull"
+                                            : "Rekommenderad"}
+                                      </span>
+                                    </Button>
+                                  ))}
+                              </div>
+                            )}
+                            <p
+                              id="ai-model-help"
+                              className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
+                            >
+                              {aiModels.length
+                                ? `${aiModelsSource === "provider" ? "Tillgängliga modeller har hämtats från din provider." : "Lectios granskade modellförslag visas lokalt."} Du kan alltid skriva ett eget modell-ID.`
+                                : "Skriv modell-ID:t från din tjänst. Egna modellnamn bevaras."}
+                            </p>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="mt-1 px-0"
+                              onClick={() => void refreshAiModels()}
+                              disabled={aiModelsBusy}
+                            >
+                              {aiModelsBusy && (
+                                <LoaderCircle className="size-3.5 animate-spin" />
+                              )}
+                              Uppdatera modeller från provider
+                            </Button>
+                            {aiModelsError && (
+                              <p className="text-xs text-muted-foreground">
+                                Senaste uppdatering misslyckades (
+                                {aiModelsError}).
+                              </p>
+                            )}
+                          </>
+                        </Field>
+                      </div>
+                      {settings.aiProvider === "custom" && (
+                        <Field label="Bas-URL för OpenAI-kompatibelt API">
+                          <Input
+                            type="url"
+                            value={settings.aiBaseUrl}
+                            onChange={(event) =>
+                              updateSettings({ aiBaseUrl: event.target.value })
+                            }
+                            placeholder="https://api.exempel.se/v1"
+                            aria-describedby="ai-base-url-help"
+                          />
+                          <p
+                            id="ai-base-url-help"
+                            className="mt-2 text-xs leading-5 text-[var(--palette-text-muted)]"
+                          >
+                            Använd en endpoint som stöder OpenAI-formatet för
+                            chat completions.
+                          </p>
+                        </Field>
+                      )}
+                      <ApiKeyField
+                        credentialKey={`ai:${settings.aiProvider}`}
+                        provider={settings.aiProvider}
+                        className="mt-4"
+                      />
+                    </div>
+                  )}
+                  <Field label="Global context för Anki">
+                    <Textarea
+                      className="min-h-32"
+                      value={settings.userContext}
+                      onChange={(e) =>
+                        updateSettings({ userContext: e.target.value })
+                      }
+                      placeholder="Exempel: Svara på svenska och prioritera kliniska samband."
+                    />
+                  </Field>
                 </SettingsGroup>
                 <SettingsGroup
                   title="AnkiConnect"
                   description="Anki måste vara öppet och AnkiConnect installerat."
                 >
-                <Field label="AnkiConnect-adress">
-                  <Input
-                    value={settings.ankiUrl}
-                    onChange={(e) => {
-                      updateSettings({ ankiUrl: e.target.value });
-                      setAnkiOk(false);
-                    }}
-                  />
-                </Field>
-                <Field label="Reservlek för äldre material utan kurs">
-                  {ankiDecks.length ? (
-                    <Select
-                      value={settings.defaultDeck}
-                      onChange={(e) =>
-                        updateSettings({ defaultDeck: e.target.value })
-                      }
-                    >
-                      {!ankiDecks.includes(settings.defaultDeck) && (
-                        <option value={settings.defaultDeck}>
-                          {settings.defaultDeck}
-                        </option>
-                      )}
-                      {ankiDecks.map((deck) => (
-                        <option key={deck} value={deck}>
-                          {deck}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
+                  <Field label="AnkiConnect-adress">
                     <Input
-                      value={settings.defaultDeck}
-                      onChange={(e) =>
-                        updateSettings({ defaultDeck: e.target.value })
-                      }
+                      value={settings.ankiUrl}
+                      onChange={(e) => {
+                        updateSettings({ ankiUrl: e.target.value });
+                        setAnkiOk(false);
+                      }}
                     />
-                  )}
-                </Field>
-                <Button
-                  variant="secondary"
-                  onClick={async () => {
-                    try {
-                      await testAnki(settings.ankiUrl);
-                      const decks = await getDecks(settings.ankiUrl);
-                      setAnkiDecks(decks);
-                      if (
-                        decks.length &&
-                        !decks.includes(settings.defaultDeck)
-                      ) {
-                        updateSettings({ defaultDeck: decks[0] });
+                  </Field>
+                  <Field label="Reservlek för äldre material utan kurs">
+                    {ankiDecks.length ? (
+                      <Select
+                        value={settings.defaultDeck}
+                        onChange={(e) =>
+                          updateSettings({ defaultDeck: e.target.value })
+                        }
+                      >
+                        {!ankiDecks.includes(settings.defaultDeck) && (
+                          <option value={settings.defaultDeck}>
+                            {settings.defaultDeck}
+                          </option>
+                        )}
+                        {ankiDecks.map((deck) => (
+                          <option key={deck} value={deck}>
+                            {deck}
+                          </option>
+                        ))}
+                      </Select>
+                    ) : (
+                      <Input
+                        value={settings.defaultDeck}
+                        onChange={(e) =>
+                          updateSettings({ defaultDeck: e.target.value })
+                        }
+                      />
+                    )}
+                  </Field>
+                  <Button
+                    variant="secondary"
+                    onClick={async () => {
+                      try {
+                        await testAnki(settings.ankiUrl);
+                        const decks = await getDecks(settings.ankiUrl);
+                        setAnkiDecks(decks);
+                        if (
+                          decks.length &&
+                          !decks.includes(settings.defaultDeck)
+                        ) {
+                          updateSettings({ defaultDeck: decks[0] });
+                        }
+                        setAnkiOk(true);
+                        toast.success(
+                          `AnkiConnect är anslutet · ${decks.length} lekar hittades`,
+                        );
+                      } catch (e) {
+                        setAnkiOk(false);
+                        toast.error(String(e));
                       }
-                      setAnkiOk(true);
-                      toast.success(
-                        `AnkiConnect är anslutet · ${decks.length} lekar hittades`,
-                      );
-                    } catch (e) {
-                      setAnkiOk(false);
-                      toast.error(String(e));
-                    }
-                  }}
-                >
-                  {ankiOk ? (
-                    <CheckCircle2 className="size-4 text-emerald-600" />
-                  ) : (
-                    <PlugZap className="size-4" />
-                  )}{" "}
-                  Testa anslutningen
-                </Button>
+                    }}
+                  >
+                    {ankiOk ? (
+                      <CheckCircle2 className="size-4 text-emerald-600" />
+                    ) : (
+                      <PlugZap className="size-4" />
+                    )}{" "}
+                    Testa anslutningen
+                  </Button>
                 </SettingsGroup>
               </Section>
             )}
@@ -1428,134 +1465,137 @@ export function SettingsView() {
                 description="Bearbeta ljud lokalt eller med en vald API-provider."
               >
                 <SettingsGroup title="Transkriberingsmetod">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <ChoiceCard
-                    selected={settings.transcriptionProvider === "local"}
-                    icon={MonitorCog}
-                    title="Lokalt på datorn"
-                    description="Gratis, offline och privat · CPU eller NVIDIA"
-                    onClick={() =>
-                      updateSettings({ transcriptionProvider: "local" })
-                    }
-                  />
-                  <ChoiceCard
-                    selected={
-                      settings.transcriptionProvider === "openai" ||
-                      settings.transcriptionProvider === "groq"
-                    }
-                    icon={Zap}
-                    title="Via API"
-                    description="Snabb molnbearbetning med egen API-nyckel"
-                    onClick={() =>
-                      updateSettings({ transcriptionProvider: "openai" })
-                    }
-                  />
-                </div>
-                {settings.transcriptionProvider === "local" ? (
-                  <LocalModelManager />
-                ) : (
-                  <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <Field label="Provider">
-                        <Select
-                          value={settings.transcriptionProvider}
-                          onChange={(event) => {
-                            const provider = event.target.value as
-                              "openai" | "groq";
-                            const preset = transcriptionDefaults[provider];
-                            updateSettings({
-                              transcriptionProvider: provider,
-                              transcriptionBaseUrl: preset.baseUrl,
-                              transcriptionModel: preset.model,
-                            });
-                          }}
-                        >
-                          <option value="openai">OpenAI</option>
-                          <option value="groq">Groq</option>
-                        </Select>
-                      </Field>
-                      <Field label="Modell">
-                        <Input
-                          value={settings.transcriptionModel}
-                          onChange={(e) =>
-                            updateSettings({
-                              transcriptionModel: e.target.value,
-                            })
-                          }
-                        />
-                      </Field>
-                    </div>
-                    <ApiKeyField
-                      credentialKey={`transcription:${settings.transcriptionProvider}`}
-                      provider={settings.transcriptionProvider}
-                      className="mt-4"
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <ChoiceCard
+                      selected={settings.transcriptionProvider === "local"}
+                      icon={MonitorCog}
+                      title="Lokalt på datorn"
+                      description="Gratis, offline och privat · CPU eller NVIDIA"
+                      onClick={() =>
+                        updateSettings({ transcriptionProvider: "local" })
+                      }
                     />
-                    <p className="mt-3 text-xs leading-5 text-amber-700">
-                      Ljudfilen skickas till vald provider. Nyckeln sparas krypterat
-                      i Windows Credential Manager och skickas endast till providern.
-                    </p>
+                    <ChoiceCard
+                      selected={
+                        settings.transcriptionProvider === "openai" ||
+                        settings.transcriptionProvider === "groq"
+                      }
+                      icon={Zap}
+                      title="Via API"
+                      description="Snabb molnbearbetning med egen API-nyckel"
+                      onClick={() =>
+                        updateSettings({ transcriptionProvider: "openai" })
+                      }
+                    />
                   </div>
-                )}
+                  {settings.transcriptionProvider === "local" ? (
+                    <LocalModelManager />
+                  ) : (
+                    <div className="rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface-muted)] p-4 sm:p-6">
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field label="Provider">
+                          <Select
+                            value={settings.transcriptionProvider}
+                            onChange={(event) => {
+                              const provider = event.target.value as
+                                "openai" | "groq";
+                              const preset = transcriptionDefaults[provider];
+                              updateSettings({
+                                transcriptionProvider: provider,
+                                transcriptionBaseUrl: preset.baseUrl,
+                                transcriptionModel: preset.model,
+                              });
+                            }}
+                          >
+                            <option value="openai">OpenAI</option>
+                            <option value="groq">Groq</option>
+                          </Select>
+                        </Field>
+                        <Field label="Modell">
+                          <Input
+                            value={settings.transcriptionModel}
+                            onChange={(e) =>
+                              updateSettings({
+                                transcriptionModel: e.target.value,
+                              })
+                            }
+                          />
+                        </Field>
+                      </div>
+                      <ApiKeyField
+                        credentialKey={`transcription:${settings.transcriptionProvider}`}
+                        provider={settings.transcriptionProvider}
+                        className="mt-4"
+                      />
+                      <p className="mt-3 text-xs leading-5 text-amber-700">
+                        Ljudfilen skickas till vald provider. Nyckeln sparas
+                        krypterat i Windows Credential Manager och skickas
+                        endast till providern.
+                      </p>
+                    </div>
+                  )}
                 </SettingsGroup>
                 <SettingsGroup
                   title="Fraslexikon"
                   description="Håll det kort och termfokuserat. Det kombineras med ärvda fraslexikon, inte med vanligt context."
                 >
-                <Field label="Transkriberingsordlista / initial prompt">
-                  <Textarea
-                    className="min-h-24"
-                    value={settings.transcriptionPrompt ?? ""}
-                    onChange={(event) =>
-                      updateSettings({
-                        transcriptionPrompt: event.target.value,
-                      })
-                    }
-                    placeholder="Exempel: Medicinska termer: ileus, kolecystit, peritonit. Förkortningar: ABCDE, CRP."
-                  />
-                </Field>
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    ref={glossaryFileRef}
-                    type="file"
-                    accept="text/plain,.txt,text/csv,.csv"
-                    className="hidden"
-                    onChange={async (event) => {
-                      const file = event.target.files?.[0];
-                      if (!file) return;
-                      const imported = glossaryTerms(await file.text());
-                      updateSettings({
-                        transcriptionPrompt: formatGlossary([
-                          ...glossaryTerms(settings.transcriptionPrompt),
-                          ...imported,
-                        ]),
-                      });
-                      toast.success(
-                        `${imported.length} termer importerades till den globala ordlistan`,
-                      );
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => glossaryFileRef.current?.click()}
-                  >
-                    <FileUp className="size-3.5" /> Importera TXT/CSV
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      downloadText(
-                        "lectio-fraslexikon.txt",
-                        glossaryTerms(settings.transcriptionPrompt).join("\n"),
-                        "text/plain",
-                      )
-                    }
-                  >
-                    <FileDown className="size-3.5" /> Exportera
-                  </Button>
-                </div>
+                  <Field label="Transkriberingsordlista / initial prompt">
+                    <Textarea
+                      className="min-h-24"
+                      value={settings.transcriptionPrompt ?? ""}
+                      onChange={(event) =>
+                        updateSettings({
+                          transcriptionPrompt: event.target.value,
+                        })
+                      }
+                      placeholder="Exempel: Medicinska termer: ileus, kolecystit, peritonit. Förkortningar: ABCDE, CRP."
+                    />
+                  </Field>
+                  <div className="flex flex-wrap gap-2">
+                    <input
+                      ref={glossaryFileRef}
+                      type="file"
+                      accept="text/plain,.txt,text/csv,.csv"
+                      className="hidden"
+                      onChange={async (event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const imported = glossaryTerms(await file.text());
+                        updateSettings({
+                          transcriptionPrompt: formatGlossary([
+                            ...glossaryTerms(settings.transcriptionPrompt),
+                            ...imported,
+                          ]),
+                        });
+                        toast.success(
+                          `${imported.length} termer importerades till den globala ordlistan`,
+                        );
+                        event.currentTarget.value = "";
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => glossaryFileRef.current?.click()}
+                    >
+                      <FileUp className="size-3.5" /> Importera TXT/CSV
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        downloadText(
+                          "lectio-fraslexikon.txt",
+                          glossaryTerms(settings.transcriptionPrompt).join(
+                            "\n",
+                          ),
+                          "text/plain",
+                        )
+                      }
+                    >
+                      <FileDown className="size-3.5" /> Exportera
+                    </Button>
+                  </div>
                 </SettingsGroup>
               </Section>
             )}
@@ -1819,7 +1859,9 @@ function Section({
   return (
     <section className="pb-8">
       <header className="max-w-2xl">
-        <h2 className="text-xl font-semibold tracking-tight text-foreground">{title}</h2>
+        <h2 className="text-xl font-semibold tracking-tight text-foreground">
+          {title}
+        </h2>
         <p className="mt-1 text-sm text-muted-foreground">{description}</p>
       </header>
       <div className="mt-8 max-w-4xl space-y-8">{children}</div>
@@ -1839,7 +1881,9 @@ function SettingsGroup({
   return (
     <section className="border-t border-[var(--palette-border)] pt-5 first:border-t-0 first:pt-0">
       <div className="mb-4 max-w-2xl">
-        <h3 className="text-sm font-semibold text-[var(--palette-text)]">{title}</h3>
+        <h3 className="text-sm font-semibold text-[var(--palette-text)]">
+          {title}
+        </h3>
         {description && (
           <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
             {description}
@@ -1912,7 +1956,9 @@ function InfoPanel({
       <Icon className="mt-0.5 size-5 shrink-0 text-[var(--palette-success)]" />
       <div>
         <div className="text-sm font-semibold">{title}</div>
-        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">{text}</p>
+        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
+          {text}
+        </p>
       </div>
     </div>
   );
@@ -1975,10 +2021,14 @@ function ApiKeyField({
   };
 
   return (
-    <div className={`rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)] p-3 ${className}`}>
+    <div
+      className={`rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)] p-3 ${className}`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <p className="text-xs font-medium text-[var(--palette-text)]">API-nyckel</p>
+          <p className="text-xs font-medium text-[var(--palette-text)]">
+            API-nyckel
+          </p>
           <p className="mt-0.5 text-xs text-[var(--palette-text-muted)]">
             {saved
               ? "Sparad säkert i Windows Credential Manager."
@@ -1986,8 +2036,15 @@ function ApiKeyField({
           </p>
         </div>
         {saved && (
-          <Button type="button" size="sm" variant="ghost" onClick={() => void remove()} disabled={working}>
-            <Trash2 className="mr-1.5 size-3.5" />Ta bort
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => void remove()}
+            disabled={working}
+          >
+            <Trash2 className="mr-1.5 size-3.5" />
+            Ta bort
           </Button>
         )}
       </div>
@@ -1996,10 +2053,18 @@ function ApiKeyField({
           type="password"
           value={value}
           onChange={(event) => setValue(event.target.value)}
-          placeholder={saved ? "Klistra in en ny nyckel för att ersätta" : "Klistra in API-nyckel"}
+          placeholder={
+            saved
+              ? "Klistra in en ny nyckel för att ersätta"
+              : "Klistra in API-nyckel"
+          }
           autoComplete="off"
         />
-        <Button type="button" onClick={() => void save()} disabled={working || !value.trim()}>
+        <Button
+          type="button"
+          onClick={() => void save()}
+          disabled={working || !value.trim()}
+        >
           {working ? "Sparar…" : saved ? "Ersätt" : "Spara"}
         </Button>
       </div>
@@ -2305,16 +2370,13 @@ function LocalModelManager() {
                 1,
                 Math.round(
                   1 /
-                    transcriptionBenchmarks[
-                      benchmarkAcceleration
-                    ]!.realtimeFactor,
+                    transcriptionBenchmarks[benchmarkAcceleration]!
+                      .realtimeFactor,
                 ),
               )}
               × snabbare än realtid · används för tidsuppskattningar.
-              {transcriptionBenchmarks[benchmarkAcceleration]!
-                .gpuUsed &&
-              transcriptionBenchmarks[benchmarkAcceleration]!
-                .vramTotalMb
+              {transcriptionBenchmarks[benchmarkAcceleration]!.gpuUsed &&
+              transcriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb
                 ? ` NVIDIA bekräftad · ${transcriptionBenchmarks[benchmarkAcceleration]!.vramUsedMb ?? "?"}/${transcriptionBenchmarks[benchmarkAcceleration]!.vramTotalMb} MB VRAM vid avläsning.`
                 : ""}
             </span>

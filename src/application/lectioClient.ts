@@ -19,6 +19,7 @@ export type {
   LibraryNode,
   Marker,
   NodeType,
+  ThemePalette,
   TranscriptSegment,
 } from "../core/types";
 
@@ -57,6 +58,17 @@ export type LibrarySnapshot = {
   cards: Flashcard[];
 };
 
+export type LibraryTransferProgress = {
+  completed: number;
+  total?: number;
+  detail: string;
+};
+export type LibraryBackupSummary = {
+  id: string;
+  createdAt: string;
+  nodes: number;
+};
+
 export type SessionSnapshot = {
   selectedId: string;
   activeView: ActiveView;
@@ -69,6 +81,16 @@ export type CapabilitySnapshot = {
   ankiConfigured: boolean;
   driveConnected: boolean;
   credentialStore: boolean;
+};
+
+export type LocalTranscriptionSetup = {
+  model: AppSettings["localTranscriptionModel"];
+  installed: boolean;
+  size: number;
+  nvidiaDetected: boolean;
+  nvidiaRuntimeInstalled: boolean;
+  nvidiaRuntimeReady: boolean;
+  nvidiaName?: string | null;
 };
 
 export type BinaryAssetInput = {
@@ -114,7 +136,11 @@ export interface LectioClient {
     ): LectioResult<string>;
     updateNode(id: string, patch: Partial<LibraryNode>): LectioResult;
     moveNode(id: string, parentId: string): LectioResult<boolean>;
-    reorderNode(id: string, targetId: string): LectioResult<boolean>;
+    reorderNode(
+      id: string,
+      targetId: string,
+      position?: "before" | "after",
+    ): LectioResult<boolean>;
     removeNode(id: string): Promise<LectioResult>;
     updateLecture(id: string, patch: Partial<LectureData>): LectioResult;
     import(
@@ -127,6 +153,7 @@ export interface LectioClient {
     setActiveView(view: ActiveView): LectioResult;
   };
   readonly assets: {
+    read(id: string): Promise<LectioResult<Blob>>;
     importAudio(
       lectureId: string,
       input: BinaryAssetInput,
@@ -138,6 +165,36 @@ export interface LectioClient {
   };
   readonly settings: ReadableValue<AppSettings> & {
     update(patch: Partial<AppSettings>): LectioResult;
+  };
+  readonly credentials: {
+    read(key: string): Promise<LectioResult<boolean>>;
+    write(key: string, secret: string): Promise<LectioResult>;
+    remove(key: string): Promise<LectioResult>;
+  };
+  readonly localTranscription: {
+    status(
+      model: AppSettings["localTranscriptionModel"],
+    ): Promise<LectioResult<LocalTranscriptionSetup>>;
+    download(
+      model: AppSettings["localTranscriptionModel"],
+    ): Promise<LectioResult<LocalTranscriptionSetup>>;
+    remove(
+      model: AppSettings["localTranscriptionModel"],
+    ): Promise<LectioResult>;
+    installNvidia(): Promise<LectioResult<LocalTranscriptionSetup>>;
+  };
+  readonly recordings: {
+    start(lectureId: string, mimeType: string): Promise<LectioResult<string>>;
+    append(
+      id: string,
+      sequence: number,
+      blob: Blob,
+      duration: number,
+    ): Promise<LectioResult>;
+    finish(id: string, duration?: number): Promise<LectioResult<string>>;
+    pending(
+      lectureId: string,
+    ): Promise<LectioResult<{ id: string; name: string }[]>>;
   };
   readonly transcript: {
     replace(
@@ -163,12 +220,26 @@ export interface LectioClient {
     dismiss(id: string): LectioResult;
   };
   readonly workflows: {
+    exportLibrary(
+      progress?: (value: LibraryTransferProgress) => void,
+    ): Promise<LectioResult>;
+    importLibraryFile(
+      file: Blob,
+      name: string,
+      progress?: (value: LibraryTransferProgress) => void,
+    ): Promise<LectioResult>;
+    listBackups(): Promise<LectioResult<LibraryBackupSummary[]>>;
+    restoreBackup(id: string): Promise<LectioResult>;
     enqueue(
       action: BatchAction,
       lectureIds: string[],
       overwrite?: boolean,
     ): Promise<LectioResult<string[]>>;
     syncLibrary(): Promise<LectioResult>;
+    connectGoogleDrive(): Promise<LectioResult<{ accountLabel: string }>>;
+    cancelGoogleDriveConnection(): Promise<LectioResult<boolean>>;
+    disconnectGoogleDrive(): Promise<LectioResult>;
+    testAnki(): Promise<LectioResult<{ version: number; decks: string[] }>>;
     createBackup(): Promise<LectioResult<string>>;
     exportDiagnostics(): Promise<LectioResult>;
   };

@@ -12,9 +12,10 @@ import type {
   LibrarySnapshot,
   SessionSnapshot,
 } from "../lectioClient";
+import { moveLibraryNode, reorderLibraryNode } from "../../domain/libraryTree";
 
 const ok = <T>(value: T): LectioResult<T> => ({ ok: true, value });
-const notFound = (): LectioResult => ({
+const notFound = (): Extract<LectioResult, { ok: false }> => ({
   ok: false,
   error: {
     code: "not-found",
@@ -26,9 +27,11 @@ const emptySettings = (): AppSettings => ({
   locale: "sv",
   onboardingDismissed: true,
   librarySidebarCollapsed: false,
-  selectedPaletteId: "chalk-neutral",
+  selectedPaletteId: "blue-light",
   customPalettes: [],
   userContext: "",
+  recordingDeviceId: "",
+  recordingQuality: "balanced",
   aiMode: "clipboard",
   aiProvider: "openai",
   aiModel: "gpt-4.1-mini",
@@ -54,6 +57,16 @@ const emptySettings = (): AppSettings => ({
 
 export function createInMemoryLectioClient(): LectioClient {
   let sequence = 0;
+  const assets = new Map<string, Blob>();
+  const recordings = new Map<
+    string,
+    {
+      lectureId: string;
+      name: string;
+      mimeType: string;
+      chunks: Map<number, Blob>;
+    }
+  >();
   let library: LibrarySnapshot = {
     nodes: [
       {
@@ -77,6 +90,8 @@ export function createInMemoryLectioClient(): LectioClient {
   };
   let settings = emptySettings();
   let jobs: BackgroundJob[] = [];
+  const credentials = new Set<string>();
+  const installedModels = new Set<AppSettings["localTranscriptionModel"]>();
   const libraryListeners = new Set<(value: LibrarySnapshot) => void>();
   const sessionListeners = new Set<(value: SessionSnapshot) => void>();
   const settingsListeners = new Set<(value: AppSettings) => void>();
@@ -136,16 +151,27 @@ export function createInMemoryLectioClient(): LectioClient {
         return ok(undefined);
       },
       moveNode(id, parentId) {
+        const moved = moveLibraryNode(library.nodes, id, parentId);
+        if (moved === library.nodes) return ok(false);
         library = {
           ...library,
-          nodes: library.nodes.map((node) =>
-            node.id === id ? { ...node, parentId } : node,
-          ),
+          nodes: moved,
         };
         publishLibrary();
         return ok(true);
       },
-      reorderNode: () => ok(true),
+      reorderNode(id, targetId, position = "before") {
+        const reordered = reorderLibraryNode(
+          library.nodes,
+          id,
+          targetId,
+          position,
+        );
+        if (reordered === library.nodes) return ok(false);
+        library = { ...library, nodes: reordered };
+        publishLibrary();
+        return ok(true);
+      },
       async removeNode(id) {
         library = {
           ...library,
@@ -188,8 +214,12 @@ export function createInMemoryLectioClient(): LectioClient {
       },
     },
     assets: {
+      async read(id) {
+        return assets.has(id) ? ok(assets.get(id)!) : notFound();
+      },
       async importAudio(lectureId, input) {
         const id = `memory-asset-${++sequence}`;
+        assets.set(id, new Blob([input.bytes], { type: input.mimeType }));
         const lecture = library.lectures[lectureId];
         const audioParts = [
           ...(lecture?.audioParts ?? []),
@@ -212,6 +242,7 @@ export function createInMemoryLectioClient(): LectioClient {
       },
       async importSlides(lectureId, input) {
         const id = `memory-asset-${++sequence}`;
+        assets.set(id, new Blob([input.bytes], { type: input.mimeType }));
         library = {
           ...library,
           lectures: {
@@ -225,6 +256,64 @@ export function createInMemoryLectioClient(): LectioClient {
         };
         publishLibrary();
         return ok(id);
+      },
+    },
+    recordings: {
+      async start(lectureId, mimeType) {
+        const id = `memory-recording-${++sequence}`;
+        recordings.set(id, {
+          lectureId,
+          mimeType,
+          name: "Inspelning.webm",
+          chunks: new Map(),
+        });
+        return ok(id);
+      },
+      async append(id, index, blob) {
+        const recording = recordings.get(id);
+        if (!recording) return notFound();
+        recording.chunks.set(index, blob);
+        return ok(undefined);
+      },
+      async finish(id, duration = 0) {
+        const recording = recordings.get(id);
+        if (!recording) return notFound();
+        assets.set(
+          id,
+          new Blob(
+            [...recording.chunks.entries()]
+              .sort((a, b) => a[0] - b[0])
+              .map(([, blob]) => blob),
+            { type: recording.mimeType },
+          ),
+        );
+        const lecture = library.lectures[recording.lectureId];
+        const audioParts = [
+          ...(lecture.audioParts ?? []),
+          { assetId: id, name: recording.name, duration },
+        ];
+        library = {
+          ...library,
+          lectures: {
+            ...library.lectures,
+            [recording.lectureId]: {
+              ...lecture,
+              audioParts,
+              audioAssetId: audioParts[0].assetId,
+              audioName: audioParts[0].name,
+            },
+          },
+        };
+        recordings.delete(id);
+        publishLibrary();
+        return ok(id);
+      },
+      async pending(lectureId) {
+        return ok(
+          [...recordings.entries()]
+            .filter(([, r]) => r.lectureId === lectureId)
+            .map(([id, r]) => ({ id, name: r.name })),
+        );
       },
     },
     session: {
@@ -255,6 +344,60 @@ export function createInMemoryLectioClient(): LectioClient {
         settings = { ...settings, ...patch };
         settingsListeners.forEach((listener) => listener(settings));
         return ok(undefined);
+      },
+    },
+    credentials: {
+      async read(key) {
+        return ok(credentials.has(key));
+      },
+      async write(key, secret) {
+        if (!secret.trim()) return notFound();
+        credentials.add(key);
+        return ok(undefined);
+      },
+      async remove(key) {
+        credentials.delete(key);
+        return ok(undefined);
+      },
+    },
+    localTranscription: {
+      async status(model) {
+        return ok({
+          model,
+          installed: installedModels.has(model),
+          size: 0,
+          nvidiaDetected: false,
+          nvidiaRuntimeInstalled: false,
+          nvidiaRuntimeReady: false,
+          nvidiaName: null,
+        });
+      },
+      async download(model) {
+        installedModels.add(model);
+        return ok({
+          model,
+          installed: true,
+          size: 0,
+          nvidiaDetected: false,
+          nvidiaRuntimeInstalled: false,
+          nvidiaRuntimeReady: false,
+          nvidiaName: null,
+        });
+      },
+      async remove(model) {
+        installedModels.delete(model);
+        return ok(undefined);
+      },
+      async installNvidia() {
+        return ok({
+          model: settings.localTranscriptionModel,
+          installed: installedModels.has(settings.localTranscriptionModel),
+          size: 0,
+          nvidiaDetected: false,
+          nvidiaRuntimeInstalled: false,
+          nvidiaRuntimeReady: false,
+          nvidiaName: null,
+        });
       },
     },
     transcript: {
@@ -393,6 +536,18 @@ export function createInMemoryLectioClient(): LectioClient {
       },
     },
     workflows: {
+      async exportLibrary() {
+        return ok(undefined);
+      },
+      async importLibraryFile() {
+        return ok(undefined);
+      },
+      async listBackups() {
+        return ok([]);
+      },
+      async restoreBackup() {
+        return ok(undefined);
+      },
       async enqueue(action, lectureIds) {
         const ids = lectureIds.map(() => `memory-job-${++sequence}`);
         jobs = [
@@ -416,6 +571,37 @@ export function createInMemoryLectioClient(): LectioClient {
       },
       async syncLibrary() {
         return ok(undefined);
+      },
+      async connectGoogleDrive() {
+        settings = {
+          ...settings,
+          cloudSync: {
+            ...settings.cloudSync,
+            connectedAt: new Date().toISOString(),
+            accountLabel: "test@example.com",
+          },
+        };
+        settingsListeners.forEach((listener) => listener(settings));
+        return ok({ accountLabel: "test@example.com" });
+      },
+      async cancelGoogleDriveConnection() {
+        return ok(false);
+      },
+      async disconnectGoogleDrive() {
+        settings = {
+          ...settings,
+          cloudSync: {
+            ...settings.cloudSync,
+            connectedAt: undefined,
+            accountLabel: undefined,
+            lastSyncedAt: undefined,
+          },
+        };
+        settingsListeners.forEach((listener) => listener(settings));
+        return ok(undefined);
+      },
+      async testAnki() {
+        return ok({ version: 6, decks: [settings.defaultDeck, "Default"] });
       },
       async createBackup() {
         return ok(`memory-backup-${++sequence}`);

@@ -80,10 +80,7 @@ import {
   selectVisualCandidates,
   visualPromptLines,
 } from "./visualIndex";
-import {
-  backupSourceFromState,
-  normalizeLibraryBackup,
-} from "./libraryBackup";
+import { backupSourceFromState, normalizeLibraryBackup } from "./libraryBackup";
 import { extractPptxImages } from "./pptx";
 import { zipSync } from "fflate";
 import {
@@ -95,8 +92,20 @@ describe("Anki-chunkning", () => {
   it("behåller segment och delar bara vid segmentgränser", () => {
     const chunks = planGenerationChunks(
       [
-        { id: "one", lectureId: "lecture", start: 10, end: 20, text: "a".repeat(30) },
-        { id: "two", lectureId: "lecture", start: 20, end: 30, text: "b".repeat(30) },
+        {
+          id: "one",
+          lectureId: "lecture",
+          start: 10,
+          end: 20,
+          text: "a".repeat(30),
+        },
+        {
+          id: "two",
+          lectureId: "lecture",
+          start: 20,
+          end: 30,
+          text: "b".repeat(30),
+        },
       ],
       10,
     );
@@ -132,11 +141,40 @@ describe("biblioteksbackup", () => {
       id: "old",
       createdAt: "2026-01-01T00:00:00.000Z",
       reason: "manual" as const,
-      nodes: [{ id: "course", parentId: "workspace", type: "course" as const, title: "KM3", sortIndex: 0, context: "", createdAt: "2026-01-01" }],
+      nodes: [
+        {
+          id: "course",
+          parentId: "workspace",
+          type: "course" as const,
+          title: "KM3",
+          sortIndex: 0,
+          context: "",
+          createdAt: "2026-01-01",
+        },
+      ],
       lectures: { lecture: { lectureId: "lecture", notes: "Anteckning" } },
-      segments: [{ id: "segment", lectureId: "lecture", start: 0, end: 1, text: "Text" }],
-      markers: [{ id: "marker", lectureId: "lecture", timestamp: 0, createdAt: "2026-01-01" }],
-      cards: [{ id: "card", lectureId: "lecture", type: "basic" as const, front: "Fråga", back: "Svar", tags: [], status: "approved" as const }],
+      segments: [
+        { id: "segment", lectureId: "lecture", start: 0, end: 1, text: "Text" },
+      ],
+      markers: [
+        {
+          id: "marker",
+          lectureId: "lecture",
+          timestamp: 0,
+          createdAt: "2026-01-01",
+        },
+      ],
+      cards: [
+        {
+          id: "card",
+          lectureId: "lecture",
+          type: "basic" as const,
+          front: "Fråga",
+          back: "Svar",
+          tags: [],
+          status: "approved" as const,
+        },
+      ],
       settings: { backupLimit: 10 },
       assetCount: 2,
     } as any;
@@ -151,9 +189,21 @@ describe("biblioteksbackup", () => {
     const source = backupSourceFromState({
       nodes: [],
       lectures: { lecture: { lectureId: "lecture", notes: "N" } },
-      segments: [{ id: "s", lectureId: "lecture", start: 0, end: 1, text: "T" }],
+      segments: [
+        { id: "s", lectureId: "lecture", start: 0, end: 1, text: "T" },
+      ],
       markers: [],
-      cards: [{ id: "c", lectureId: "lecture", type: "basic", front: "F", back: "B", tags: [], status: "generated" }],
+      cards: [
+        {
+          id: "c",
+          lectureId: "lecture",
+          type: "basic",
+          front: "F",
+          back: "B",
+          tags: [],
+          status: "generated",
+        },
+      ],
       settings: { backupLimit: 5 },
     } as any);
     expect(source.lectures.lecture.notes).toBe("N");
@@ -165,27 +215,71 @@ describe("biblioteksbackup", () => {
 describe("modulens bildbibliotek", () => {
   it("återanvänder bilder från flera föreläsningar och gömmer lokalt rensade kandidater", () => {
     const nodes = [
-      { id: "module", parentId: "course", type: "module", title: "Akut", sortIndex: 0, context: "", createdAt: "now" },
-      { id: "one", parentId: "module", type: "lecture", title: "Rond", sortIndex: 0, context: "", createdAt: "now" },
-      { id: "two", parentId: "module", type: "lecture", title: "EKG", sortIndex: 1, context: "", createdAt: "now" },
+      {
+        id: "module",
+        parentId: "course",
+        type: "module",
+        title: "Akut",
+        sortIndex: 0,
+        context: "",
+        createdAt: "now",
+      },
+      {
+        id: "one",
+        parentId: "module",
+        type: "lecture",
+        title: "Rond",
+        sortIndex: 0,
+        context: "",
+        createdAt: "now",
+      },
+      {
+        id: "two",
+        parentId: "module",
+        type: "lecture",
+        title: "EKG",
+        sortIndex: 1,
+        context: "",
+        createdAt: "now",
+      },
     ] as LibraryNode[];
     const lectures = {
       one: {
         lectureId: "one",
         notes: "",
-        visualIndex: [{ id: "hidden", slidePage: 1, description: "Slide 1: Rond", keywords: ["rond"], sourceHash: "one", contentHash: "same" }],
+        visualIndex: [
+          {
+            id: "hidden",
+            slidePage: 1,
+            description: "Slide 1: Rond",
+            keywords: ["rond"],
+            sourceHash: "one",
+            contentHash: "same",
+          },
+        ],
         hiddenVisualIds: ["hidden"],
       },
       two: {
         lectureId: "two",
         notes: "",
-        visualIndex: [{ id: "ecg", slidePage: 3, description: "Slide 3: EKG med ST-höjning", keywords: ["ekg", "st"], sourceHash: "two", contentHash: "ecg" }],
+        visualIndex: [
+          {
+            id: "ecg",
+            slidePage: 3,
+            description: "Slide 3: EKG med ST-höjning",
+            keywords: ["ekg", "st"],
+            sourceHash: "two",
+            contentHash: "ecg",
+          },
+        ],
       },
     };
     const visible = moduleVisualCandidates(nodes, lectures, "module");
     expect(visible.map((candidate) => candidate.id)).toEqual(["ecg"]);
     expect(visible[0]?.description).toContain("EKG · Slide 3");
-    const all = moduleVisualCandidates(nodes, lectures, "module", { includeHidden: true });
+    const all = moduleVisualCandidates(nodes, lectures, "module", {
+      includeHidden: true,
+    });
     expect(all.map((candidate) => candidate.id)).toEqual(["hidden", "ecg"]);
   });
 });
@@ -217,27 +311,33 @@ describe("PowerPoint-bilder", () => {
 
 describe("lokal bildbeskrivning", () => {
   it("läser JSON även när den lokala runtime-motorn skriver extra konsoltext", () => {
-    expect(parseVisionResult("llama: loading…\nSvara JSON: {\"description\":\"kort beskrivning\",\"keywords\":[\"nyckelord\"]}\n{\"description\":\"Anatomisk bild på prostata och bäckenbotten\",\"keywords\":[\"prostata\"]}\nllama: done")).toEqual({
+    expect(
+      parseVisionResult(
+        'llama: loading…\nSvara JSON: {"description":"kort beskrivning","keywords":["nyckelord"]}\n{"description":"Anatomisk bild på prostata och bäckenbotten","keywords":["prostata"]}\nllama: done',
+      ),
+    ).toEqual({
       description: "Anatomisk bild på prostata och bäckenbotten",
       keywords: ["prostata"],
     });
   });
 
   it("föredrar cachead lokal vision utan att ändra kandidatens källa", () => {
-    expect(visualCandidateDescription({
-      id: "visual-1",
-      slidePage: 2,
-      description: "Slide 2: ursprunglig slide-text",
-      keywords: ["slide"],
-      sourceHash: "source",
-      localVision: {
-        description: "EKG med ST-höjning i främre avledningar",
-        keywords: ["ekg", "st-höjning"],
-        model: "moondream",
-        generatedAt: "2026-09-08T00:00:00.000Z",
+    expect(
+      visualCandidateDescription({
+        id: "visual-1",
+        slidePage: 2,
+        description: "Slide 2: ursprunglig slide-text",
+        keywords: ["slide"],
         sourceHash: "source",
-      },
-    })).toBe("EKG med ST-höjning i främre avledningar");
+        localVision: {
+          description: "EKG med ST-höjning i främre avledningar",
+          keywords: ["ekg", "st-höjning"],
+          model: "moondream",
+          generatedAt: "2026-09-08T00:00:00.000Z",
+          sourceHash: "source",
+        },
+      }),
+    ).toBe("EKG med ST-höjning i främre avledningar");
   });
 });
 
@@ -380,7 +480,10 @@ describe("Anki-promptens budget och dubblettskydd", () => {
       ],
       "Vilka EKG-avledningar visar ST-höjning vid inferior STEMI?",
     );
-    expect(candidates.map((candidate) => candidate.id)).toEqual(["ecg", "kidney"]);
+    expect(candidates.map((candidate) => candidate.id)).toEqual([
+      "ecg",
+      "kidney",
+    ]);
     expect(visualPromptLines(candidates)).toContain("ecg | Slide 4");
   });
 
@@ -737,21 +840,50 @@ describe("Sync v2", () => {
     const pc = createSyncOperations(
       base,
       { ...base, lectures: { lecture: { lectureId: "lecture", notes: "PC" } } },
-      { libraryId: "library", deviceId: "pc", nextSequence: 1, at: "2026-09-07T10:00:00Z" },
+      {
+        libraryId: "library",
+        deviceId: "pc",
+        nextSequence: 1,
+        at: "2026-09-07T10:00:00Z",
+      },
     );
     const laptop = createSyncOperations(
       base,
-      { ...base, markers: [{ id: "m", lectureId: "lecture", time: 1, note: "Laptop", createdAt: "" }] },
-      { libraryId: "library", deviceId: "laptop", nextSequence: 1, at: "2026-09-07T10:01:00Z" },
+      {
+        ...base,
+        markers: [
+          {
+            id: "m",
+            lectureId: "lecture",
+            time: 1,
+            note: "Laptop",
+            createdAt: "",
+          },
+        ],
+      },
+      {
+        libraryId: "library",
+        deviceId: "laptop",
+        nextSequence: 1,
+        at: "2026-09-07T10:01:00Z",
+      },
     );
-    const forward = applySyncOperations(base, [...pc.operations, ...laptop.operations]);
-    const reverse = applySyncOperations(base, [...laptop.operations, ...pc.operations]);
+    const forward = applySyncOperations(base, [
+      ...pc.operations,
+      ...laptop.operations,
+    ]);
+    const reverse = applySyncOperations(base, [
+      ...laptop.operations,
+      ...pc.operations,
+    ]);
     expect(reverse).toEqual(forward);
   });
 
   it("utelämnar enhetslokala inställningar från den delade snapshoten", () => {
     const local = snapshot("Bas");
-    local.settings = { cloudSync: { remotePath: "Privat", lastSyncedAt: "nu" } } as AppSettings;
+    local.settings = {
+      cloudSync: { remotePath: "Privat", lastSyncedAt: "nu" },
+    } as AppSettings;
     expect(sharedSnapshot(local).settings).toEqual({});
     expect(local.settings.cloudSync?.remotePath).toBe("Privat");
   });
@@ -759,10 +891,14 @@ describe("Sync v2", () => {
   it("rapporterar bara samma-fält-kollisioner, inte oberoende ändringar", () => {
     const base = snapshot("Bas");
     const local = createSyncOperations(base, snapshot("PC"), {
-      libraryId: "library", deviceId: "pc", nextSequence: 1,
+      libraryId: "library",
+      deviceId: "pc",
+      nextSequence: 1,
     });
     const remote = createSyncOperations(base, snapshot("Laptop"), {
-      libraryId: "library", deviceId: "laptop", nextSequence: 1,
+      libraryId: "library",
+      deviceId: "laptop",
+      nextSequence: 1,
     });
     expect(findSyncConflicts(local.operations, remote.operations)).toEqual([
       { collection: "lectures", entityId: "lecture", field: "notes" },
@@ -822,6 +958,19 @@ describe("biblioteksträd", () => {
       ["course-b", 0],
       ["course-a", 1],
     ]);
+
+    const reorderedAfter = reorderLibraryNode(
+      tree,
+      "course-a",
+      "course-b",
+      "after",
+    );
+    expect(
+      reorderedAfter
+        .filter((item) => item.parentId === "workspace")
+        .sort((a, b) => a.sortIndex! - b.sortIndex!)
+        .map((item) => item.id),
+    ).toEqual(["course-b", "course-a"]);
   });
 });
 
@@ -1071,16 +1220,17 @@ describe("kortformat", () => {
     expect(local.source).toBe("fallback");
     expect(local.models.map((model) => model.id)).toContain("gpt-4.1-mini");
 
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          data: [
-            { id: "openai/gpt-oss-20b" },
-            { id: "whisper-large-v3" },
-            { id: "qwen/qwen3-32b" },
-          ],
-        }),
-      ),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: "openai/gpt-oss-20b" },
+              { id: "whisper-large-v3" },
+              { id: "qwen/qwen3-32b" },
+            ],
+          }),
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
     const remote = await fetchProviderModelOptions(
@@ -1090,7 +1240,9 @@ describe("kortformat", () => {
     );
     expect(remote.source).toBe("provider");
     expect(remote.models.map((model) => model.id)).toContain("qwen/qwen3-32b");
-    expect(remote.models.map((model) => model.id)).not.toContain("whisper-large-v3");
+    expect(remote.models.map((model) => model.id)).not.toContain(
+      "whisper-large-v3",
+    );
   });
 
   it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {
@@ -1372,7 +1524,8 @@ describe("kortformat", () => {
   });
 
   it("lägger även en vald slidebild i Cloze-kortets Extra-fält", async () => {
-    const requests: Array<{ action: string; params: Record<string, unknown> }> = [];
+    const requests: Array<{ action: string; params: Record<string, unknown> }> =
+      [];
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
@@ -1381,8 +1534,11 @@ describe("kortformat", () => {
           params: Record<string, unknown>;
         };
         requests.push(body);
-        const result = body.action === "modelFieldNames" ? ["Text", "Extra"] : 457;
-        return new Response(JSON.stringify({ result, error: null }), { status: 200 });
+        const result =
+          body.action === "modelFieldNames" ? ["Text", "Extra"] : 457;
+        return new Response(JSON.stringify({ result, error: null }), {
+          status: 200,
+        });
       }),
     );
     await syncCard(
@@ -1397,7 +1553,11 @@ describe("kortformat", () => {
         tags: [],
         status: "approved",
       },
-      { filename: "lectio-crop.png", data: "base64-data", caption: "Bild från slide 2" },
+      {
+        filename: "lectio-crop.png",
+        data: "base64-data",
+        caption: "Bild från slide 2",
+      },
     );
     expect(requests.map((request) => request.action)).toEqual([
       "storeMediaFile",

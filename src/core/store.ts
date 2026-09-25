@@ -29,10 +29,7 @@ import {
   persistedAppState,
   type PersistedAppState,
 } from "../infrastructure/persistence";
-import {
-  moveLibraryNode,
-  reorderLibraryNode,
-} from "../domain/libraryTree";
+import { moveLibraryNode, reorderLibraryNode } from "../domain/libraryTree";
 
 export {
   canMoveLibraryNode,
@@ -76,8 +73,8 @@ function completeStoreHydration(error?: unknown) {
 const initialPaletteId =
   typeof window !== "undefined" &&
   window.matchMedia("(prefers-color-scheme: dark)").matches
-    ? "graphite"
-    : "chalk-neutral";
+    ? "blue-dark"
+    : "blue-light";
 const seedNodes: LibraryNode[] = [
   {
     id: workspaceId,
@@ -115,7 +112,11 @@ export interface AppState {
   addNode: (parentId: string | null, type: NodeType, title: string) => string;
   updateNode: (id: string, patch: Partial<LibraryNode>) => void;
   moveNode: (id: string, parentId: string) => boolean;
-  reorderNode: (id: string, targetId: string) => boolean;
+  reorderNode: (
+    id: string,
+    targetId: string,
+    position?: "before" | "after",
+  ) => boolean;
   removeNode: (id: string) => void;
   selectNode: (id: string) => void;
   setActiveView: (view: AppState["activeView"]) => void;
@@ -166,6 +167,8 @@ export const useAppStore = create<AppState>()(
         customPalettes: [],
         userContext:
           "Svara på svenska. Skapa tydliga kort med ett koncept per kort.",
+        recordingDeviceId: "",
+        recordingQuality: "balanced",
         aiMode: "clipboard",
         aiProvider: "openai",
         aiModel: "gpt-4.1-mini",
@@ -233,9 +236,9 @@ export const useAppStore = create<AppState>()(
         set({ nodes: moved });
         return true;
       },
-      reorderNode: (id, targetId) => {
+      reorderNode: (id, targetId, position = "before") => {
         const nodes = get().nodes;
-        const reordered = reorderLibraryNode(nodes, id, targetId);
+        const reordered = reorderLibraryNode(nodes, id, targetId, position);
         if (reordered === nodes) return false;
         set({ nodes: reordered });
         return true;
@@ -492,7 +495,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: STATE_STORAGE_KEY,
-      version: 16,
+      version: 18,
       storage: createDeferredLocalStorage<PersistedAppState>(),
       partialize: persistedAppState,
       // Native operations cannot survive a process restart. In particular, an
@@ -545,6 +548,12 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
+            recordingDeviceId: legacySettings.recordingDeviceId ?? "",
+            recordingQuality: ["compact", "balanced", "high"].includes(
+              legacySettings.recordingQuality ?? "",
+            )
+              ? legacySettings.recordingQuality
+              : "balanced",
             // The former local-vision toggle maps to the new opt-in engine.
             // feature. It still remains disabled until the Nvidia package is
             // explicitly installed and verified.
@@ -574,20 +583,28 @@ export const useAppStore = create<AppState>()(
             onboardingDismissed: legacySettings.onboardingDismissed ?? false,
             librarySidebarCollapsed:
               legacySettings.librarySidebarCollapsed ?? false,
-            selectedPaletteId:
-              legacySettings.selectedPaletteId ??
-              (legacySettings.appearance === "dark"
-                ? legacySettings.accentTheme === "green"
-                  ? "forest"
-                  : "midnight"
-                : legacySettings.accentTheme === "blue"
-                  ? "fjord"
-                  : "chalk"),
-            customPalettes: Array.isArray(legacySettings.customPalettes)
-              ? legacySettings.customPalettes.map((palette) =>
-                  normalizePalette(palette),
-                )
-              : [],
+            selectedPaletteId: [
+              "blue-light",
+              "orange-light",
+              "blue-dark",
+              "orange-dark",
+            ].includes(legacySettings.selectedPaletteId ?? "")
+              ? legacySettings.selectedPaletteId
+              : legacySettings.appearance === "dark" ||
+                  [
+                    "graphite",
+                    "midnight",
+                    "forest",
+                    "plum",
+                    "catppuccin-frappe",
+                    "catppuccin-macchiato",
+                    "catppuccin-mocha",
+                    "anthropic-claude-dark",
+                    "openai-chatgpt-dark",
+                  ].includes(legacySettings.selectedPaletteId ?? "")
+                ? "blue-dark"
+                : "blue-light",
+            customPalettes: [],
           },
           // Visa den nya översikten en gång efter uppgraderingen. Allt lokalt
           // kursmaterial ligger kvar i samma lagring.

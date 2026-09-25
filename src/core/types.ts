@@ -47,21 +47,39 @@ export type CardType = "basic" | "cloze" | "concept" | "definition" | "problem";
 export type CardGenerationSettings = {
   density: "few" | "balanced" | "many";
   types: CardType[];
-  sources: Record<"transcript" | "notes" | "markers" | "slides" | "context", boolean>;
+  sources: Record<
+    "transcript" | "notes" | "markers" | "slides" | "context",
+    boolean
+  >;
   preferences: string[];
-  contextLevels: Record<"global" | "course" | "module" | "topic" | "lecture", boolean>;
+  contextLevels: Record<
+    "global" | "course" | "module" | "topic" | "lecture",
+    boolean
+  >;
 };
 
 export const defaultCardGenerationSettings = (): CardGenerationSettings => ({
   density: "balanced",
   types: ["basic", "concept"],
-  sources: { transcript: true, notes: true, markers: true, slides: true, context: true },
+  sources: {
+    transcript: true,
+    notes: true,
+    markers: true,
+    slides: true,
+    context: true,
+  },
   preferences: [
     "Undvik triviala frågor.",
     "Prioritera examinationsrelevant förståelse.",
     "Håll svaren korta och precisa.",
   ],
-  contextLevels: { global: true, course: true, module: true, topic: true, lecture: true },
+  contextLevels: {
+    global: true,
+    course: true,
+    module: true,
+    topic: true,
+    lecture: true,
+  },
 });
 
 /** Safely fills fields omitted by libraries saved before generation defaults existed. */
@@ -225,6 +243,9 @@ export interface AppSettings {
   selectedPaletteId: string;
   customPalettes: ThemePalette[];
   userContext: string;
+  /** Preferred input device; empty follows the Windows default microphone. */
+  recordingDeviceId: string;
+  recordingQuality: "compact" | "balanced" | "high";
   aiMode: "clipboard" | "api";
   aiProvider: "openai" | "anthropic" | "gemini" | "groq" | "custom";
   aiModel: string;
@@ -333,7 +354,8 @@ export interface RecordingChunk {
   blob: Blob;
 }
 
-export type BackgroundJobKind = "download" | "transcription" | "library" | "vision";
+export type BackgroundJobKind =
+  "download" | "transcription" | "library" | "vision";
 export type BackgroundJobStatus =
   "queued" | "active" | "complete" | "error" | "cancelled";
 
