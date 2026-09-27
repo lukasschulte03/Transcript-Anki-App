@@ -27,6 +27,7 @@ import {
 } from "./ai";
 import { parseWhisperJson } from "./localStt";
 import { parseVisionResult } from "./localVision";
+import { analyzeVisualCrop } from "./apiVisualAnalysis";
 import {
   hasClozeMarkup,
   lectureDeckName,
@@ -73,7 +74,11 @@ import {
   estimateCardOutputTokens,
   formatCardGenerationCost,
 } from "./cardGenerationCost";
-import { runExclusiveTranscription } from "./transcriptionQueue";
+import {
+  cancelActiveTranscription,
+  isActiveTranscriptionCancelled,
+  runExclusiveTranscription,
+} from "./transcriptionQueue";
 import {
   moduleVisualCandidates,
   visualCandidateDescription,
@@ -321,6 +326,33 @@ describe("lokal bildbeskrivning", () => {
     });
   });
 
+  it("använder sparad OpenAI-nyckel och ber om OCR plus kort beskrivning för ett crop", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }>;
+      };
+      expect(body.model).toBe("gpt-4.1-mini");
+      expect(body.messages[0]?.content[1]?.image_url?.url).toContain("data:image/png;base64,");
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer saved-key");
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"description":"Prostatans anatomi med märkta strukturer","extractedText":"Prostata; urinrör","keywords":["prostata"]}' } }],
+      }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(analyzeVisualCrop(new Blob(["crop"], { type: "image/png" }), {
+      apiKey: "saved-key",
+      model: "gpt-4.1-mini",
+      localOcrText: "Prostata",
+    })).resolves.toEqual({
+      description: "Prostatans anatomi med märkta strukturer",
+      extractedText: "Prostata; urinrör",
+      keywords: ["prostata"],
+    });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("föredrar cachead lokal vision utan att ändra kandidatens källa", () => {
     expect(
       visualCandidateDescription({
@@ -384,6 +416,49 @@ describe("gemensam transkriptionskö", () => {
       "start:batch",
       "end:batch",
     ]);
+  });
+
+  it("fortsätter kön efter att ett jobb misslyckas", async () => {
+    const order: string[] = [];
+    const failed = runExclusiveTranscription("failure", async () => {
+      order.push("failure");
+      throw new Error("förväntat testfel");
+    });
+    const recovered = runExclusiveTranscription("recovery", async () => {
+      order.push("recovery");
+      return "klar";
+    });
+
+    await expect(failed).rejects.toThrow("förväntat testfel");
+    await expect(recovered).resolves.toBe("klar");
+    expect(order).toEqual(["failure", "recovery"]);
+  });
+
+  it("signalerar avbrott bara till det aktiva jobbet och rensar signalen efteråt", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started!: () => void;
+    const began = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const active = runExclusiveTranscription("active", async () => {
+      started();
+      await gate;
+      return isActiveTranscriptionCancelled("active");
+    });
+
+    await began;
+    const otherJobCancelled = cancelActiveTranscription("other-job");
+    const activeJobCancelled = cancelActiveTranscription("active");
+    const cancellationWasSignalled = isActiveTranscriptionCancelled("active");
+    release();
+    await expect(active).resolves.toBe(true);
+    expect(otherJobCancelled).toBe(false);
+    expect(activeJobCancelled).toBe(true);
+    expect(cancellationWasSignalled).toBe(true);
+    expect(isActiveTranscriptionCancelled("active")).toBe(false);
   });
 });
 
@@ -752,6 +827,135 @@ describe("Google Drive-synk", () => {
       expect.objectContaining({ collection: "föreläsningar", field: "notes" }),
     );
   });
+
+  it("bevarar en radering när den andra datorn inte ändrat objektet", () => {
+    const base = {
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "Bas" } },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const result = mergeLibrarySnapshots(
+      base,
+      { ...base, lectures: {} },
+      base,
+    );
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.snapshot.lectures).toEqual({});
+  });
+
+  it("flaggar radering mot redigering och tillämpar uttryckligt lokalt val", () => {
+    const base = {
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "Bas" } },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const deleted = { ...base, lectures: {} };
+    const edited = {
+      ...base,
+      lectures: { lecture: { lectureId: "lecture", notes: "Ny anteckning" } },
+    };
+
+    expect(
+      mergeLibrarySnapshots(base, deleted, edited).conflicts,
+    ).toContainEqual({
+      collection: "föreläsningar",
+      id: "lecture",
+      field: "radering",
+    });
+    expect(
+      mergeLibrarySnapshots(base, deleted, edited, "local").snapshot.lectures,
+    ).toEqual({});
+  });
+
+  it("kan välja fjärrversionen vid konflikt mellan radering och redigering", () => {
+    const base = {
+      nodes: [],
+      lectures: { lecture: { lectureId: "lecture", notes: "Bas" } },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const result = mergeLibrarySnapshots(
+      base,
+      { ...base, lectures: {} },
+      {
+        ...base,
+        lectures: { lecture: { lectureId: "lecture", notes: "Fjärr" } },
+      },
+      "remote",
+    );
+
+    expect(result.snapshot.lectures.lecture.notes).toBe("Fjärr");
+  });
+
+  it("förenar olika underfält i samma föreläsningsmetadata", () => {
+    const base = {
+      nodes: [],
+      lectures: {
+        lecture: {
+          lectureId: "lecture",
+          notes: "Bas",
+          slideMappings: {
+            first: { page: 1, confidence: 0.5 },
+            second: { page: 2, confidence: 0.5 },
+          },
+        },
+      },
+      segments: [],
+      markers: [],
+      cards: [],
+      pendingAnkiDeletions: [],
+      settings: {} as AppSettings,
+    } satisfies LibrarySyncSnapshot;
+    const result = mergeLibrarySnapshots(
+      base,
+      {
+        ...base,
+        lectures: {
+          lecture: {
+            ...base.lectures.lecture,
+            slideMappings: {
+              ...base.lectures.lecture.slideMappings,
+              first: { page: 3, confidence: 0.8 },
+            },
+          },
+        },
+      },
+      {
+        ...base,
+        lectures: {
+          lecture: {
+            ...base.lectures.lecture,
+            notes: "Laptopanteckning",
+            slideMappings: {
+              ...base.lectures.lecture.slideMappings,
+              second: { page: 4, confidence: 0.9 },
+            },
+          },
+        },
+      },
+    );
+
+    expect(result.conflicts).toEqual([]);
+    expect(result.snapshot.lectures.lecture).toMatchObject({
+      notes: "Laptopanteckning",
+      slideMappings: {
+        first: { page: 3, confidence: 0.8 },
+        second: { page: 4, confidence: 0.9 },
+      },
+    });
+  });
 });
 
 describe("Sync v2", () => {
@@ -904,6 +1108,121 @@ describe("Sync v2", () => {
       { collection: "lectures", entityId: "lecture", field: "notes" },
     ]);
   });
+
+  it("skapar ingen operation eller sekvenslucka när snapshoten är oförändrad", () => {
+    const base = snapshot("Oförändrat");
+    const result = createSyncOperations(base, base, {
+      libraryId: "library",
+      deviceId: "pc",
+      nextSequence: 41,
+    });
+
+    expect(result.operations).toEqual([]);
+    expect(result.nextSequence).toBe(41);
+  });
+
+  it("skickar bara ändrade fält och ger operationerna sekventiella id:n", () => {
+    const base = snapshot("Bas");
+    const current = {
+      ...base,
+      lectures: {
+        lecture: {
+          lectureId: "lecture",
+          notes: "Nytt",
+          slideText: "Bildtext",
+        },
+      },
+    };
+    const result = createSyncOperations(base, current, {
+      libraryId: "library",
+      deviceId: "laptop",
+      nextSequence: 7,
+    });
+
+    expect(result.operations).toHaveLength(1);
+    expect(result.operations[0]).toMatchObject({
+      id: "laptop:7",
+      sequence: 7,
+      kind: "upsert",
+      collection: "lectures",
+      entityId: "lecture",
+      patch: { notes: "Nytt", slideText: "Bildtext" },
+    });
+    expect(result.nextSequence).toBe(8);
+  });
+
+  it("mergar samtidiga ändringar av olika fält på samma objekt", () => {
+    const base = snapshot("Bas");
+    const pc = createSyncOperations(
+      base,
+      {
+        ...base,
+        lectures: { lecture: { lectureId: "lecture", notes: "PC" } },
+      },
+      {
+        libraryId: "library",
+        deviceId: "pc",
+        nextSequence: 1,
+        at: "2026-09-27T10:00:00Z",
+      },
+    );
+    const laptop = createSyncOperations(
+      base,
+      {
+        ...base,
+        lectures: {
+          lecture: {
+            lectureId: "lecture",
+            notes: "Bas",
+            slideText: "Laptop",
+          },
+        },
+      },
+      {
+        libraryId: "library",
+        deviceId: "laptop",
+        nextSequence: 1,
+        at: "2026-09-27T10:01:00Z",
+      },
+    );
+
+    const merged = applySyncOperations(base, [
+      ...pc.operations,
+      ...laptop.operations,
+    ]);
+    expect(merged.lectures.lecture).toMatchObject({
+      notes: "PC",
+      slideText: "Laptop",
+    });
+    expect(findSyncConflicts(pc.operations, laptop.operations)).toEqual([]);
+  });
+
+  it("väljer samma-fälts-vinnare deterministiskt även när ordningen varierar", () => {
+    const base = snapshot("Bas");
+    const pc = createSyncOperations(base, snapshot("PC"), {
+      libraryId: "library",
+      deviceId: "pc",
+      nextSequence: 1,
+      at: "2026-09-27T10:00:00Z",
+    });
+    const laptop = createSyncOperations(base, snapshot("Laptop"), {
+      libraryId: "library",
+      deviceId: "laptop",
+      nextSequence: 1,
+      at: "2026-09-27T10:00:00Z",
+    });
+
+    const forward = applySyncOperations(base, [
+      ...pc.operations,
+      ...laptop.operations,
+    ]);
+    const reverse = applySyncOperations(base, [
+      ...laptop.operations,
+      ...pc.operations,
+    ]);
+    expect(forward).toEqual(reverse);
+    expect(forward.lectures.lecture.notes).toBe("PC");
+  });
 });
 
 describe("biblioteksträd", () => {
@@ -1017,6 +1336,41 @@ describe("transkriptimport", () => {
     expect(result.segments).toEqual([
       { start: 0, end: 3, text: "Mockad transkription" },
     ]);
+  });
+
+  it("skickar inte Whisper-enbart timestamp-parametrar till GPT-Transcribe", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      expect(body.get("model")).toBe("gpt-transcribe");
+      expect(body.get("response_format")).toBeNull();
+      expect(body.get("timestamp_granularities[]")).toBeNull();
+      return new Response(JSON.stringify({ text: "Transkriberad text", languages: [{ code: "sv" }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await cloudApiTranscription.transcribe(
+      new Blob(["ljud"], { type: "audio/wav" }),
+      { transcriptionProvider: "openai", transcriptionModel: "gpt-transcribe", transcriptionBaseUrl: "https://mock.example/v1" } as AppSettings,
+      "testnyckel",
+    );
+    expect(result.segments).toEqual([{ start: 0, end: 0, text: "Transkriberad text" }]);
+  });
+
+  it("begär segmenttidsstämplar från Whisper 1", async () => {
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = init?.body as FormData;
+      expect(body.get("response_format")).toBe("verbose_json");
+      expect(body.get("timestamp_granularities[]")).toBe("segment");
+      return new Response(JSON.stringify({ text: "Whisper text", segments: [{ start: 2, end: 4, text: "Whisper text" }] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await cloudApiTranscription.transcribe(
+      new Blob(["ljud"], { type: "audio/wav" }),
+      { transcriptionProvider: "openai", transcriptionModel: "whisper-1", transcriptionBaseUrl: "https://mock.example/v1" } as AppSettings,
+      "testnyckel",
+    );
+    expect(result.segments[0]).toMatchObject({ start: 2, end: 4 });
   });
 
   it("använder bara STT-ordlistan, inte ärvd kurscontext", () => {
@@ -1210,15 +1564,17 @@ describe("slidekoppling", () => {
 
 describe("kortformat", () => {
   it("erbjuder modellförslag men lämnar utrymme för egna modell-ID:n", () => {
-    expect(aiModelSuggestions.openai).toContain("gpt-4.1-mini");
+    expect(aiModelSuggestions.openai).toContain("gpt-5.5");
+    expect(fallbackModelOptions("openai", "transcription").map((model) => model.id)).toContain("gpt-transcribe");
+    expect(fallbackModelOptions("openai", "vision").map((model) => model.id)).toContain("gpt-5.4-mini");
     expect(aiModelSuggestions.custom).toEqual([]);
-    expect(fallbackModelOptions("groq")[0]?.tier).toBe("budget");
+    expect(fallbackModelOptions("groq")[0]?.tier).toBe("recommended");
   });
 
   it("använder lokal modellkatalog utan nyckel och läser Groqs modellmetadata vid behov", async () => {
     const local = await fetchProviderModelOptions("openai", null, "");
     expect(local.source).toBe("fallback");
-    expect(local.models.map((model) => model.id)).toContain("gpt-4.1-mini");
+    expect(local.models.map((model) => model.id)).toContain("gpt-5.5");
 
     const fetchMock = vi.fn(
       async () =>
@@ -1227,7 +1583,7 @@ describe("kortformat", () => {
             data: [
               { id: "openai/gpt-oss-20b" },
               { id: "whisper-large-v3" },
-              { id: "qwen/qwen3-32b" },
+              { id: "qwen/qwen3.8-27b" },
             ],
           }),
         ),
@@ -1239,10 +1595,36 @@ describe("kortformat", () => {
       "https://api.groq.com/openai/v1",
     );
     expect(remote.source).toBe("provider");
-    expect(remote.models.map((model) => model.id)).toContain("qwen/qwen3-32b");
+    expect(remote.models.map((model) => model.id)).toContain("qwen/qwen3.8-27b");
     expect(remote.models.map((model) => model.id)).not.toContain(
       "whisper-large-v3",
     );
+  });
+
+  it("filtrerar live OpenAI-modeller efter transkriberingsuppgift", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "gpt-transcribe" },
+            { id: "whisper-1" },
+            { id: "gpt-5.5" },
+            { id: "text-embedding-3-large" },
+          ],
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const remote = await fetchProviderModelOptions(
+      "openai",
+      "testnyckel",
+      "https://api.openai.com/v1",
+      "transcription",
+    );
+    expect(remote.source).toBe("provider");
+    expect(remote.models.map((model) => model.id)).toContain("gpt-transcribe");
+    expect(remote.models.map((model) => model.id)).not.toContain("gpt-5.5");
+    expect(remote.models.map((model) => model.id)).not.toContain("text-embedding-3-large");
   });
 
   it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {

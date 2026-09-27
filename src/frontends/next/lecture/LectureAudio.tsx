@@ -1,4 +1,5 @@
 import * as Menu from "@radix-ui/react-dropdown-menu";
+import * as Dialog from "@radix-ui/react-dialog";
 import {
   AudioLines,
   Download,
@@ -13,6 +14,7 @@ import {
   VolumeX,
   LoaderCircle,
   Check,
+  Trash2,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -23,6 +25,7 @@ import { useSettings } from "../../shared/useLectioClient";
 import { NextButton, NextIconButton } from "../ui/NextPrimitives";
 import { useLectureRecording } from "./useLectureRecording";
 import { lectureCopy as c, formatTime } from "./lectureCopy";
+import { isKeyboardShortcutBlocked } from "../keyboardShortcuts";
 
 export function LectureAudio({
   client,
@@ -31,6 +34,7 @@ export function LectureAudio({
   onPosition,
   seek,
   onImport,
+  onMark,
   onBusy,
   onError,
 }: {
@@ -40,6 +44,7 @@ export function LectureAudio({
   onPosition(time: number): void;
   seek: { time: number; serial: number };
   onImport(): void;
+  onMark(): void;
   onBusy(value: boolean): void;
   onError(value: string): void;
 }) {
@@ -73,6 +78,7 @@ export function LectureAudio({
   const [speed, setSpeed] = useState(1);
   const [muted, setMuted] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [deletePart, setDeletePart] = useState<typeof part | null>(null);
   const audio = useRef<HTMLAudioElement>(null);
   const pendingSeek = useRef<number | null>(null);
   const continuePlayback = useRef(false);
@@ -161,23 +167,47 @@ export function LectureAudio({
   };
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement;
       if (
-        event.code !== "Space" ||
         event.repeat ||
         event.ctrlKey ||
         event.metaKey ||
         event.altKey ||
-        target.closest(
-          '[role="dialog"], [role="menu"], textarea, [contenteditable="true"]',
-        ) ||
-        (target instanceof HTMLInputElement && target.type !== "range") ||
-        target.closest('button, [role="tab"]')
-      )
-        return;
-      if (!url || recordingBusy) return;
-      event.preventDefault();
-      toggle();
+        isKeyboardShortcutBlocked(event)
+      ) return;
+
+      const target = event.target;
+      const buttonFocused =
+        target instanceof Element && target.closest("button, [role='button'], [role='tab']");
+      if (event.code === "Space") {
+        // Preserve native Space activation for focused buttons; range sliders
+        // still allow Space to control playback after seeking.
+        if (buttonFocused || !url || recordingBusy) return;
+        event.preventDefault();
+        toggle();
+      } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        if (!url || recordingBusy) return;
+        event.preventDefault();
+        const direction = event.key === "ArrowLeft" ? -1 : 1;
+        skip(direction * (event.shiftKey ? 30 : 10));
+      } else if (event.key.toLowerCase() === "m") {
+        if (!parts.length && recording.state === "idle") return;
+        event.preventDefault();
+        onMark();
+      } else if (event.key.toLowerCase() === "r") {
+        if (recording.state === "idle") {
+          event.preventDefault();
+          void recording.start();
+        } else if (recording.state === "recording" || recording.state === "paused") {
+          event.preventDefault();
+          recording.stop();
+        }
+      } else if (
+        event.key.toLowerCase() === "p" &&
+        (recording.state === "recording" || recording.state === "paused")
+      ) {
+        event.preventDefault();
+        recording.togglePause();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
@@ -357,6 +387,7 @@ export function LectureAudio({
               </div>
               <input
                 type="range"
+                name="lecture-timeline"
                 className="lecture-timeline"
                 aria-label={c.timeline}
                 min={0}
@@ -418,6 +449,15 @@ export function LectureAudio({
               </NextIconButton>
               <NextIconButton
                 className="lecture-icon"
+                title="Ta bort ljudfil"
+                aria-label={`Ta bort ${part?.name ?? "ljudfil"}`}
+                onClick={() => setDeletePart(part)}
+                disabled={busy || !part}
+              >
+                <Trash2 />
+              </NextIconButton>
+              <NextIconButton
+                className="lecture-icon"
                 title={c.record}
                 aria-label={c.record}
                 disabled={busy}
@@ -458,6 +498,35 @@ export function LectureAudio({
           </>
         )}
       </div>
+      <Dialog.Root open={deletePart !== null} onOpenChange={(open) => !open && setDeletePart(null)}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="lecture-dialog-overlay" />
+          <Dialog.Content className="lecture-dialog lecture-confirm">
+            <Dialog.Title>Ta bort ljudfilen?</Dialog.Title>
+            <Dialog.Description>
+              {deletePart?.name} tas bort permanent från föreläsningen. Transkriptet påverkas inte.
+            </Dialog.Description>
+            <div className="lecture-dialog-actions">
+              <Dialog.Close className="lecture-action">Behåll</Dialog.Close>
+              <button
+                className="lecture-action lecture-danger-action"
+                onClick={async () => {
+                  if (!deletePart) return;
+                  audio.current?.pause();
+                  onBusy(true);
+                  const result = await client.assets.removeAudio(lecture.lectureId, deletePart.assetId);
+                  onBusy(false);
+                  if (!result.ok) onError(result.error.message);
+                  else setPartIndex((current) => Math.max(0, Math.min(current, parts.length - 2)));
+                  setDeletePart(null);
+                }}
+              >
+                <Trash2 /> Ta bort
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   );
 }

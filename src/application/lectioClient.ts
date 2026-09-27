@@ -1,4 +1,5 @@
 import type {
+  AppNotification,
   AppSettings,
   BackgroundJob,
   Flashcard,
@@ -11,6 +12,7 @@ import type {
 } from "../core/types";
 
 export type {
+  AppNotification,
   AppSettings,
   BackgroundJob,
   Flashcard,
@@ -21,6 +23,7 @@ export type {
   NodeType,
   ThemePalette,
   TranscriptSegment,
+  VisualCandidate,
 } from "../core/types";
 
 export type ActiveView =
@@ -100,6 +103,26 @@ export type BinaryAssetInput = {
   lastModified?: number;
 };
 
+export type InboxAudioFile = {
+  id: string;
+  name: string;
+  mimeType?: string;
+  modifiedTime?: string;
+  size: number;
+};
+
+export type InboxImportProgress = {
+  completed: number;
+  total: number;
+  detail: string;
+};
+
+export type InboxImportResult = {
+  imported: number;
+  lectureId: string;
+  remoteMoveFailed: boolean;
+};
+
 export type LectioEvent =
   | { type: "library-changed"; snapshot: LibrarySnapshot }
   | { type: "session-changed"; snapshot: SessionSnapshot }
@@ -117,6 +140,18 @@ export interface ReadableValue<T> {
 }
 
 export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
+export type ModelCatalogTask = "cards" | "transcription" | "vision";
+export type ModelCatalogEntry = {
+  id: string;
+  label: string;
+  tier: "recommended" | "budget" | "powerful" | "available";
+  description?: string;
+};
+export type ModelCatalogSnapshot = {
+  models: ModelCatalogEntry[];
+  source: "fallback" | "provider";
+  error?: string;
+};
 
 /**
  * Stable, framework-independent contract exposed to every Lectio frontend.
@@ -162,6 +197,27 @@ export interface LectioClient {
       lectureId: string,
       input: BinaryAssetInput,
     ): Promise<LectioResult<string>>;
+    removeAudio(lectureId: string, assetId: string): Promise<LectioResult>;
+  };
+  readonly visuals: {
+    indexLecture(
+      lectureId: string,
+      progress?: (value: LibraryTransferProgress) => void,
+    ): Promise<LectioResult<number>>;
+    describeLecture(
+      lectureId: string,
+      progress?: (value: LibraryTransferProgress) => void,
+    ): Promise<LectioResult<number>>;
+    thumbnail(lectureId: string, visualId: string): Promise<LectioResult<Blob>>;
+    remove(lectureId: string, visualId: string): Promise<LectioResult>;
+  };
+  readonly inbox: {
+    list(): Promise<LectioResult<InboxAudioFile[]>>;
+    import(
+      files: InboxAudioFile[],
+      lectureId: string,
+      progress?: (value: InboxImportProgress) => void,
+    ): Promise<LectioResult<InboxImportResult>>;
   };
   readonly settings: ReadableValue<AppSettings> & {
     update(patch: Partial<AppSettings>): LectioResult;
@@ -170,6 +226,10 @@ export interface LectioClient {
     read(key: string): Promise<LectioResult<boolean>>;
     write(key: string, secret: string): Promise<LectioResult>;
     remove(key: string): Promise<LectioResult>;
+  };
+  /** Returns model names only; provider credentials remain inside infrastructure. */
+  readonly modelCatalog: {
+    list(task: ModelCatalogTask): Promise<LectioResult<ModelCatalogSnapshot>>;
   };
   readonly localTranscription: {
     status(
@@ -216,7 +276,20 @@ export interface LectioClient {
     approve(ids: string[]): LectioResult<number>;
   };
   readonly jobs: ReadableValue<BackgroundJob[]> & {
+    upsert(
+      job: Omit<BackgroundJob, "startedAt" | "updatedAt"> & {
+        startedAt?: string;
+      },
+    ): LectioResult;
     cancel(id: string): Promise<LectioResult>;
+    dismiss(id: string): LectioResult;
+  };
+  readonly notifications: ReadableValue<AppNotification[]> & {
+    push(
+      notification: Omit<AppNotification, "id" | "createdAt"> & {
+        id?: string;
+      },
+    ): LectioResult<string>;
     dismiss(id: string): LectioResult;
   };
   readonly workflows: {

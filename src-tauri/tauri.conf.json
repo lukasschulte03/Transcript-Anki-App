@@ -15,7 +15,7 @@
         "title": "Lectio",
         "width": 1440,
         "height": 900,
-        "minWidth": 1080,
+        "minWidth": 760,
         "minHeight": 680,
         "center": true,
         "resizable": true,

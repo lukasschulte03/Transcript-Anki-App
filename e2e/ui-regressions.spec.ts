@@ -85,8 +85,8 @@ test("arbetsytan håller ihop i mörkt och smalt läge", async ({ page }) => {
   await seedLibrary(page);
   await page.reload();
   await page.getByRole("button", { name: /^Inställningar/ }).click();
-  await page.getByRole("combobox").filter({ hasText: "Kalk" }).click();
-  await page.getByRole("option", { name: "Grafit", exact: true }).click();
+  await page.getByRole("combobox").nth(1).click();
+  await page.getByRole("option", { name: "Midnattsblå", exact: true }).click();
   await page.keyboard.press("Control+2");
   await expect(page.locator('input[value="Akut buk"]')).toBeVisible();
   await expectViewportFilled(page);

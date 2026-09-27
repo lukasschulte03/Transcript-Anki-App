@@ -23,20 +23,20 @@ The structural defaults live at the top of `next.css`; `themes.ts` maps the acti
 
 - chrome: `--arc-coral`, `--arc-rose`, `--arc-plum`, `--arc-chrome-ink`;
 - text: `--arc-ink`, `--arc-muted`, `--arc-subtle`;
-- documents: `--arc-paper`, `--arc-raised`, `--arc-soft`;
+- documents: `--arc-paper`, `--arc-raised`, `--arc-soft` (mapped to the active palette's muted surface);
 - structure: `--arc-line`, `--arc-line-strong`;
 - action: `--arc-deep`, `--arc-focus`.
 
-The shell maps the shared `ThemePalette` contract onto `--arc-*` and `--palette-*` variables. The Grainient shader remounts on a palette change so its colors update without stale WebGL uniforms.
+The shell maps the shared `ThemePalette` contract onto `--arc-*` and `--palette-*` variables. The Grainient canvas stays mounted across palette changes and updates its color uniforms in place, preserving the animation clock.
 
 ## Geometry
 
 - expanded sidebar: 272px;
 - collapsed rail: 68px;
 - canvas inset: 7px on top/right/bottom, without a duplicate sidebar divider;
-- canvas radius: 10px;
-- control radii: 6–9px;
-- overlay radius: 9–10px;
+- canvas radius: 8px;
+- control radii: 5–7px;
+- overlay radius: 8px;
 - tree indentation: 16px per level.
 
 Large, soft SaaS cards are not part of this direction. Borders are fine and warm; grouping comes from dividers, alignment, and surface changes.
@@ -47,7 +47,7 @@ The sidebar is the app background, not a card. The document canvas has no border
 
 ## Typography and icons
 
-Geist Variable is the sole interface face, with optical sizing enabled and synthesis disabled. The role scale is intentionally small: 28px display, 22px title, 16px heading, 14px subheading, 13px body/control, 12px metadata, and 11px caption. Intermediate variable weights (440/520/620/680) create hierarchy without making every label bold. Display and title roles use tight tracking; controls use restrained negative tracking; body and transcript copy keep neutral tracking and generous leading. Timestamps, counters, durations, page numbers, and versions use tabular numerals. Supporting prose stays within roughly 45–65 characters where possible. Navigation labels never wrap; long library names truncate.
+Geist Variable is the sole interface face, with optical sizing enabled and synthesis disabled. The role scale is intentionally compact: 25px display, 20px title, 15px heading, 13.5px subheading, 13px body/control, 12px metadata, and 10.5px caption. Variable weights (400/480/560/620) create hierarchy without making navigation and controls look bold. Display and title roles use tight tracking; controls use restrained negative tracking; body and transcript copy keep neutral tracking and generous leading. Timestamps, counters, durations, page numbers, and versions use tabular numerals. Supporting prose stays within roughly 45–65 characters where possible. Navigation labels never wrap; long library names truncate.
 
 Lucide outline icons are used consistently. Important destinations may have small colored tile backgrounds; ordinary row actions remain quiet. Icon-only controls require accessible names and tooltips where their meaning is not universal.
 
@@ -68,6 +68,10 @@ The sidebar integrates native window actions, three primary destinations, the co
 
 Course and module branches expand independently, the tree owns its vertical scroll, and the selected node's ancestors open automatically. Dragging supports moving valid children between parents plus inserting before or after compatible siblings. Drop targets, hover expansion, edge scrolling, and domain validation must remain visible and functional in both the expanded tree and rail flyout.
 
+Every drag operation also has a keyboard path through the node menu: move before/after a sibling or move into a valid parent. Home is a concise library status view; Super Actions is the batch surface for transcription and the Anki pipeline, not a placeholder destination.
+
+The help popover is the source of truth for global and lecture shortcuts. Keep every listed shortcut functional: Space toggles playback, arrows seek (Shift extends the jump), M marks a moment, R/P control recording, Shift+I imports audio, Shift+T opens transcript search, Ctrl/Cmd+F focuses transcript search, Ctrl/Cmd+Enter opens Anki, and Page Up/Down/Home/End navigate slides. Ctrl/Cmd+N creates the next sensible library item; Ctrl/Cmd+Shift+N creates a lecture in the selected module. Editable fields retain ordinary keystrokes, and open dialogs/menus own their keyboard input.
+
 ### Settings
 
 Settings is a document, not a grid of cards. A narrow category rail sits beside one scrolling column and becomes a horizontal, scrollable rail on compact canvases. Rows use shared icons, labels, descriptions, dividers, controls, toggles, credential fields, and status chips. Library/data, appearance, recording, transcription, AI/Anki, and Google Drive all use the same row grammar. Values save immediately; secrets use the OS credential store; long-running native setup and connection work shows an explicit busy state.
@@ -81,12 +85,12 @@ The lecture view keeps one header, one material workspace, and one audio footer.
 Motion clarifies state only:
 
 - the chrome carries one slow theme-colored Grainient shader capped at 15 FPS; it never moves content, pauses while hidden, and becomes static with reduced motion;
-- sidebar width and spatial layout: 300ms using `cubic-bezier(0.22, 1, 0.36, 1)`;
-- branch and overlay reveal: 200ms;
-- hover and control feedback: 160ms;
+- shared motion tokens define feedback (120ms), controls (160ms), reveals (200ms), panels (220ms), and layout (300ms), using `cubic-bezier(0.22, 1, 0.36, 1)` for spatial movement;
+- sidebar width and spatial layout: 300ms; branches and popover reveals: 200ms; dialog/overlay presence: 220ms;
+- hover and control feedback: 120–160ms, with color changes preferred over movement;
 - active controls may move no more than 1–2px.
 
-Nothing animated may alter document readability. `prefers-reduced-motion` removes spatial animation.
+Nothing animated may alter document readability. `prefers-reduced-motion` removes spatial and looping animation while retaining brief color/opacity feedback; progress and status remain understandable without motion.
 
 ## Rules
 

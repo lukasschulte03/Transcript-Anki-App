@@ -1,40 +1,27 @@
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { Check, ChevronDown, ChevronUp, CircleX, Clock3, LoaderCircle, X } from "lucide-react";
-import { useEffect, useState } from "react";
-import { useJobStore } from "../infrastructure/jobStore";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  CircleX,
+  Clock3,
+  Info,
+  LoaderCircle,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AppNotification,
   BackgroundJob,
-  BackgroundJobKind,
-  BackgroundJobStatus,
-} from "../core/types";
-import { cancelDownload, cancelLocalTranscription } from "../services/localStt";
-import { isStabilityTest, isTauri } from "../services/platform";
-import {
-  cancelActiveTranscription,
-  cancelQueuedTranscription,
-} from "../services/transcriptionQueue";
-import {
-  cancelActiveVision,
-  cancelQueuedVision,
-} from "../services/visualDescriptionQueue";
-import { cancelQueuedSlideIndex } from "../services/slideIndexQueue";
-
-interface NativeProgressEvent {
-  id: string;
-  kind: BackgroundJobKind;
-  label: string;
-  phase: string;
-  status: BackgroundJobStatus;
-  current: number;
-  total?: number;
-  detail?: string;
-}
+  LectioClient,
+} from "../application/lectioClient";
+import { useJobs, useNotifications } from "../frontends/shared/useLectioClient";
+import "./progress-center.css";
 
 const phaseLabel: Record<string, string> = {
   preparing: "Förbereder…",
   downloading: "Laddar ned…",
   extracting: "Installerar…",
-  starting: "Startar Whisper…",
+  starting: "Startar…",
   queued: "Väntar i kö…",
   transcribing: "Transkriberar…",
   saving: "Sparar resultat…",
@@ -47,233 +34,343 @@ const phaseLabel: Record<string, string> = {
   cancelled: "Avbruten",
 };
 
-const bytes = (value: number) => {
-  if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
-  return `${(value / 1024 / 1024).toFixed(value >= 1024 * 1024 * 1024 ? 0 : 1)} MB`;
-};
+function jobDetail(job: BackgroundJob) {
+  if (job.detail) return job.detail;
+  if (job.kind === "transcription" && job.total) {
+    const current = Math.floor(job.current / 1_000);
+    const total = Math.floor(job.total / 1_000);
+    return `${Math.floor(current / 60)}:${String(current % 60).padStart(2, "0")} / ${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+  }
+  if (job.kind === "library" && job.total)
+    return `${job.current} av ${job.total} objekt`;
+  return phaseLabel[job.phase] ?? "Arbetar…";
+}
 
-const time = (milliseconds: number) => {
-  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
-};
-
-function JobRow({ job }: { job: BackgroundJob }) {
-  const dismissJob = useJobStore((state) => state.dismissJob);
-  const upsertJob = useJobStore((state) => state.upsertJob);
-  const percentage = job.total
-    ? Math.min(100, Math.round((job.current / job.total) * 100))
-    : null;
-  const active = job.status === "active";
-  const queued = job.status === "queued";
-  const cancel = async () => {
-    try {
-      if (job.kind === "transcription" && queued) {
-        if (cancelQueuedTranscription(job.id)) {
-          upsertJob({
-            ...job,
-            phase: "cancelled",
-            status: "cancelled",
-            detail: "Togs bort från kön.",
-          });
-        }
-      } else if (job.kind === "transcription" && active) {
-        cancelActiveTranscription(job.id);
-        await cancelLocalTranscription(job.id);
-        upsertJob({ ...job, detail: "Avbryter transkriberingen…" });
-      } else if (job.kind === "vision" && queued) {
-        if (cancelQueuedVision(job.id)) {
-          upsertJob({
-            ...job,
-            phase: "cancelled",
-            status: "cancelled",
-            detail: "Togs bort från kön.",
-          });
-        }
-      } else if (job.kind === "vision" && active) {
-        cancelActiveVision(job.id);
-        upsertJob({ ...job, detail: "Avbryter lokal bildbeskrivning…" });
-      } else if (job.kind === "library" && queued) {
-        if (cancelQueuedSlideIndex(job.id)) {
-          upsertJob({
-            ...job,
-            phase: "cancelled",
-            status: "cancelled",
-            detail: "Togs bort från kön.",
-          });
-        }
-      } else if (job.kind === "download") {
-        await cancelDownload(job.id);
-      }
-    } catch {
-      // The native worker emits its own actionable error when applicable.
-    }
-  };
+function JobCard({
+  job,
+  client,
+}: {
+  job: BackgroundJob;
+  client: LectioClient;
+}) {
+  const percentage =
+    job.total && job.total > 0
+      ? Math.min(100, Math.round((job.current / job.total) * 100))
+      : null;
+  const running = job.status === "active" || job.status === "queued";
+  const canCancel =
+    running &&
+    (job.cancellable ??
+      (job.kind === "transcription" ||
+        job.kind === "anki" ||
+        job.kind === "download" ||
+        (job.kind === "vision" && !job.id.startsWith("tracked:")) ||
+        (job.kind === "library" &&
+          job.status === "queued" &&
+          job.id.startsWith("visual-index"))));
   const Icon =
     job.status === "error"
       ? CircleX
-      : queued
-        ? Clock3
-        : active
-          ? LoaderCircle
-          : Check;
-  const detail =
-    job.kind === "download" && job.total
-      ? `${job.detail ? `${job.detail} · ` : ""}${bytes(job.current)} av ${bytes(job.total)}`
-      : (job.detail ??
-        (job.kind === "transcription" && job.total
-          ? `${time(job.current)} / ${time(job.total)}`
-          : job.kind === "library" && job.total
-            ? `${job.current} av ${job.total} objekt`
-            : job.total
-              ? `${bytes(job.current)} av ${bytes(job.total)}`
-              : (phaseLabel[job.phase] ?? "Arbetar…")));
+      : job.status === "complete"
+        ? Check
+        : job.status === "cancelled"
+          ? X
+          : job.status === "queued"
+            ? Clock3
+            : LoaderCircle;
 
   return (
-    <div className="w-80 rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)]/95 p-3 shadow-lg backdrop-blur">
-      <div className="flex items-start gap-2.5">
-        <Icon
-          className={`mt-0.5 size-4 shrink-0 ${job.status === "error" ? "text-[var(--palette-danger)]" : active ? "animate-spin text-[var(--palette-accent)]" : "text-[var(--palette-text-muted)]"}`}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-sm font-medium text-[var(--palette-text)]">
-              {job.label}
-            </p>
-            {percentage !== null && (
-              <span className="ml-auto text-xs tabular-nums text-[var(--palette-text-muted)]">
-                {percentage}%
-              </span>
-            )}
-          </div>
-          <p className="mt-0.5 truncate text-xs text-[var(--palette-text-muted)]">
-            {detail}
-          </p>
-        </div>
-        {((job.kind === "transcription" || job.kind === "vision") &&
-          (queued || active)) ||
-        (job.kind === "library" && queued) ||
-        (active && job.kind === "download") ? (
-          <button
-            className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
-            onClick={() => void cancel()}
-            aria-label={
-              queued
-                ? "Ta bort från kön"
-                : job.kind === "vision"
-                  ? "Avbryt bildbeskrivning"
-                  : job.kind === "transcription"
-                    ? "Avbryt transkribering"
-                    : "Avbryt nedladdning"
-            }
-            title={
-              queued
-                ? "Ta bort från kön"
-                : job.kind === "vision"
-                  ? "Avbryt bildbeskrivning"
-                  : job.kind === "transcription"
-                    ? "Avbryt transkribering"
-                    : "Avbryt nedladdning"
-            }
-          >
-            <X className="size-3.5" />
-          </button>
-        ) : null}
-        {!active && !queued && (
-          <button
-            className="rounded p-1 text-[var(--palette-text-muted)] hover:bg-[var(--palette-surface-hover)] hover:text-[var(--palette-text)]"
-            onClick={() => dismissJob(job.id)}
-            aria-label="Stäng förlopp"
-          >
-            <X className="size-3.5" />
-          </button>
-        )}
+    <article
+      className={`notification-card notification-job notification-${job.status}`}
+      role={job.status === "error" ? "alert" : "status"}
+      aria-label={`${job.label}: ${jobDetail(job)}`}
+    >
+      <Icon
+        className={`notification-icon ${running && job.status === "active" ? "notification-spin" : ""}`}
+        aria-hidden="true"
+      />
+      <div className="notification-copy">
+        <strong>{job.label}</strong>
+        <span>{jobDetail(job)}</span>
       </div>
-      {(active || queued) && (
-        <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-[var(--palette-surface-muted)]">
-          {percentage !== null ? (
-            <div
-              className="h-full rounded-full bg-[var(--palette-primary)] transition-[width] duration-300"
-              style={{ width: `${percentage}%` }}
-            />
-          ) : (
-            <div className="h-full w-2/5 animate-pulse rounded-full bg-[var(--palette-primary-muted)]" />
-          )}
+      {percentage !== null && running && (
+        <span className="notification-percent">{percentage}%</span>
+      )}
+      {canCancel ? (
+        <button
+          type="button"
+          className="notification-icon-button"
+          aria-label="Avbryt uppgift"
+          title="Avbryt"
+          onClick={() => void client.jobs.cancel(job.id)}
+        >
+          <X aria-hidden="true" />
+        </button>
+      ) : !running ? (
+        <button
+          type="button"
+          className="notification-icon-button"
+          aria-label="Stäng uppgift"
+          title="Stäng"
+          onClick={() => void client.jobs.dismiss(job.id)}
+        >
+          <X aria-hidden="true" />
+        </button>
+      ) : null}
+      {running && (
+        <div
+          className="notification-progress"
+          role="progressbar"
+          aria-label={job.label}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percentage ?? undefined}
+        >
+          <span
+            className={
+              percentage === null ? "notification-progress-indeterminate" : ""
+            }
+            style={
+              percentage === null ? undefined : { width: `${percentage}%` }
+            }
+          />
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
-export function ProgressCenter() {
-  const jobs = useJobStore((state) => state.jobs);
-  const upsertJob = useJobStore((state) => state.upsertJob);
-  const [expanded, setExpanded] = useState(false);
-
-  useEffect(() => {
-    const receiveTestProgress = (event: Event) => {
-      if (event instanceof CustomEvent) upsertJob(event.detail as NativeProgressEvent);
-    };
-    if (isStabilityTest()) {
-      window.addEventListener("lectio:stability-progress", receiveTestProgress);
-    }
-    if (!isTauri()) {
-      return () => window.removeEventListener("lectio:stability-progress", receiveTestProgress);
-    }
-    let unlisten: UnlistenFn | undefined;
-    void listen<NativeProgressEvent>("lectio:progress", (event) => {
-      upsertJob(event.payload);
-    }).then((cleanup) => {
-      unlisten = cleanup;
-    });
-    return () => {
-      unlisten?.();
-      window.removeEventListener("lectio:stability-progress", receiveTestProgress);
-    };
-  }, [upsertJob]);
-
-  const activeJobs = jobs.filter((job) => job.status === "active");
-  const queuedJobs = jobs.filter((job) => job.status === "queued");
-  const latestTerminal = jobs
-    .filter((job) => job.status !== "active" && job.status !== "queued")
-    .slice(-1);
-  // A burst of imports must not turn the corner into a stack of competing
-  // popups. Running work wins; retain only the latest completed/error state.
-  const runningSlots = Math.max(0, 3 - activeJobs.length);
-  const allVisibleJobs = [
-    ...activeJobs.slice(-3),
-    ...queuedJobs.slice(0, runningSlots),
-    ...latestTerminal,
-  ];
-  const visibleJobs = expanded
-    ? allVisibleJobs
-    : allVisibleJobs.filter((job, index) =>
-        index === 0 || (job.status === "error" && index === allVisibleJobs.length - 1),
-      ).slice(0, 2);
-  const hiddenQueuedCount = Math.max(0, queuedJobs.length - runningSlots);
-  if (!allVisibleJobs.length) return null;
+function MessageCard({
+  id,
+  level,
+  title,
+  detail,
+  onDismiss,
+}: {
+  id: string;
+  level: "info" | "success" | "warning" | "error";
+  title: string;
+  detail?: string;
+  onDismiss: (id: string) => void;
+}) {
+  const Icon =
+    level === "error"
+      ? CircleX
+      : level === "warning"
+        ? AlertTriangle
+        : level === "success"
+          ? Check
+          : Info;
   return (
-    <aside className="pointer-events-none fixed bottom-20 right-4 z-50 flex max-h-[calc(100vh-6rem)] flex-col gap-2 overflow-y-auto">
-      {allVisibleJobs.length > 1 && (
+    <article
+      className={`notification-card notification-${level}`}
+      role={level === "error" ? "alert" : "status"}
+    >
+      <Icon className="notification-icon" aria-hidden="true" />
+      <div className="notification-copy">
+        <strong>{title}</strong>
+        {detail && <span>{detail}</span>}
+      </div>
+      <button
+        type="button"
+        className="notification-icon-button"
+        aria-label="Stäng notis"
+        onClick={() => onDismiss(id)}
+      >
+        <X aria-hidden="true" />
+      </button>
+      {level === "error" && (
         <button
           type="button"
-          onClick={() => setExpanded((current) => !current)}
-          className="pointer-events-auto ml-auto flex h-8 items-center gap-2 rounded-lg border border-border bg-card px-3 text-xs font-medium text-foreground shadow-md hover:bg-muted"
-          aria-expanded={expanded}
+          className="notification-report-button"
+          onClick={() =>
+            window.dispatchEvent(
+              new CustomEvent("lectio:report-problem", { detail: title }),
+            )
+          }
         >
-          {activeJobs.length ? `${activeJobs.length} aktiva` : `${allVisibleJobs.length} händelser`}
-          {queuedJobs.length ? ` · ${queuedJobs.length} i kö` : ""}
-          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronUp className="size-3.5" />}
+          Rapportera
         </button>
       )}
-      {visibleJobs.map((job) => (
-        <div className="pointer-events-auto" key={job.id}>
-          <JobRow job={job} />
-        </div>
-      ))}
-      {hiddenQueuedCount > 0 && (
-        <div className="pointer-events-auto self-end rounded-lg border border-[var(--palette-border)] bg-[var(--palette-surface)]/95 px-3 py-2 text-xs text-[var(--palette-text-muted)] shadow-lg backdrop-blur">
-          +{hiddenQueuedCount} bildanalyser väntar i kö
-        </div>
+    </article>
+  );
+}
+
+export function ProgressCenter({
+  client,
+  bottomOffset = 20,
+}: {
+  client: LectioClient;
+  /** Reserves space for a persistent player or footer. */
+  bottomOffset?: number;
+}) {
+  const jobs = useJobs(client);
+  const notifications = useNotifications(client);
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const timers = useRef(new Map<string, number>());
+  const expanded = hovered || pinned;
+
+  useEffect(
+    () =>
+      client.events.subscribe((event) => {
+        if (event.type !== "error") return;
+        window.setTimeout(() => {
+          const failedJobJustReported = client.jobs
+            .getSnapshot()
+            .some(
+              (job) =>
+                job.status === "error" &&
+                Date.now() - Date.parse(job.updatedAt) < 500,
+            );
+          if (!failedJobJustReported)
+            client.notifications.push({
+              id: `error:${event.error.code}:${event.error.message}`,
+              level: "error",
+              title: event.error.message,
+            });
+        }, 0);
+      }),
+    [client],
+  );
+
+  useEffect(() => {
+    const handleNotification = (event: Event) => {
+      if (!(event instanceof CustomEvent) || !event.detail) return;
+      const detail = event.detail as {
+        id?: string;
+        level?: AppNotification["level"];
+        title?: string;
+        detail?: string;
+      };
+      if (!detail.title || !detail.level) return;
+      client.notifications.push({
+        id: detail.id,
+        level: detail.level,
+        title: detail.title,
+        detail: detail.detail,
+      });
+    };
+    window.addEventListener("lectio:notification", handleNotification);
+    return () =>
+      window.removeEventListener("lectio:notification", handleNotification);
+  }, [client]);
+
+  useEffect(() => {
+    const retainedTimers = new Set<string>();
+    for (const job of jobs) {
+      const key = `job:${job.id}`;
+      if (job.status === "active" || job.status === "queued") {
+        const timer = timers.current.get(key);
+        if (timer) window.clearTimeout(timer);
+        timers.current.delete(key);
+        continue;
+      }
+      if (job.status !== "complete" && job.status !== "cancelled") continue;
+      retainedTimers.add(key);
+      if (timers.current.has(key)) continue;
+      timers.current.set(
+        key,
+        window.setTimeout(
+          () => {
+            void client.jobs.dismiss(job.id);
+            timers.current.delete(key);
+          },
+          job.status === "complete" ? 6_000 : 3_500,
+        ),
+      );
+    }
+    for (const notice of notifications) {
+      const key = `notice:${notice.id}`;
+      if (notice.level !== "success" && notice.level !== "info") {
+        const timer = timers.current.get(key);
+        if (timer) window.clearTimeout(timer);
+        timers.current.delete(key);
+        continue;
+      }
+      retainedTimers.add(key);
+      if (timers.current.has(key)) continue;
+      timers.current.set(
+        key,
+        window.setTimeout(() => {
+          void client.notifications.dismiss(notice.id);
+          timers.current.delete(key);
+        }, 7_000),
+      );
+    }
+    for (const [key, timer] of timers.current) {
+      if (retainedTimers.has(key)) continue;
+      window.clearTimeout(timer);
+      timers.current.delete(key);
+    }
+  }, [client, jobs, notifications]);
+
+  useEffect(
+    () => () => {
+      timers.current.forEach(window.clearTimeout);
+      timers.current.clear();
+    },
+    [],
+  );
+
+  const activeJobs = jobs.filter(
+    (job) =>
+      job.status === "active" ||
+      job.status === "queued" ||
+      job.status === "error",
+  );
+  const recentJobs = jobs
+    .filter((job) => job.status === "complete" || job.status === "cancelled")
+    .slice(-3);
+  const visibleJobs = useMemo(
+    () => [...activeJobs, ...recentJobs],
+    [activeJobs, recentJobs],
+  );
+  const pendingCount = visibleJobs.filter(
+    (job) => job.status === "active" || job.status === "queued",
+  ).length;
+  const count = visibleJobs.length + notifications.length;
+  if (!count) return null;
+
+  return (
+    <aside
+      className="notification-center"
+      data-expanded={expanded}
+      data-count={Math.min(count, 5)}
+      style={{ bottom: `max(16px, ${bottomOffset}px)` }}
+      aria-label="Notiser och pågående uppgifter"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      onFocusCapture={() => setHovered(true)}
+      onBlurCapture={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null))
+          setHovered(false);
+      }}
+    >
+      <div className="notification-list" aria-live="polite">
+        {notifications.map((item) => (
+          <MessageCard
+            key={`notice:${item.id}`}
+            {...item}
+            onDismiss={(id) => void client.notifications.dismiss(id)}
+          />
+        ))}
+        {visibleJobs.map((job) => (
+          <JobCard key={`job:${job.id}`} job={job} client={client} />
+        ))}
+      </div>
+      {count > 1 && (
+        <button
+          type="button"
+          className="notification-stack-toggle"
+          aria-expanded={expanded}
+          onClick={() => setPinned((value) => !value)}
+        >
+          {pendingCount
+            ? `${pendingCount} ${pendingCount === 1 ? "uppgift" : "uppgifter"} pågår eller väntar`
+            : `${count} notiser`}
+          <ChevronDown aria-hidden="true" />
+        </button>
       )}
     </aside>
   );

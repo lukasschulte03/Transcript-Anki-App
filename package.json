@@ -14,7 +14,7 @@
     "test": "vitest run src",
     "test:e2e": "playwright test",
     "test:e2e:legacy": "cross-env LECTIO_FRONTEND=legacy LECTIO_DATA_PROFILE=stability VITE_STABILITY_TEST=true playwright test",
-    "test:e2e:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next VITE_STABILITY_TEST=false VITE_NEXT_E2E=true playwright test e2e/frontend-entrypoints.spec.ts",
+    "test:e2e:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next VITE_STABILITY_TEST=false VITE_NEXT_E2E=true playwright test e2e/frontend-entrypoints.spec.ts e2e/next-readiness.spec.ts",
     "qa:browser": "pnpm lint && pnpm test && pnpm build && pnpm test:e2e",
     "qa:frontends": "pnpm check:boundaries && pnpm check:frontends && pnpm test:e2e:next",
     "qa:lighthouse": "node scripts/lighthouse-qa.mjs",

@@ -23,7 +23,10 @@ import {
   markStartup,
   startStartupPhase,
 } from "../services/startupMetrics";
-import { createDeferredLocalStorage } from "./deferredStorage";
+import {
+  createDeferredLocalStorage,
+  writeStartupPaletteHint,
+} from "./deferredStorage";
 import { STATE_STORAGE_KEY } from "../runtimeProfile";
 import {
   persistedAppState,
@@ -54,7 +57,14 @@ export function onStoreHydrated(listener: () => void) {
   };
 }
 
-function completeStoreHydration(error?: unknown) {
+function completeStoreHydration(state?: AppState, error?: unknown) {
+  try {
+    const paletteId = state?.settings.selectedPaletteId;
+    if (paletteId) writeStartupPaletteHint(STATE_STORAGE_KEY, paletteId);
+    window.dispatchEvent(new Event("lectio:library-hydrated"));
+  } catch {
+    // Startup remains usable when browser storage or custom events are unavailable.
+  }
   storeHydrationComplete = true;
   finishStartupPhase(
     "library-state-hydration",
@@ -171,7 +181,7 @@ export const useAppStore = create<AppState>()(
         recordingQuality: "balanced",
         aiMode: "clipboard",
         aiProvider: "openai",
-        aiModel: "gpt-4.1-mini",
+        aiModel: "gpt-5.4-mini",
         aiBaseUrl: "https://api.openai.com/v1",
         cardGeneration: defaultCardGenerationSettings(),
         transcriptionProvider: "local",
@@ -181,6 +191,8 @@ export const useAppStore = create<AppState>()(
         transcriptionModel: "whisper-1",
         transcriptionBaseUrl: "https://api.openai.com/v1",
         transcriptionPrompt: "",
+        visualAnalysisProvider: "local",
+        visualAnalysisModel: "gpt-5.4-mini",
         localVisualDescriptions: "off",
         ankiUrl: "http://127.0.0.1:8765",
         defaultDeck: "Lectio",
@@ -495,7 +507,7 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: STATE_STORAGE_KEY,
-      version: 18,
+      version: 19,
       storage: createDeferredLocalStorage<PersistedAppState>(),
       partialize: persistedAppState,
       // Native operations cannot survive a process restart. In particular, an
@@ -506,7 +518,7 @@ export const useAppStore = create<AppState>()(
         ...(persistedState as PersistedAppState),
       }),
       onRehydrateStorage: () => (_state, error) =>
-        completeStoreHydration(error),
+        completeStoreHydration(_state, error),
       migrate: (persistedState) => {
         const previous = persistedState as PersistedAppState;
         const legacySettings = previous.settings as Omit<
@@ -516,6 +528,8 @@ export const useAppStore = create<AppState>()(
           aiMode?: string;
           aiProvider?: string;
           transcriptionProvider?: string;
+          visualAnalysisProvider?: string;
+          visualAnalysisModel?: string;
           appearance?: string;
           accentTheme?: string;
           localVisualDescriptions?: string;
@@ -548,6 +562,10 @@ export const useAppStore = create<AppState>()(
             localTranscriptionAcceleration:
               legacySettings.localTranscriptionAcceleration ?? "auto",
             transcriptionPrompt: legacySettings.transcriptionPrompt ?? "",
+            visualAnalysisProvider:
+              legacySettings.visualAnalysisProvider === "api" ? "api" : "local",
+            visualAnalysisModel:
+              legacySettings.visualAnalysisModel?.trim() || "gpt-5.4-mini",
             recordingDeviceId: legacySettings.recordingDeviceId ?? "",
             recordingQuality: ["compact", "balanced", "high"].includes(
               legacySettings.recordingQuality ?? "",

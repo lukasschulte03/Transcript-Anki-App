@@ -3,7 +3,8 @@ import { AppNavigation } from "./AppNavigation";
 import { useAppStore } from "../core/store";
 import { cn } from "../lib/utils";
 
-const NARROW_QUERY = "(max-width: 900px)";
+// Keep in sync with the 1100px compact-navigation rules in index.css.
+const NARROW_QUERY = "(max-width: 1100px)";
 const LibrarySidebar = lazy(() =>
   import("../features/library/LibrarySidebar").then((module) => ({
     default: module.LibrarySidebar,

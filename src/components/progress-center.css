@@ -1,0 +1,297 @@
+.notification-center {
+  position: fixed;
+  z-index: 1000;
+  right: 20px;
+  display: flex;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(64dvh, 560px);
+  flex-direction: column-reverse;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.notification-list {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex-direction: column-reverse;
+  gap: 7px;
+  max-height: 64px;
+  overflow: visible;
+  pointer-events: none;
+  transition: max-height 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.notification-center[data-expanded="true"] .notification-list {
+  max-height: min(58dvh, 500px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 3px;
+  pointer-events: auto;
+  scrollbar-width: thin;
+}
+
+.notification-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto 24px;
+  align-items: start;
+  gap: 9px;
+  width: 100%;
+  min-height: 58px;
+  padding: 11px 10px;
+  border: 1px solid color-mix(in srgb, var(--palette-border) 76%, transparent);
+  border-radius: 12px;
+  color: var(--palette-text);
+  background: color-mix(in srgb, var(--palette-surface) 92%, transparent);
+  box-shadow: 0 10px 28px -14px
+    color-mix(in srgb, var(--palette-text) 35%, transparent);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+  pointer-events: auto;
+  animation: notification-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.notification-center:not([data-expanded="true"])
+  .notification-card:not(:last-child) {
+  display: none;
+}
+
+.notification-center:not([data-expanded="true"]) .notification-list::before,
+.notification-center:not([data-expanded="true"]) .notification-list::after {
+  position: absolute;
+  right: 8px;
+  bottom: -5px;
+  left: 8px;
+  z-index: -1;
+  height: 18px;
+  border: 1px solid color-mix(in srgb, var(--palette-border) 50%, transparent);
+  border-radius: 0 0 10px 10px;
+  background: color-mix(in srgb, var(--palette-surface) 76%, transparent);
+  content: "";
+  pointer-events: none;
+}
+
+.notification-center[data-expanded="true"] .notification-list::before,
+.notification-center[data-expanded="true"] .notification-list::after {
+  display: none;
+}
+
+.notification-center[data-count="1"] .notification-list::before,
+.notification-center[data-count="1"] .notification-list::after {
+  display: none;
+}
+
+.notification-center:not([data-expanded="true"]) .notification-list::after {
+  right: 15px;
+  bottom: -9px;
+  left: 15px;
+  opacity: 0.72;
+}
+
+.notification-icon {
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  color: var(--palette-accent);
+}
+
+.notification-error .notification-icon,
+.notification-job.notification-error .notification-icon {
+  color: var(--palette-danger);
+}
+
+.notification-warning .notification-icon {
+  color: var(--palette-warning);
+}
+
+.notification-success .notification-icon,
+.notification-job.notification-complete .notification-icon {
+  color: var(--palette-success);
+}
+
+.notification-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.notification-copy strong,
+.notification-copy span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notification-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.notification-copy span {
+  color: var(--palette-text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.notification-center[data-expanded="true"] .notification-copy span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.notification-percent {
+  color: var(--palette-text-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.notification-icon-button,
+.notification-stack-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  color: var(--palette-text-muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.notification-icon-button {
+  width: 24px;
+  height: 24px;
+  margin: -4px -3px 0 0;
+  border-radius: 6px;
+  grid-column: 4;
+}
+
+.notification-icon-button:hover,
+.notification-stack-toggle:hover {
+  color: var(--palette-text);
+  background: color-mix(in srgb, var(--palette-surface-hover) 76%, transparent);
+}
+
+.notification-icon-button:focus-visible,
+.notification-stack-toggle:focus-visible {
+  outline: 2px solid var(--palette-focus-ring);
+  outline-offset: 2px;
+}
+
+.notification-icon-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.notification-report-button {
+  grid-column: 2 / -1;
+  justify-self: start;
+  border: 0;
+  padding: 2px 0;
+  color: var(--palette-accent);
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.notification-report-button:hover {
+  text-decoration: underline;
+}
+
+.notification-progress {
+  grid-column: 2 / -1;
+  position: relative;
+  height: 3px;
+  margin-top: 1px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--palette-primary-muted) 52%, transparent);
+}
+
+.notification-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--palette-primary);
+  transition: width 220ms ease-out;
+}
+
+.notification-progress-indeterminate {
+  position: absolute;
+  width: 36%;
+  animation: notification-progress 1.25s ease-in-out infinite alternate;
+}
+
+.notification-stack-toggle {
+  align-self: flex-end;
+  min-height: 28px;
+  gap: 7px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  color: var(--palette-text-muted);
+  font-size: 11px;
+  pointer-events: auto;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+.notification-stack-toggle svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 180ms ease;
+}
+
+.notification-center[data-expanded="true"] .notification-stack-toggle svg {
+  transform: rotate(180deg);
+}
+
+.notification-spin {
+  animation: notification-spin 1.2s linear infinite;
+}
+
+@keyframes notification-enter {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes notification-progress {
+  from {
+    left: 0;
+  }
+  to {
+    left: 64%;
+  }
+}
+
+@keyframes notification-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .notification-spin,
+  .notification-progress-indeterminate {
+    animation: none;
+  }
+  .notification-progress-indeterminate {
+    left: 32%;
+  }
+  .notification-card {
+    animation: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .notification-center {
+    right: 10px;
+    width: calc(100vw - 20px);
+  }
+}

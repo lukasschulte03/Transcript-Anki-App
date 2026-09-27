@@ -1,4 +1,3 @@
-import { Toaster } from "sonner";
 import {
   lazy,
   Suspense,
@@ -9,6 +8,7 @@ import {
 import { hasStoreHydrated, onStoreHydrated, useAppStore } from "./core/store";
 import { AppSidebar } from "./components/AppSidebar";
 import { ProgressCenter } from "./components/ProgressCenter";
+import { lectioClient } from "./infrastructure/lectioClientAdapter";
 import { applyPalette, resolvePalette } from "./core/theme";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { KeyboardShortcutsDialog } from "./components/KeyboardShortcutsDialog";
@@ -120,31 +120,6 @@ function useStoreHydrated() {
   );
 }
 
-function LibraryOperationBlocker() {
-  const operation = useJobStore((state) =>
-    state.jobs.find(
-      (job) =>
-        job.kind === "library" &&
-        job.status === "active" &&
-        ["importing", "exporting", "packing"].includes(job.phase),
-    ),
-  );
-  if (!operation) return null;
-  return (
-    <div className="fixed inset-0 z-40 grid place-items-center bg-[color-mix(in_srgb,var(--palette-background)_88%,transparent)] p-6 backdrop-blur-[1px]">
-      <div className="max-w-sm rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] px-5 py-4 text-center shadow-lg">
-        <p className="text-sm font-semibold text-[var(--palette-text)]">
-          {operation.label}
-        </p>
-        <p className="mt-1 text-xs leading-5 text-[var(--palette-text-muted)]">
-          {operation.detail ??
-            "Biblioteket är tillfälligt låst för att skydda din data."}
-        </p>
-      </div>
-    </div>
-  );
-}
-
 export default function App() {
   const hydrated = useStoreHydrated();
   useEffect(() => markStartup("react-mounted"), []);
@@ -251,14 +226,6 @@ function HydratedApp() {
         );
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        useJobStore
-          .getState()
-          .jobs.some((job) => job.kind === "library" && job.status === "active")
-      ) {
-        event.preventDefault();
-        return;
-      }
       if (document.querySelector("[role='dialog']")) return;
       if (isTextInput(event.target)) return;
       const modifier = event.ctrlKey || event.metaKey;
@@ -362,9 +329,7 @@ function HydratedApp() {
             ) : null}
           </Suspense>
         </div>
-        <Toaster position="bottom-right" richColors closeButton />
-        <LibraryOperationBlocker />
-        <ProgressCenter />
+        <ProgressCenter client={lectioClient} bottomOffset={80} />
         <KeyboardShortcutsDialog
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}

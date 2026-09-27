@@ -11,6 +11,15 @@ type GrainientProps = {
   timeSpeed?: number;
 };
 
+type GrainientRuntime = {
+  renderer: Renderer;
+  program: Program;
+  mesh: Mesh;
+  lastTime: number;
+  updateColors: () => void;
+  render: (time: number) => void;
+};
+
 const vertex = `#version 300 es
 in vec2 position;
 void main() { gl_Position = vec4(position, 0.0, 1.0); }
@@ -58,7 +67,9 @@ void main() {
 
   vec3 lower = mix(uColor3, uColor2, S(-0.34, 0.23, p.x));
   vec3 upper = mix(uColor2, uColor1, S(-0.32, 0.25, p.x));
-  vec3 color = mix(lower, upper, S(0.47, -0.36, p.y));
+  // GLSL requires smoothstep's lower edge first; reversed edges are undefined
+  // and can produce dark/black patches depending on the GPU driver.
+  vec3 color = mix(lower, upper, S(-0.36, 0.47, p.y));
   color = (color - 0.5) * 1.08 + 0.5;
   fragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
 }
@@ -91,6 +102,8 @@ export function Grainient({
   timeSpeed = 0.25,
 }: GrainientProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const runtimeRef = useRef<GrainientRuntime | null>(null);
+  const settingsRef = useRef({ color1, color2, color3, fps, timeSpeed });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -108,16 +121,17 @@ export function Grainient({
       });
       const gl = renderer.gl;
       const geometry = new Triangle(gl);
+      const settings = settingsRef.current;
       program = new Program(gl, {
         vertex,
         fragment,
         uniforms: {
           iTime: { value: 0 },
           iResolution: { value: new Float32Array([1, 1]) },
-          uTimeSpeed: { value: timeSpeed },
-          uColor1: { value: resolveColor(color1, container) },
-          uColor2: { value: resolveColor(color2, container) },
-          uColor3: { value: resolveColor(color3, container) },
+          uTimeSpeed: { value: settings.timeSpeed },
+          uColor1: { value: resolveColor(settings.color1, container) },
+          uColor2: { value: resolveColor(settings.color2, container) },
+          uColor3: { value: resolveColor(settings.color3, container) },
         },
       });
       mesh = new Mesh(gl, { geometry, program });
@@ -131,9 +145,28 @@ export function Grainient({
     container.appendChild(canvas);
     container.dataset.status = "ready";
 
+    const runtime: GrainientRuntime = {
+      renderer,
+      program,
+      mesh,
+      lastTime: performance.now(),
+      updateColors: () => {
+        const next = settingsRef.current;
+        program.uniforms.uColor1.value = resolveColor(next.color1, container);
+        program.uniforms.uColor2.value = resolveColor(next.color2, container);
+        program.uniforms.uColor3.value = resolveColor(next.color3, container);
+      },
+      render: (time) => {
+        const next = settingsRef.current;
+        runtime.lastTime = time;
+        program.uniforms.uTimeSpeed.value = next.timeSpeed;
+        program.uniforms.iTime.value = time * 0.001;
+        renderer.render({ scene: mesh });
+      },
+    };
+    runtimeRef.current = runtime;
     const render = (time: number) => {
-      program.uniforms.iTime.value = time * 0.001;
-      renderer.render({ scene: mesh });
+      runtime.render(time);
     };
     const resize = () => {
       const { width, height } = container.getBoundingClientRect();
@@ -147,14 +180,15 @@ export function Grainient({
     };
 
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const interval = 1000 / Math.max(1, fps);
     let frame = 0;
     let lastPaint = 0;
     let inViewport = true;
 
     const loop = (time: number) => {
-      if (time - lastPaint >= interval) {
-        lastPaint = time - ((time - lastPaint) % interval);
+      const frameInterval =
+        1000 / Math.max(1, settingsRef.current.fps ?? 15);
+      if (time - lastPaint >= frameInterval) {
+        lastPaint = time - ((time - lastPaint) % frameInterval);
         render(time);
       }
       frame = requestAnimationFrame(loop);
@@ -201,7 +235,17 @@ export function Grainient({
       reducedMotion.removeEventListener("change", onMotionChange);
       canvas.removeEventListener("webglcontextlost", onContextLost);
       canvas.remove();
+      if (runtimeRef.current === runtime) runtimeRef.current = null;
     };
+  }, []);
+
+  useEffect(() => {
+    settingsRef.current = { color1, color2, color3, fps, timeSpeed };
+    const runtime = runtimeRef.current;
+    if (runtime) {
+      runtime.updateColors();
+      runtime.render(runtime.lastTime);
+    }
   }, [color1, color2, color3, fps, timeSpeed]);
 
   return (

@@ -1,0 +1,37 @@
+import { expect, test } from "@playwright/test";
+
+test("kurs, modul och ämne visar innehåll och sparar kontext", async ({ page }) => {
+  test.skip(process.env.VITE_NEXT_E2E !== "true", "Körs mot :next.");
+  test.setTimeout(90_000);
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Skapa kurs" }).click();
+  await page.getByRole("textbox", { name: "Namn", exact: true }).fill("Klinisk medicin");
+  await page.getByRole("textbox", { name: "Namn", exact: true }).press("Enter");
+  await expect(page.getByRole("heading", { name: "Klinisk medicin", exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/next-course-overview.png" });
+  await page.getByRole("textbox", { name: "Kontext för Klinisk medicin" }).fill("Medicinska termer och kursmål.");
+  await page.getByRole("button", { name: "Ny modul" }).click();
+  await page.getByRole("textbox", { name: "Namn på ny modul" }).fill("Urologi");
+  await page.getByRole("button", { name: "Skapa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Urologi", exact: true })).toBeVisible();
+  await page.screenshot({ path: "test-results/next-module-overview.png" });
+  await expect(page.getByText("Medicinska termer och kursmål.")).not.toBeVisible();
+  await page.getByText("Ärvt från Klinisk medicin").click();
+  await expect(page.getByText("Medicinska termer och kursmål.")).toBeVisible();
+  await page.setViewportSize({ width: 760, height: 740 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole("button", { name: "Nytt ämne" }).click();
+  await page.getByRole("textbox", { name: "Namn på nytt ämne" }).fill("Prostata");
+  await page.getByRole("button", { name: "Skapa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Prostata", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Urologi" }).first().click();
+  await expect(page.getByRole("button", { name: "Prostata", exact: true })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Urologi", exact: true })).toBeVisible();
+  await page.getByText("Ärvt från Klinisk medicin").click();
+  await expect(page.getByText("Medicinska termer och kursmål.")).toBeVisible();
+  await page.getByRole("button", { name: "Ny föreläsning" }).click();
+  await page.getByRole("textbox", { name: "Namn på ny föreläsning" }).fill("Njurfunktion");
+  await page.getByRole("button", { name: "Skapa", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Njurfunktion", exact: true })).toBeVisible();
+});

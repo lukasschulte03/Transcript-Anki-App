@@ -6,6 +6,7 @@ import {
   Cpu,
   Gauge,
   HardDrive,
+  Image as ImageIcon,
   KeyRound,
   Languages,
   LoaderCircle,
@@ -23,14 +24,20 @@ import {
   WandSparkles,
   Zap,
 } from "lucide-react";
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { Children, isValidElement, useCallback, useEffect, useState, type ReactNode } from "react";
 import type {
   AppSettings,
   LectioClient,
+  LectioResult,
   LocalTranscriptionSetup,
+  ModelCatalogTask,
 } from "../../../application/lectioClient";
 import {
   NextButton,
+  NextIconButton,
+  NextSelect,
+  type NextSelectOption,
   NextSection,
   NextSettingRow,
   NextSurface,
@@ -38,18 +45,24 @@ import {
 import { nextThemePresets } from "../themes";
 
 export type SettingsCategoryId =
-  "appearance" | "audio" | "transcription" | "ai-anki" | "sync";
+  | "general"
+  | "appearance"
+  | "audio"
+  | "transcription"
+  | "image-analysis"
+  | "ai-anki"
+  | "sync";
 
 type Notice = (text: string, error?: boolean) => void;
 
 const aiDefaults = {
-  openai: { model: "gpt-4.1-mini", baseUrl: "https://api.openai.com/v1" },
+  openai: { model: "gpt-5.4-mini", baseUrl: "https://api.openai.com/v1" },
   anthropic: {
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5",
     baseUrl: "https://api.anthropic.com/v1",
   },
   gemini: {
-    model: "gemini-2.5-flash",
+    model: "gemini-3.8-flash",
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
   },
   groq: {
@@ -61,14 +74,6 @@ const aiDefaults = {
   AppSettings["aiProvider"],
   { model: string; baseUrl: string }
 >;
-
-const aiModels: Record<AppSettings["aiProvider"], string[]> = {
-  openai: ["gpt-4.1-mini", "gpt-4.1", "o4-mini"],
-  anthropic: ["claude-haiku-4-5", "claude-sonnet-4-5"],
-  gemini: ["gemini-2.5-flash", "gemini-2.5-pro"],
-  groq: ["openai/gpt-oss-20b", "openai/gpt-oss-120b"],
-  custom: [],
-};
 
 function SelectControl({
   label,
@@ -83,16 +88,95 @@ function SelectControl({
   children: ReactNode;
   disabled?: boolean;
 }) {
+  const options = Children.toArray(children).flatMap((child) => {
+    if (!isValidElement<{ value?: string; disabled?: boolean; children?: ReactNode }>(child) || child.type !== "option") return [];
+    return [{
+      value: child.props.value ?? "",
+      label: typeof child.props.children === "string" ? child.props.children : String(child.props.value ?? ""),
+      disabled: child.props.disabled,
+    }];
+  });
   return (
-    <select
-      className="study-control study-select"
-      aria-label={label}
+    <NextSelect
+      className="study-select"
+      label={label}
       value={value}
       disabled={disabled}
-      onChange={(event) => onChange(event.target.value)}
-    >
-      {children}
-    </select>
+      onChange={onChange}
+      options={options}
+    />
+  );
+}
+
+function ApiModelControl({
+  client,
+  task,
+  providerKey,
+  value,
+  label,
+  onChange,
+}: {
+  client: LectioClient;
+  task: ModelCatalogTask;
+  providerKey: string;
+  value: string;
+  label: string;
+  onChange(value: string): void;
+}) {
+  const [options, setOptions] = useState<NextSelectOption[]>([]);
+  const [source, setSource] = useState<"fallback" | "provider">("fallback");
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(false);
+  const [editingCustom, setEditingCustom] = useState(false);
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    const result = await client.modelCatalog.list(task);
+    setLoading(false);
+    if (!result.ok) {
+      setError(result.error.message);
+      return;
+    }
+    setOptions(result.value.models.map(({ id, label: modelLabel, tier, description }) => ({
+      value: id,
+      label: `${modelLabel}${tier === "recommended" ? " · Rekommenderad" : tier === "budget" ? " · Prisvärd" : tier === "powerful" ? " · Hög kvalitet" : ""}`,
+      description,
+    })));
+    setSource(result.value.source);
+    setError(result.value.error);
+  }, [client, task]);
+  useEffect(() => { void refresh(); }, [refresh, providerKey]);
+  const known = options.some((option) => option.value === value);
+  const selection = known && !editingCustom ? value : "__custom_model__";
+  const selectOptions = [
+    ...(known && !editingCustom ? [] : [{ value: "__custom_model__", label: "Ange modell-ID…" }]),
+    ...options,
+  ];
+  return (
+    <div className="study-model-control">
+      <NextSelect
+        label={label}
+        value={selection}
+        options={selectOptions}
+        onChange={(next) => {
+          if (next === "__custom_model__") setEditingCustom(true);
+          else { setEditingCustom(false); onChange(next); }
+        }}
+      />
+      {(!known || editingCustom) && (
+        <TextControl label={`${label} · Anpassat ID`} value={value} onChange={onChange} placeholder="modell-id" />
+      )}
+      <NextIconButton
+        aria-label={`Uppdatera ${label.toLocaleLowerCase("sv-SE")}`}
+        title="Hämta modellista från vald leverantör"
+        disabled={loading}
+        onClick={() => void refresh()}
+      >
+        <RefreshCw className={loading ? "study-spin" : undefined} />
+      </NextIconButton>
+      <span className="study-model-source" role="status">
+        {error ? "Reservlista" : source === "provider" ? "Ditt konto" : "Förslag"}
+      </span>
+    </div>
   );
 }
 
@@ -102,23 +186,95 @@ function TextControl({
   onChange,
   placeholder,
   type = "text",
+  suggestions,
 }: {
   label: string;
   value: string;
   onChange(value: string): void;
   placeholder?: string;
   type?: "text" | "password" | "url";
+  suggestions?: string[];
 }) {
+  const listId = suggestions?.length
+    ? `suggest-${label.toLocaleLowerCase("sv-SE").replace(/[^a-z0-9]+/g, "-")}`
+    : undefined;
   return (
-    <input
-      className="study-control study-input"
-      aria-label={label}
-      value={value}
-      type={type}
-      placeholder={placeholder}
-      spellCheck={false}
-      onChange={(event) => onChange(event.target.value)}
-    />
+    <>
+      <input
+        className="study-control study-input"
+        aria-label={label}
+        name={label.toLocaleLowerCase("sv-SE").replace(/[^a-z0-9]+/g, "-")}
+        autoComplete="off"
+        value={value}
+        type={type}
+        placeholder={placeholder}
+        list={listId}
+        spellCheck={false}
+        onChange={(event) => onChange(event.target.value)}
+      />
+      {listId && (
+        <datalist id={listId}>
+          {suggestions?.map((suggestion) => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
+      )}
+    </>
+  );
+}
+
+function ConfirmAction({
+  title,
+  description,
+  confirmLabel,
+  triggerLabel,
+  busy,
+  icon,
+  showLabel = true,
+  onConfirm,
+}: {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  triggerLabel: string;
+  busy?: boolean;
+  icon: ReactNode;
+  showLabel?: boolean;
+  onConfirm(): void | Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Dialog.Root open={open} onOpenChange={setOpen}>
+      <Dialog.Trigger asChild>
+        <NextButton tone="quiet" aria-label={triggerLabel} disabled={busy}>
+          {icon}
+          {showLabel && (
+            <span className="study-confirm-trigger-label">{triggerLabel}</span>
+          )}
+        </NextButton>
+      </Dialog.Trigger>
+      <Dialog.Portal>
+        <Dialog.Overlay className="study-settings-overlay" />
+        <Dialog.Content className="study-settings-dialog">
+          <Dialog.Title>{title}</Dialog.Title>
+          <Dialog.Description>{description}</Dialog.Description>
+          <footer>
+            <Dialog.Close asChild>
+              <NextButton>Avbryt</NextButton>
+            </Dialog.Close>
+            <NextButton
+              tone="primary"
+              onClick={() => {
+                setOpen(false);
+                void onConfirm();
+              }}
+            >
+              {confirmLabel}
+            </NextButton>
+          </footer>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
@@ -250,7 +406,12 @@ function CredentialControl({
         onChange={setValue}
       />
       {saved && (
-        <span className="study-status-dot" title="Nyckel sparad">
+        <span
+          className="study-status-dot"
+          title="Nyckel sparad"
+          role="status"
+          aria-label="Nyckel sparad säkert"
+        >
           <Check />
         </span>
       )}
@@ -259,16 +420,57 @@ function CredentialControl({
         Spara
       </NextButton>
       {saved && (
-        <NextButton
-          tone="quiet"
-          aria-label={`Ta bort ${label}`}
-          disabled={busy}
-          onClick={() => void remove()}
-        >
-          <Trash2 />
-        </NextButton>
+        <ConfirmAction
+          title="Ta bort den sparade nyckeln?"
+          description={`${label} tas bort från Windows Credential Manager. Du måste ange den igen för att använda tjänsten.`}
+          confirmLabel="Ta bort nyckeln"
+          triggerLabel={`Ta bort ${label}`}
+          busy={busy}
+          icon={<Trash2 />}
+          showLabel={false}
+          onConfirm={remove}
+        />
       )}
     </div>
+  );
+}
+
+function GeneralPanel({
+  settings,
+  update,
+}: {
+  settings: AppSettings;
+  update: (patch: Partial<AppSettings>) => void;
+}) {
+  return (
+    <>
+      <PanelIntro
+        icon={<Languages />}
+        title="Allmänt"
+        description="Språk och grundläggande val för appen."
+      />
+      <NextSection className="study-settings-group" title="Språk">
+        <NextSettingRow
+          id="language"
+          icon={<Languages />}
+          title="Språk"
+          description="Svenska är appens aktiva språk. Engelsk översättning är inte färdig ännu."
+        >
+          <SelectControl
+            label="Språk i appen"
+            value={settings.locale}
+            onChange={(locale) =>
+              update({ locale: locale as AppSettings["locale"] })
+            }
+          >
+            <option value="sv">Svenska</option>
+            <option value="en" disabled>
+              English · kommer senare
+            </option>
+          </SelectControl>
+        </NextSettingRow>
+      </NextSection>
+    </>
   );
 }
 
@@ -284,29 +486,14 @@ function AppearancePanel({
       <PanelIntro
         icon={<SwatchBook />}
         title="Utseende"
-        description="Ett lugnt gränssnitt som håller fokus på materialet."
+        description="Välj appens färger för både ljust och mörkt läge."
       />
-      <NextSection className="study-settings-group" title="Gränssnitt">
+      <NextSection className="study-settings-group" title="Färgtema">
         <NextSettingRow
-          icon={<Languages />}
-          title="Språk"
-          description="Svenska är komplett. Engelska sparas som förhandsval medan översättningen färdigställs."
-        >
-          <SelectControl
-            label="Språk i appen"
-            value={settings.locale}
-            onChange={(locale) =>
-              update({ locale: locale as AppSettings["locale"] })
-            }
-          >
-            <option value="sv">Svenska</option>
-            <option value="en">English · preview</option>
-          </SelectControl>
-        </NextSettingRow>
-        <NextSettingRow
+          id="color-theme"
           icon={<SwatchBook />}
           title="Färgtema"
-          description="Välj mellan blå eller orange ton, anpassad för ljus eller mörk omgivning."
+          description="Välj en blå eller orange palett, anpassad för ljus eller mörk omgivning."
           stacked
         >
           <div
@@ -394,6 +581,7 @@ function AudioPanel({
       />
       <NextSection className="study-settings-group" title="Inspelning">
         <NextSettingRow
+          id="microphone"
           icon={<Mic />}
           title="Mikrofon"
           description="Standard följer Windows. Ge behörighet för att visa enheternas riktiga namn."
@@ -426,6 +614,7 @@ function AudioPanel({
           </div>
         </NextSettingRow>
         <NextSettingRow
+          id="recording-quality"
           icon={<Gauge />}
           title="Ljudkvalitet"
           description="Balanserad rekommenderas för tydligt tal utan onödigt stora filer."
@@ -464,26 +653,30 @@ function TranscriptionPanel({
   }, [refresh]);
   const runLocal = async (action: "download" | "remove" | "nvidia") => {
     setBusy(true);
-    if (action === "remove") {
-      const result = await client.localTranscription.remove(model);
-      setBusy(false);
+    try {
+      const result =
+        action === "remove"
+          ? await client.localTranscription.remove(model)
+          : action === "download"
+            ? await client.localTranscription.download(model)
+            : await client.localTranscription.installNvidia();
       if (!result.ok) return onNotice(result.error.message, true);
-      await refresh();
-      onNotice("Whisper-modellen togs bort.");
-      return;
+      if (action === "remove") {
+        await refresh();
+        onNotice("Whisper-modellen togs bort.");
+      } else {
+        if (result.value) setSetup(result.value);
+        onNotice(
+          action === "nvidia"
+            ? "NVIDIA-stödet är klart."
+            : "Whisper-modellen är klar.",
+        );
+      }
+    } catch {
+      onNotice("Åtgärden kunde inte slutföras. Försök igen.", true);
+    } finally {
+      setBusy(false);
     }
-    const result =
-      action === "download"
-        ? await client.localTranscription.download(model)
-        : await client.localTranscription.installNvidia();
-    setBusy(false);
-    if (!result.ok) return onNotice(result.error.message, true);
-    setSetup(result.value);
-    onNotice(
-      action === "nvidia"
-        ? "NVIDIA-stödet är klart."
-        : "Whisper-modellen är klar.",
-    );
   };
   const cloud =
     settings.transcriptionProvider === "openai" ||
@@ -498,6 +691,7 @@ function TranscriptionPanel({
       />
       <NextSection className="study-settings-group" title="Metod">
         <NextSettingRow
+          id="transcription-method"
           icon={<AudioLines />}
           title="Transkriptionsmotor"
           description="Valet används av både enskilda föreläsningar och Super Actions."
@@ -513,7 +707,10 @@ function TranscriptionPanel({
             }
             onChange={(value) =>
               update({
-                transcriptionProvider: value === "api" ? "openai" : value,
+              transcriptionProvider: value === "api" ? "openai" : value,
+              ...(value === "api" && settings.transcriptionProvider === "local"
+                ? { transcriptionModel: "gpt-transcribe" }
+                : {}),
               })
             }
             options={[
@@ -527,6 +724,7 @@ function TranscriptionPanel({
       {settings.transcriptionProvider === "local" && (
         <NextSection className="study-settings-group" title="Lokal Whisper">
           <NextSettingRow
+            id="whisper-model"
             icon={<HardDrive />}
             title="Whisper-modell"
             description={
@@ -555,25 +753,34 @@ function TranscriptionPanel({
                 </option>
                 <option value="large-v3">Large v3 · noggrannast</option>
               </SelectControl>
-              <NextButton
-                disabled={busy}
-                tone={setup?.installed ? "quiet" : "primary"}
-                onClick={() =>
-                  void runLocal(setup?.installed ? "remove" : "download")
-                }
-              >
-                {busy ? (
-                  <LoaderCircle className="study-spin" />
-                ) : setup?.installed ? (
-                  <Trash2 />
-                ) : (
-                  <HardDrive />
-                )}
-                {setup?.installed ? "Ta bort" : "Ladda ned"}
-              </NextButton>
+              {setup?.installed ? (
+                <ConfirmAction
+                  title="Ta bort Whisper-modellen?"
+                  description={`${model} tas bort från den här datorn. Modellen kan laddas ned igen senare.`}
+                  confirmLabel="Ta bort modellen"
+                  triggerLabel="Ta bort"
+                  busy={busy}
+                  icon={<Trash2 />}
+                  onConfirm={() => runLocal("remove")}
+                />
+              ) : (
+                <NextButton
+                  disabled={busy}
+                  tone="primary"
+                  onClick={() => void runLocal("download")}
+                >
+                  {busy ? (
+                    <LoaderCircle className="study-spin" />
+                  ) : (
+                    <HardDrive />
+                  )}
+                  Ladda ned
+                </NextButton>
+              )}
             </div>
           </NextSettingRow>
           <NextSettingRow
+            id="transcription-acceleration"
             icon={<Cpu />}
             title="Acceleration"
             description={
@@ -597,6 +804,7 @@ function TranscriptionPanel({
           </NextSettingRow>
           {setup?.nvidiaDetected && !setup.nvidiaRuntimeReady && (
             <NextSettingRow
+              id="nvidia-runtime"
               icon={<Zap />}
               title="NVIDIA-runtime"
               description="Krävs för att Whisper faktiskt ska kunna använda grafikkortet."
@@ -615,6 +823,7 @@ function TranscriptionPanel({
       {cloud && (
         <NextSection className="study-settings-group" title="Moln-API">
           <NextSettingRow
+            id="transcription-provider"
             icon={<Cloud />}
             title="Leverantör"
             description="Ljud skickas bara till den leverantör du väljer."
@@ -628,7 +837,7 @@ function TranscriptionPanel({
                   transcriptionModel:
                     provider === "groq"
                       ? "whisper-large-v3-turbo"
-                      : "whisper-1",
+                      : "gpt-transcribe",
                   transcriptionBaseUrl:
                     provider === "groq"
                       ? "https://api.groq.com/openai/v1"
@@ -641,17 +850,22 @@ function TranscriptionPanel({
             </SelectControl>
           </NextSettingRow>
           <NextSettingRow
+            id="transcription-model"
             icon={<Sparkles />}
             title="Modell"
-            description="Det rekommenderade standardnamnet fungerar utan extra konfiguration."
+            description="Hämta aktuella modeller från leverantören. Nyare GPT-transkribering ger text utan tidsstämplar; Whisper ger segment med tider."
           >
-            <TextControl
+            <ApiModelControl
+              client={client}
+              task="transcription"
+              providerKey={settings.transcriptionProvider}
               label="Transkriptionsmodell"
               value={settings.transcriptionModel}
               onChange={(transcriptionModel) => update({ transcriptionModel })}
             />
           </NextSettingRow>
           <NextSettingRow
+            id="transcription-api-key"
             icon={<KeyRound />}
             title="API-nyckel"
             description="Sparas i Windows Credential Manager och visas aldrig igen."
@@ -669,9 +883,11 @@ function TranscriptionPanel({
         className="study-settings-group"
         title="Medicinskt fraslexikon"
       >
-        <label className="study-textarea-field">
+        <label id="phrase-lexicon" className="study-textarea-field">
           <span>Ord och fraser som Whisper ska känna igen</span>
           <textarea
+            name="transcription-phrase-lexicon"
+            autoComplete="off"
             value={settings.transcriptionPrompt}
             onChange={(event) =>
               update({ transcriptionPrompt: event.target.value })
@@ -688,6 +904,101 @@ function TranscriptionPanel({
   );
 }
 
+function ImageAnalysisPanel({
+  client,
+  settings,
+  update,
+  onNotice,
+}: PanelProps) {
+  return (
+    <>
+      <PanelIntro
+        icon={<ImageIcon />}
+        title="OCR och bildanalys"
+        description="Slidebilder hittas och beskärs lokalt. PaddleOCR läser text på datorn; OpenAI kan komplettera med mer bildtext och en kort beskrivning."
+      />
+      <NextSection className="study-settings-group" title="Metod">
+        <NextSettingRow
+          id="visual-method"
+          icon={
+            settings.visualAnalysisProvider === "api" ? (
+              <Cloud />
+            ) : (
+              <HardDrive />
+            )
+          }
+          title="Kompletterande analys"
+          description={
+            settings.visualAnalysisProvider === "api"
+              ? "Lokal OCR fortsätter. OpenAI får bara beskurna bilder när du väljer Analysera med API; användning kan kosta."
+              : "PaddleOCR läser text lokalt under bildextraheringen. Inget lämnar datorn."
+          }
+        >
+          <Segmented
+            label="Metod för OCR och bildanalys"
+            value={settings.visualAnalysisProvider}
+            onChange={(visualAnalysisProvider) =>
+              update({
+                visualAnalysisProvider: visualAnalysisProvider as
+                  "local" | "api",
+              })
+            }
+            options={[
+              { value: "local", label: "Lokalt" },
+              { value: "api", label: "API" },
+            ]}
+          />
+        </NextSettingRow>
+      </NextSection>
+      {settings.visualAnalysisProvider === "local" ? (
+        <NextSection className="study-settings-group" title="Lokal analys">
+          <NextSettingRow
+            id="paddle-ocr"
+            icon={<ShieldCheck />}
+            title="PaddleOCR"
+            description="Känner igen text i beskurna slidebilder på datorn. Kör bildextraheringen i föreläsningen för att uppdatera OCR-texten."
+          >
+            <span className="study-value-chip">Körs lokalt</span>
+          </NextSettingRow>
+        </NextSection>
+      ) : (
+        <NextSection className="study-settings-group" title="OpenAI API">
+          <NextSettingRow
+            id="visual-model"
+            icon={<Sparkles />}
+            title="Modell"
+            description="Välj en bildkapabel modell. Du kan också skriva ett annat modell-ID från ditt konto."
+          >
+            <ApiModelControl
+              client={client}
+              task="vision"
+              providerKey={settings.visualAnalysisProvider}
+              label="Modell för OCR och bildbeskrivning"
+              value={settings.visualAnalysisModel}
+              onChange={(visualAnalysisModel) =>
+                update({ visualAnalysisModel })
+              }
+            />
+          </NextSettingRow>
+          <NextSettingRow
+            id="visual-api-key"
+            icon={<KeyRound />}
+            title="API-nyckel"
+            description="Sparas en gång i Windows Credential Manager. Används bara när du väljer att analysera bilder."
+          >
+            <CredentialControl
+              client={client}
+              credentialKey="visual:openai"
+              label="OpenAI-nyckel för bildanalys"
+              onNotice={onNotice}
+            />
+          </NextSettingRow>
+        </NextSection>
+      )}
+    </>
+  );
+}
+
 type PanelProps = {
   client: LectioClient;
   settings: AppSettings;
@@ -698,20 +1009,27 @@ type PanelProps = {
 function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
   const [ankiBusy, setAnkiBusy] = useState(false);
   const [decks, setDecks] = useState<string[]>([]);
-  const providerModels = aiModels[settings.aiProvider];
   const aiKey = `ai:${settings.aiProvider}`;
   const test = async () => {
     setAnkiBusy(true);
-    const result = await client.workflows.testAnki();
-    setAnkiBusy(false);
-    if (!result.ok) return onNotice(result.error.message, true);
-    setDecks(result.value.decks);
-    if (
-      !result.value.decks.includes(settings.defaultDeck) &&
-      result.value.decks[0]
-    )
-      update({ defaultDeck: result.value.decks[0] });
-    onNotice(`AnkiConnect svarar · version ${result.value.version}.`);
+    try {
+      const result = await client.workflows.testAnki();
+      if (!result.ok) return onNotice(result.error.message, true);
+      setDecks(result.value.decks);
+      if (
+        !result.value.decks.includes(settings.defaultDeck) &&
+        result.value.decks[0]
+      )
+        update({ defaultDeck: result.value.decks[0] });
+      onNotice(`AnkiConnect svarar · version ${result.value.version}.`);
+    } catch {
+      onNotice(
+        "AnkiConnect kunde inte testas. Kontrollera att Anki är öppet.",
+        true,
+      );
+    } finally {
+      setAnkiBusy(false);
+    }
   };
   return (
     <>
@@ -722,6 +1040,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
       />
       <NextSection className="study-settings-group" title="Kortgenerering">
         <NextSettingRow
+          id="generation-method"
           icon={<WandSparkles />}
           title="Arbetssätt"
           description="Copy/paste använder din befintliga AI-prenumeration. API kör direkt i Lectio."
@@ -737,6 +1056,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
           />
         </NextSettingRow>
         <NextSettingRow
+          id="card-density"
           icon={<Gauge />}
           title="Mängd kort"
           description="AI:n anpassar det exakta antalet efter föreläsningens innehåll."
@@ -757,6 +1077,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
           />
         </NextSettingRow>
         <NextSettingRow
+          id="generation-context"
           icon={<Languages />}
           title="Generella instruktioner"
           description="Gäller alla kurser; mer specifik kontext kan fortfarande läggas i biblioteket."
@@ -764,6 +1085,8 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
           <textarea
             className="study-control study-compact-textarea"
             aria-label="Instruktioner för Anki-kort"
+            name="anki-generation-instructions"
+            autoComplete="off"
             value={settings.userContext}
             onChange={(event) => update({ userContext: event.target.value })}
           />
@@ -772,6 +1095,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
       {settings.aiMode === "api" && (
         <NextSection className="study-settings-group" title="AI-API">
           <NextSettingRow
+            id="ai-provider"
             icon={<Cloud />}
             title="Leverantör"
             description="Material skickas endast när du aktivt startar en generering."
@@ -796,22 +1120,20 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
             </SelectControl>
           </NextSettingRow>
           <NextSettingRow
+            id="ai-model"
             icon={<Sparkles />}
             title="Modell"
             description="Välj ett förslag eller skriv modellnamnet exakt som providern anger."
           >
-            {providerModels.length ? (
-              <SelectControl
+            {settings.aiProvider !== "custom" ? (
+              <ApiModelControl
+                client={client}
+                task="cards"
+                providerKey={settings.aiProvider}
                 label="AI-modell"
                 value={settings.aiModel}
                 onChange={(aiModel) => update({ aiModel })}
-              >
-                {providerModels.map((model) => (
-                  <option key={model} value={model}>
-                    {model}
-                  </option>
-                ))}
-              </SelectControl>
+              />
             ) : (
               <TextControl
                 label="AI-modell"
@@ -823,6 +1145,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
           </NextSettingRow>
           {settings.aiProvider === "custom" && (
             <NextSettingRow
+              id="ai-base-url"
               icon={<PlugZap />}
               title="Basadress"
               description="Adressen till din OpenAI-kompatibla endpoint."
@@ -837,6 +1160,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
             </NextSettingRow>
           )}
           <NextSettingRow
+            id="ai-api-key"
             icon={<KeyRound />}
             title="API-nyckel"
             description="Sparas i Windows Credential Manager, aldrig i biblioteket eller exporten."
@@ -852,6 +1176,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
       )}
       <NextSection className="study-settings-group" title="AnkiConnect">
         <NextSettingRow
+          id="anki-connection"
           icon={<PlugZap />}
           title="Anslutning"
           description="Anki måste vara öppet och tillägget AnkiConnect installerat."
@@ -870,6 +1195,7 @@ function AiAnkiPanel({ client, settings, update, onNotice }: PanelProps) {
           </div>
         </NextSettingRow>
         <NextSettingRow
+          id="anki-deck"
           icon={<HardDrive />}
           title="Huvudkortlek"
           description="Lectio skapar kurs, modul och föreläsning som underkortlekar."
@@ -904,15 +1230,21 @@ function SyncPanel({ client, settings, update, onNotice }: PanelProps) {
   const connected = Boolean(settings.cloudSync.connectedAt);
   const run = async (action: "connect" | "disconnect" | "sync" | "cancel") => {
     setBusy(true);
-    const result =
-      action === "connect"
-        ? await client.workflows.connectGoogleDrive()
-        : action === "disconnect"
-          ? await client.workflows.disconnectGoogleDrive()
-          : action === "cancel"
-            ? await client.workflows.cancelGoogleDriveConnection()
-            : await client.workflows.syncLibrary();
-    setBusy(false);
+    let result: LectioResult<unknown>;
+    try {
+      result =
+        action === "connect"
+          ? await client.workflows.connectGoogleDrive()
+          : action === "disconnect"
+            ? await client.workflows.disconnectGoogleDrive()
+            : action === "cancel"
+              ? await client.workflows.cancelGoogleDriveConnection()
+              : await client.workflows.syncLibrary();
+    } catch {
+      return onNotice("Google Drive-åtgärden misslyckades. Försök igen.", true);
+    } finally {
+      setBusy(false);
+    }
     if (!result.ok) return onNotice(result.error.message, true);
     onNotice(
       action === "connect"
@@ -933,6 +1265,7 @@ function SyncPanel({ client, settings, update, onNotice }: PanelProps) {
       />
       <NextSection className="study-settings-group" title="Google Drive">
         <NextSettingRow
+          id="drive-account"
           icon={<Cloud />}
           title="Konto"
           description={
@@ -952,14 +1285,15 @@ function SyncPanel({ client, settings, update, onNotice }: PanelProps) {
                   <RefreshCw />
                   Synka nu
                 </NextButton>
-                <NextButton
-                  tone="quiet"
-                  disabled={busy}
-                  onClick={() => void run("disconnect")}
-                >
-                  <Unplug />
-                  Koppla bort
-                </NextButton>
+                <ConfirmAction
+                  title="Koppla bort Google Drive?"
+                  description="Den lokala datan finns kvar, men Lectio slutar synka tills du ansluter kontot igen."
+                  confirmLabel="Koppla bort"
+                  triggerLabel="Koppla bort"
+                  busy={busy}
+                  icon={<Unplug />}
+                  onConfirm={() => run("disconnect")}
+                />
               </>
             ) : (
               <>
@@ -981,6 +1315,7 @@ function SyncPanel({ client, settings, update, onNotice }: PanelProps) {
           </div>
         </NextSettingRow>
         <NextSettingRow
+          id="drive-folder"
           icon={<HardDrive />}
           title="Mapp i Drive"
           description="Tomt värde använder Lectio i roten. Inbox skapas automatiskt inuti mappen."
@@ -995,6 +1330,7 @@ function SyncPanel({ client, settings, update, onNotice }: PanelProps) {
           />
         </NextSettingRow>
         <NextSettingRow
+          id="auto-sync"
           icon={<RefreshCw />}
           title="Synka vid start och stängning"
           description="Lectio väntar tills synken är klar innan appen stängs."
@@ -1034,6 +1370,8 @@ export function SettingsPanel({
   category,
   ...props
 }: PanelProps & { category: SettingsCategoryId }) {
+  if (category === "general")
+    return <GeneralPanel settings={props.settings} update={props.update} />;
   if (category === "appearance")
     return <AppearancePanel settings={props.settings} update={props.update} />;
   if (category === "audio")
@@ -1045,6 +1383,7 @@ export function SettingsPanel({
       />
     );
   if (category === "transcription") return <TranscriptionPanel {...props} />;
+  if (category === "image-analysis") return <ImageAnalysisPanel {...props} />;
   if (category === "ai-anki") return <AiAnkiPanel {...props} />;
   return <SyncPanel {...props} />;
 }

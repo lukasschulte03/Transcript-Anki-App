@@ -1,5 +1,6 @@
 import type {
   AppSettings,
+  BackgroundJob,
   CapabilitySnapshot,
   LectioClient,
   LectioError,
@@ -7,6 +8,7 @@ import type {
   LectioEvent,
   LectioResult,
   LibrarySnapshot,
+  ModelCatalogTask,
   SessionSnapshot,
 } from "../application/lectioClient";
 import { useJobStore } from "./jobStore";
@@ -15,6 +17,79 @@ import { DATA_PROFILE, FRONTEND_VARIANT } from "../runtimeProfile";
 import { isTauri } from "../services/platform";
 
 const listeners = new Set<(event: LectioEvent) => void>();
+let stopBatchJobTracking: (() => void) | undefined;
+let batchJobTrackingPromise: Promise<void> | undefined;
+const dismissedBatchJobIds = new Set<string>();
+const activeTrackedJobIds = new Set<string>();
+
+async function trackBatchJobs() {
+  if (stopBatchJobTracking) return;
+  if (batchJobTrackingPromise) return batchJobTrackingPromise;
+  batchJobTrackingPromise = (async () => {
+    const { subscribeBatchJobs } = await import("../services/batchActions");
+    stopBatchJobTracking = subscribeBatchJobs((batchJobs) => {
+      const knownIds = new Set(batchJobs.map((job) => job.id));
+      for (const id of dismissedBatchJobIds)
+        if (!knownIds.has(id)) dismissedBatchJobIds.delete(id);
+      for (const job of batchJobs) {
+        if (job.status === "running" || job.status === "waiting")
+          dismissedBatchJobIds.delete(job.id);
+        if (dismissedBatchJobIds.has(job.id)) continue;
+        const status: BackgroundJob["status"] =
+          job.status === "running"
+            ? "active"
+            : job.status === "waiting"
+              ? "queued"
+              : job.status;
+        useJobStore.getState().upsertJob({
+          id: job.id,
+          kind: job.action === "transcribe" ? "transcription" : "anki",
+          label: `${
+            job.action === "transcribe"
+              ? "Transkriberar"
+              : job.action === "generate"
+                ? "Skapar Anki-kort"
+                : job.action === "approve"
+                  ? "Godkänner Anki-kort"
+                  : "Synkar Anki-kort"
+          } · ${job.lectureTitle}`,
+          phase: job.status,
+          status,
+          current: job.current ?? (status === "complete" ? 1 : 0),
+          total: job.total,
+          detail: job.detail,
+          cancellable: status === "active" || status === "queued",
+          startedAt: job.createdAt,
+        });
+      }
+    });
+  })().finally(() => {
+    batchJobTrackingPromise = undefined;
+  });
+  return batchJobTrackingPromise;
+}
+
+function installProgressBridge() {
+  if (typeof window === "undefined") return;
+  const upsert = (
+    payload: Omit<BackgroundJob, "startedAt" | "updatedAt"> & {
+      startedAt?: string;
+    },
+  ) => useJobStore.getState().upsertJob(payload);
+  window.addEventListener("lectio:stability-progress", (event) => {
+    if (event instanceof CustomEvent)
+      upsert(event.detail as Parameters<typeof upsert>[0]);
+  });
+  if (isTauri()) {
+    void import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<Parameters<typeof upsert>[0]>("lectio:progress", (event) =>
+        upsert(event.payload),
+      ),
+    );
+  }
+}
+
+installProgressBridge();
 
 function publish(event: LectioEvent) {
   listeners.forEach((listener) => listener(event));
@@ -103,6 +178,65 @@ async function asyncCommand<T>(
     return { ok: true, value: await work() };
   } catch (error) {
     return { ok: false, error: report(error, fallback) };
+  }
+}
+
+async function trackProgress<T>(
+  kind: BackgroundJob["kind"],
+  label: string,
+  phase: string,
+  work: (
+    reportProgress: (progress: {
+      completed: number;
+      total?: number;
+      detail: string;
+    }) => void,
+  ) => Promise<T>,
+  id = `tracked:${kind}:${crypto.randomUUID()}`,
+): Promise<T> {
+  if (activeTrackedJobIds.has(id))
+    throw new Error("Den här uppgiften körs redan.");
+  activeTrackedJobIds.add(id);
+  // Reusing a stable task id should begin a fresh visible lifecycle.
+  useJobStore.getState().dismissJob(id);
+  const update = (
+    patch: Partial<
+      Pick<BackgroundJob, "phase" | "status" | "current" | "total" | "detail">
+    >,
+  ) =>
+    useJobStore.getState().upsertJob({
+      id,
+      kind,
+      label,
+      phase,
+      status: "active",
+      current: 0,
+      cancellable: false,
+      ...patch,
+    });
+  update({ phase, detail: "Förbereder…" });
+  try {
+    const result = await work(({ completed, total, detail }) =>
+      update({ current: completed, total, detail }),
+    );
+    const latest = useJobStore.getState().jobs.find((job) => job.id === id);
+    update({
+      phase: "complete",
+      status: "complete",
+      current: latest?.total ?? latest?.current ?? 1,
+      total: latest?.total ?? 1,
+      detail: "Klart",
+    });
+    return result;
+  } catch (error) {
+    update({
+      phase: "error",
+      status: "error",
+      detail: error instanceof Error ? error.message : String(error),
+    });
+    throw error;
+  } finally {
+    activeTrackedJobIds.delete(id);
   }
 }
 
@@ -272,6 +406,36 @@ export const lectioClient: LectioClient = {
         });
         return id;
       }, "Ljudfilen kunde inte importeras."),
+    removeAudio: (lectureId, assetId) =>
+      asyncCommand(async () => {
+        const { db } = await import("../core/database");
+        const lecture = libraryRepository.getState().lectures[lectureId];
+        if (!lecture) throw new Error("Föreläsningen kunde inte hittas");
+        const previous = lecture.audioParts?.length
+          ? lecture.audioParts
+          : lecture.audioAssetId
+            ? [
+                {
+                  assetId: lecture.audioAssetId,
+                  name: lecture.audioName ?? "Ljud",
+                  duration: lecture.audioDuration,
+                },
+              ]
+            : [];
+        if (!previous.some((part) => part.assetId === assetId))
+          throw new Error("Ljudfilen kunde inte hittas");
+        const audioParts = previous.filter((part) => part.assetId !== assetId);
+        await db.assets.delete(assetId);
+        libraryRepository.getState().updateLecture(lectureId, {
+          audioAssetId: audioParts[0]?.assetId,
+          audioName: audioParts[0]?.name,
+          audioDuration: audioParts.reduce(
+            (total, part) => total + (part.duration ?? 0),
+            0,
+          ),
+          audioParts,
+        });
+      }, "Ljudfilen kunde inte tas bort."),
     importSlides: (lectureId, input) =>
       asyncCommand(async () => {
         const [{ db }, { uid }] = await Promise.all([
@@ -296,6 +460,7 @@ export const lectioClient: LectioClient = {
         >[1] = {
           slideAssetId: id,
           slideName: input.name,
+          slidePageSplits: undefined,
           slideText: undefined,
           slidePages: undefined,
           visualIndex: undefined,
@@ -315,6 +480,234 @@ export const lectioClient: LectioClient = {
         libraryRepository.getState().updateLecture(lectureId, patch);
         return id;
       }, "Slides kunde inte importeras."),
+  },
+  visuals: {
+    indexLecture: (lectureId, progress) =>
+      asyncCommand(async () => {
+        const lecture = libraryRepository.getState().lectures[lectureId];
+        if (!lecture?.slideAssetId) throw new Error("Lägg till slides först.");
+        const title =
+          libraryRepository
+            .getState()
+            .nodes.find((node) => node.id === lectureId)?.title ??
+          "föreläsningen";
+        return trackProgress(
+          "vision",
+          `Extraherar bilder · ${title}`,
+          "extracting",
+          async (reportProgress) => {
+            const { buildStoredSlideVisualIndex } =
+              await import("../services/visualIndex");
+            const indexed = await buildStoredSlideVisualIndex(
+              lecture,
+              (current, total, detail) => {
+                const update = { completed: current, total, detail };
+                progress?.(update);
+                reportProgress(update);
+              },
+            );
+            if (!indexed) throw new Error("Slides kunde inte analyseras.");
+            const deleted = new Set(lecture.deletedVisualIds ?? []);
+            const existingVision = new Map(
+              (lecture.visualIndex ?? []).map((item) => [
+                item.id,
+                item.localVision,
+              ]),
+            );
+            const existingAnalysis = new Map(
+              (lecture.visualIndex ?? []).map((item) => [
+                item.id,
+                item.visualAnalysis,
+              ]),
+            );
+            const candidates = indexed.candidates
+              .filter((item) => !deleted.has(item.id))
+              .map((item) => ({
+                ...item,
+                localVision: existingVision.get(item.id),
+                visualAnalysis: existingAnalysis.get(item.id),
+              }));
+            if (candidates.length || !lecture.visualIndex?.length) {
+              libraryRepository.getState().updateLecture(lectureId, {
+                visualIndex: candidates,
+                visualIndexHash: indexed.sourceHash,
+                visualIndexVersion: 2,
+                visualIndexUpdatedAt: new Date().toISOString(),
+              });
+            }
+            return candidates.length;
+          },
+          `visual-index:${lectureId}`,
+        );
+      }, "Slidebilderna kunde inte extraheras."),
+    describeLecture: (lectureId, progress) =>
+      asyncCommand(async () => {
+        const { settings } = libraryRepository.getState();
+        if (settings.visualAnalysisProvider !== "api")
+          throw new Error("Välj API som bildanalysmetod i inställningarna.");
+        const apiKey = await (
+          await import("../services/credentials")
+        ).readCredential("visual:openai");
+        if (!apiKey)
+          throw new Error(
+            "Spara en OpenAI-nyckel under Inställningar → Bildanalys först.",
+          );
+        const lecture = libraryRepository.getState().lectures[lectureId];
+        const candidates = lecture?.visualIndex ?? [];
+        if (!lecture || !candidates.length)
+          throw new Error(
+            "Extrahera bilder från slides innan du beskriver dem.",
+          );
+        const title =
+          libraryRepository
+            .getState()
+            .nodes.find((node) => node.id === lectureId)?.title ??
+          "föreläsningen";
+        return trackProgress(
+          "vision",
+          `Beskriver bilder · ${title}`,
+          "analyzing",
+          async (reportProgress) => {
+            const { analyzeVisualCrop } =
+              await import("../services/apiVisualAnalysis");
+            const { resolveVisualDescriptionImage } =
+              await import("../services/visualIndex");
+            const pending = candidates.filter(
+              (candidate) =>
+                candidate.visualAnalysis?.provider !== "openai" ||
+                candidate.visualAnalysis.model !==
+                  settings.visualAnalysisModel ||
+                candidate.visualAnalysis.sourceHash !== candidate.sourceHash,
+            );
+            let completed = 0;
+            for (const candidate of pending) {
+              progress?.({
+                completed,
+                total: pending.length,
+                detail: `Skickar bildutklipp ${completed + 1} av ${pending.length} till OpenAI…`,
+              });
+              reportProgress({
+                completed,
+                total: pending.length,
+                detail: `Skickar bildutklipp ${completed + 1} av ${pending.length} till OpenAI…`,
+              });
+              const currentLecture =
+                libraryRepository.getState().lectures[lectureId];
+              const currentCandidate = currentLecture?.visualIndex?.find(
+                (item) => item.id === candidate.id,
+              );
+              if (!currentLecture || !currentCandidate) continue;
+              const image = await resolveVisualDescriptionImage(
+                currentCandidate,
+                currentLecture,
+              );
+              if (!image)
+                throw new Error(
+                  `Bildutklipp från slide ${candidate.slidePage} kunde inte öppnas.`,
+                );
+              const result = await analyzeVisualCrop(image, {
+                apiKey,
+                model: settings.visualAnalysisModel,
+                localOcrText: currentCandidate.cropText,
+              });
+              const latest = libraryRepository.getState().lectures[lectureId];
+              if (latest?.visualIndex) {
+                libraryRepository.getState().updateLecture(lectureId, {
+                  visualIndex: latest.visualIndex.map((item) =>
+                    item.id === candidate.id
+                      ? {
+                          ...item,
+                          visualAnalysis: {
+                            ...result,
+                            provider: "openai",
+                            model: settings.visualAnalysisModel,
+                            generatedAt: new Date().toISOString(),
+                            sourceHash: item.sourceHash,
+                          },
+                        }
+                      : item,
+                  ),
+                });
+              }
+              completed += 1;
+              progress?.({
+                completed,
+                total: pending.length,
+                detail: `Bildutklipp ${completed} av ${pending.length} klart.`,
+              });
+              reportProgress({
+                completed,
+                total: pending.length,
+                detail: `Bildutklipp ${completed} av ${pending.length} klart.`,
+              });
+            }
+            return completed;
+          },
+          `visual-describe:${lectureId}`,
+        );
+      }, "Bilderna kunde inte analyseras med OpenAI."),
+    thumbnail: (lectureId, visualId) =>
+      asyncCommand(async () => {
+        const lecture = libraryRepository.getState().lectures[lectureId];
+        const candidate = lecture?.visualIndex?.find(
+          (item) => item.id === visualId,
+        );
+        if (!lecture || !candidate)
+          throw new Error("Bilden kunde inte hittas.");
+        const { resolveVisualThumbnail } =
+          await import("../services/visualIndex");
+        const blob = await resolveVisualThumbnail(candidate, lecture);
+        if (!blob) throw new Error("Förhandsvisningen kunde inte skapas.");
+        return blob;
+      }, "Bilden kunde inte öppnas."),
+    remove: (lectureId, visualId) =>
+      asyncCommand(async () => {
+        const { db } = await import("../core/database");
+        const lecture = libraryRepository.getState().lectures[lectureId];
+        if (!lecture) throw new Error("Föreläsningen kunde inte hittas");
+        const candidate = lecture.visualIndex?.find(
+          (item) => item.id === visualId,
+        );
+        await db.visualThumbnails.where("visualId").equals(visualId).delete();
+        if (candidate?.assetId && candidate.assetId !== lecture.slideAssetId)
+          await db.assets.delete(candidate.assetId);
+        libraryRepository.getState().updateLecture(lectureId, {
+          visualIndex: (lecture.visualIndex ?? []).filter(
+            (item) => item.id !== visualId,
+          ),
+          deletedVisualIds: [
+            ...new Set([...(lecture.deletedVisualIds ?? []), visualId]),
+          ],
+        });
+      }, "Bilden kunde inte tas bort."),
+  },
+  inbox: {
+    list: () =>
+      asyncCommand(async () => {
+        const { listGoogleDriveInbox } =
+          await import("../services/googleDriveInbox");
+        return listGoogleDriveInbox();
+      }, "Google Drive-inkorgen kunde inte läsas."),
+    import: (files, lectureId, progress) =>
+      asyncCommand(async () => {
+        const { importGoogleDriveInboxFiles } =
+          await import("../services/googleDriveInbox");
+        const title =
+          libraryRepository
+            .getState()
+            .nodes.find((node) => node.id === lectureId)?.title ??
+          "föreläsningen";
+        return trackProgress(
+          "library",
+          `Importerar ljud till ${title}`,
+          "importing",
+          async (reportProgress) =>
+            importGoogleDriveInboxFiles(files, lectureId, (value) => {
+              progress?.(value);
+              reportProgress(value);
+            }),
+        );
+      }, "Ljudfilerna kunde inte importeras från Google Drive."),
   },
   recordings: {
     start: (lectureId, mimeType) =>
@@ -398,6 +791,38 @@ export const lectioClient: LectioClient = {
         const { deleteCredential } = await import("../services/credentials");
         await deleteCredential(key);
       }, "API-nyckeln kunde inte tas bort."),
+  },
+  modelCatalog: {
+    list: (task: ModelCatalogTask) =>
+      asyncCommand(async () => {
+        const settings = libraryRepository.getState().settings;
+        const { fetchProviderModelOptions } =
+          await import("../services/modelCatalog");
+        const { readCredential } = await import("../services/credentials");
+        let provider: "openai" | "anthropic" | "gemini" | "groq" | "custom";
+        let credentialKey: string;
+        let baseUrl: string;
+        if (task === "cards") {
+          provider = settings.aiProvider;
+          credentialKey = `ai:${provider}`;
+          baseUrl = settings.aiBaseUrl;
+        } else if (task === "transcription") {
+          if (
+            settings.transcriptionProvider !== "openai" &&
+            settings.transcriptionProvider !== "groq"
+          )
+            throw new Error("Välj en API-leverantör först.");
+          provider = settings.transcriptionProvider;
+          credentialKey = `transcription:${provider}`;
+          baseUrl = settings.transcriptionBaseUrl;
+        } else {
+          provider = "openai";
+          credentialKey = "visual:openai";
+          baseUrl = "https://api.openai.com/v1";
+        }
+        const apiKey = await readCredential(credentialKey);
+        return fetchProviderModelOptions(provider, apiKey, baseUrl, task);
+      }, "Modellförslagen kunde inte hämtas."),
   },
   localTranscription: {
     status: (model) =>
@@ -526,33 +951,101 @@ export const lectioClient: LectioClient = {
       useJobStore.subscribe((state, previous) => {
         if (state.jobs !== previous.jobs) listener(state.jobs);
       }),
+    upsert: (job) =>
+      command(
+        () => useJobStore.getState().upsertJob(job),
+        "Jobbstatusen kunde inte uppdateras.",
+      ),
     cancel: async (id) =>
       asyncCommand(async () => {
-        const { cancelBatchJob } = await import("../services/batchActions");
-        const { cancelLocalTranscription } =
-          await import("../services/localStt");
-        await Promise.allSettled([
-          cancelBatchJob(id),
-          cancelLocalTranscription(id),
-        ]);
+        const job = useJobStore.getState().jobs.find((item) => item.id === id);
+        if (!job) return;
+        if (job.cancellable === false)
+          throw new Error("Den här uppgiften kan inte avbrytas här.");
+        if (job.kind === "transcription" || job.kind === "anki") {
+          const [
+            { cancelBatchJob },
+            { cancelActiveTranscription, cancelQueuedTranscription },
+            { cancelLocalTranscription },
+          ] = await Promise.all([
+            import("../services/batchActions"),
+            import("../services/transcriptionQueue"),
+            import("../services/localStt"),
+          ]);
+          cancelQueuedTranscription(id);
+          cancelActiveTranscription(id);
+          await Promise.allSettled([
+            cancelBatchJob(id),
+            cancelLocalTranscription(id),
+          ]);
+        } else if (job.kind === "vision") {
+          const { cancelActiveVision, cancelQueuedVision } =
+            await import("../services/visualDescriptionQueue");
+          cancelQueuedVision(id);
+          cancelActiveVision(id);
+        } else if (job.kind === "download") {
+          const { cancelDownload } = await import("../services/localStt");
+          await cancelDownload(id);
+        } else if (job.kind === "library") {
+          const { cancelQueuedSlideIndex } =
+            await import("../services/slideIndexQueue");
+          cancelQueuedSlideIndex(id);
+        }
       }, "Jobbet kunde inte avbrytas."),
     dismiss: (id) =>
+      command(() => {
+        if (id.startsWith("batch:")) dismissedBatchJobIds.add(id);
+        useJobStore.getState().dismissJob(id);
+      }, "Jobbet kunde inte döljas."),
+  },
+  notifications: {
+    getSnapshot: () => useJobStore.getState().notifications,
+    subscribe: (listener) =>
+      useJobStore.subscribe((state, previous) => {
+        if (state.notifications !== previous.notifications)
+          listener(state.notifications);
+      }),
+    push: (notification) =>
+      command(() => {
+        const id = notification.id ?? crypto.randomUUID();
+        useJobStore.getState().pushNotification({ ...notification, id });
+        return id;
+      }, "Notisen kunde inte visas."),
+    dismiss: (id) =>
       command(
-        () => useJobStore.getState().dismissJob(id),
-        "Jobbet kunde inte döljas.",
+        () => useJobStore.getState().dismissNotification(id),
+        "Notisen kunde inte stängas.",
       ),
   },
   workflows: {
     exportLibrary: (progress) =>
       asyncCommand(async () => {
         const { exportLibrary } = await import("../services/libraryTransfer");
-        await exportLibrary(progress);
+        await trackProgress(
+          "library",
+          "Exporterar bibliotek",
+          "exporting",
+          async (reportProgress) =>
+            exportLibrary((value) => {
+              progress?.(value);
+              reportProgress(value);
+            }),
+        );
       }, "Biblioteket kunde inte exporteras."),
     importLibraryFile: (file, name, progress) =>
       asyncCommand(async () => {
         const { importLibraryFile } =
           await import("../services/libraryTransfer");
-        await importLibraryFile(file, name, progress);
+        await trackProgress(
+          "library",
+          `Importerar ${name}`,
+          "importing",
+          async (reportProgress) =>
+            importLibraryFile(file, name, (value) => {
+              progress?.(value);
+              reportProgress(value);
+            }),
+        );
       }, "Biblioteket kunde inte importeras."),
     listBackups: () =>
       asyncCommand(async () => {
@@ -574,6 +1067,7 @@ export const lectioClient: LectioClient = {
           return node?.type === "lecture" ? [{ id, title: node.title }] : [];
         });
         if (!lectures.length) throw new Error("Inga föreläsningar hittades");
+        await trackBatchJobs();
         const { enqueueBatch } = await import("../services/batchActions");
         return enqueueBatch(action, lectures, overwrite).map((job) => job.id);
       }, "Åtgärderna kunde inte läggas i kö."),

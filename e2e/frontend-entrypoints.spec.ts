@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Locator } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 
 const nextMode = process.env.VITE_NEXT_E2E === "true";
@@ -40,11 +40,78 @@ function lectureTestPdf() {
   return Buffer.from(pdf);
 }
 
+test("startskärmen använder sparad palett och tonar över till arbetsytan", async ({
+  page,
+}) => {
+  test.skip(!nextMode, "Körs av test:e2e:next.");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.addInitScript(() =>
+    localStorage.setItem("lectio-startup-palette:next", "blue-light"),
+  );
+  await page.goto("/");
+  await expect(page.locator('[data-frontend="next"]')).toBeVisible({
+    timeout: 3_000,
+  });
+  await expect(page.locator("#lectio-startup")).toBeHidden();
+  await expect(page.locator(".study-shell")).toHaveCSS("opacity", "1");
+  await expect(page.locator("html")).toHaveAttribute(
+    "data-lectio-startup-palette",
+    "blue-light",
+  );
+
+  await page.evaluate(() => {
+    const key = "lectio-state-v1:next";
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}");
+    const now = new Date().toISOString();
+    stored.state = {
+      ...stored.state,
+      nodes: [
+        {
+          id: "large-course",
+          parentId: null,
+          type: "course",
+          title: "Stort prestandatest",
+          context: "",
+          settings: {},
+          createdAt: now,
+        },
+        {
+          id: "large-lecture",
+          parentId: "large-course",
+          type: "lecture",
+          title: "Långt transkript",
+          context: "",
+          settings: {},
+          createdAt: now,
+        },
+      ],
+      lectures: { "large-lecture": { lectureId: "large-lecture", notes: "" } },
+      segments: Array.from({ length: 5_000 }, (_, index) => ({
+        id: `large-segment-${index}`,
+        lectureId: "large-lecture",
+        start: index * 5,
+        end: index * 5 + 5,
+        text: `Klinisk föreläsningstext ${index}`,
+      })),
+      cards: [],
+      markers: [],
+      activeView: "dashboard",
+    };
+    localStorage.setItem(key, JSON.stringify(stored));
+  });
+  const hydrationStartedAt = Date.now();
+  await page.reload();
+  await expect(
+    page.locator(".overview-metrics article").nth(2).locator("strong"),
+  ).toHaveText("1", { timeout: 3_000 });
+  expect(Date.now() - hydrationStartedAt).toBeLessThan(3_000);
+});
+
 test("föreläsningsvyn importerar material, sparar och spelar utan slidekoppling", async ({
   page,
 }) => {
   test.skip(!nextMode, "Körs av test:e2e:next.");
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("console", (message) => {
@@ -117,23 +184,16 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
           id: "s2",
           lectureId: "l",
           start: 20,
-          end: 50,
+          end: 21,
           text: "Titta först på helheten. När vi följer vätskans väg genom nefronet blir det lättare att sätta in de enskilda transportprocesserna i ett sammanhang.",
         },
-        {
-          id: "s3",
+        ...Array.from({ length: 18 }, (_, index) => ({
+          id: `s${index + 3}`,
           lectureId: "l",
-          start: 50,
-          end: 85,
-          text: "En bra repetitionsfråga är: vad händer om en av processerna förändras? Försök resonera om följderna innan du läser svaret.",
-        },
-        {
-          id: "s4",
-          lectureId: "l",
-          start: 85,
-          end: 100,
-          text: "Slidesen sammanfattar begreppen. I anteckningarna kan du samla frågor du vill återkomma till efter föreläsningen.",
-        },
+          start: 21 + index,
+          end: 22 + index,
+          text: `Fortsatt syntetiskt transkriptsegment ${index + 3} för scrollföljning.`,
+        })),
       ],
       cards: [
         {
@@ -189,6 +249,148 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await expect(
     page.getByRole("region", { name: "Text på PDF-sida 1" }),
   ).toContainText("Njurfunktion");
+  await page.keyboard.press("PageDown");
+  await expect(page.locator("canvas.lecture-pdf-page")).toHaveAttribute(
+    "aria-label",
+    "Slides, sida 2 av 2",
+  );
+  await page.keyboard.press("Home");
+  await expect(page.locator("canvas.lecture-pdf-page")).toHaveAttribute(
+    "aria-label",
+    "Slides, sida 1 av 2",
+  );
+  await page.getByRole("button", { name: /^Bilder/ }).click();
+  const imagesDialog = page.getByRole("dialog", { name: "Slidebilder" });
+  await expect(imagesDialog.getByText("Inga bilder extraherade")).toBeVisible();
+  await expect(imagesDialog.getByText("Extraherar bilder")).toHaveCount(0);
+  const imageDialogSurface = await imagesDialog.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      borderRadius: style.borderRadius,
+      backgroundColor: style.backgroundColor,
+      textAlign: style.textAlign,
+    };
+  });
+  expect(imageDialogSurface).toEqual({
+    borderRadius: "8px",
+    backgroundColor: "rgba(255, 255, 255, 0.94)",
+    textAlign: "left",
+  });
+  await imagesDialog.getByRole("button", { name: "Stäng" }).click();
+  await page.getByRole("button", { name: "Dela sammansatta slides" }).click();
+  const splitDialog = page.getByRole("dialog");
+  await expect(splitDialog).toBeVisible();
+  await expect(
+    splitDialog.getByText("Välj rutnät för att visa beskärningen"),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      splitDialog.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return {
+          borderRadius: style.borderRadius,
+          backgroundColor: style.backgroundColor,
+          textAlign: style.textAlign,
+        };
+      }),
+    )
+    .toEqual(imageDialogSurface);
+  const splitButton = splitDialog.getByRole("button", {
+    name: "Dela alla sidor",
+  });
+  await expect(splitButton).toBeDisabled();
+  await splitDialog
+    .getByRole("button", { name: "2 rader, 2 kolumner" })
+    .click();
+  await expect(
+    splitDialog.getByText(/Alla PDF-sidor delas i 4 delar/),
+  ).toBeVisible();
+  const originalFirstRegionStyle = await splitDialog
+    .getByRole("button", { name: "Ta bort del 1" })
+    .getAttribute("style");
+  await splitDialog
+    .getByRole("button", { name: "2 rader, 1 kolumn" })
+    .click();
+  const standardTwoByOne = await splitDialog
+    .getByRole("button", { name: "Ta bort del 1" })
+    .evaluate((element) => {
+      const first = element as HTMLButtonElement;
+      const second = first.parentElement?.querySelectorAll("button")[1];
+      const geometry = (button: HTMLButtonElement) => ({
+        left: button.style.left,
+        top: button.style.top,
+        width: button.style.width,
+        height: button.style.height,
+      });
+      return second
+        ? [geometry(first), geometry(second as HTMLButtonElement)]
+        : [];
+    });
+  expect(standardTwoByOne).toEqual([
+    { left: "0%", top: "0%", width: "100%", height: "50%" },
+    { left: "0%", top: "50%", width: "100%", height: "50%" },
+  ]);
+  const fittedButton = splitDialog.getByRole("button", {
+    name: "Anpassa till innehåll",
+  });
+  if (await fittedButton.isEnabled()) {
+    await fittedButton.click();
+    await splitDialog
+      .getByRole("button", { name: "Standardbeskärning" })
+      .click();
+    const restoredGeometry = await splitDialog
+      .getByRole("button", { name: "Ta bort del 1" })
+      .evaluate((element) => {
+        const first = element as HTMLButtonElement;
+        const second = first.parentElement?.querySelectorAll("button")[1];
+        return second
+          ? [first.style.top, (second as HTMLButtonElement).style.top]
+          : [];
+      });
+    expect(restoredGeometry).toEqual(["0%", "50%"]);
+  }
+  await splitDialog
+    .getByRole("button", { name: "1 rader, 2 kolumner" })
+    .click();
+  await splitDialog
+    .getByRole("button", { name: "2 rader, 2 kolumner" })
+    .click();
+  await expect(
+    splitDialog.getByRole("button", { name: "Ta bort del 1" }),
+  ).toHaveAttribute("style", originalFirstRegionStyle ?? "");
+  await splitDialog.getByRole("button", { name: "Ta bort del 4" }).click();
+  await expect(
+    splitDialog.getByText(/Alla PDF-sidor delas i 3 delar/),
+  ).toBeVisible();
+  await splitDialog.getByRole("button", { name: "Ta med del 4" }).click();
+  await splitDialog
+    .getByRole("button", { name: "1 rader, 2 kolumner" })
+    .click();
+  await expect(
+    splitDialog.getByText("Alla PDF-sidor delas i 2 delar"),
+  ).toBeVisible();
+  await expect(splitButton).toBeEnabled();
+  await splitButton.click();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("1 / 4");
+  await page.reload();
+  await expect(
+    page.getByRole("heading", {
+      name: "Njurfunktion och vätskebalans",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("1 / 4");
+  await page.getByLabel("Nästa sida", { exact: true }).click();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("2 / 4");
+  await page.getByLabel("Nästa sida", { exact: true }).click();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("3 / 4");
+  await page.getByLabel("Föregående sida", { exact: true }).click();
+  await page.getByLabel("Föregående sida", { exact: true }).click();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("1 / 4");
+  await page
+    .getByRole("button", { name: "Återställ alla", exact: true })
+    .click();
+  await expect(page.locator(".lecture-pdf-tools")).toContainText("1 / 2");
   const pdfCanvas = page.locator("canvas.lecture-pdf-page");
   const readPdfMetrics = () =>
     pdfCanvas.evaluate((element) => {
@@ -224,10 +426,10 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await page.getByLabel("Nästa sida", { exact: true }).click();
   await expect(page.locator("canvas.lecture-pdf-page")).toHaveAttribute(
     "aria-label",
-    "Slides, sida 2",
+    "Slides, sida 2 av 2",
   );
   await page.getByLabel("Föregående sida", { exact: true }).click();
-  const wav = Buffer.alloc(44 + 32000 * 2);
+  const wav = Buffer.alloc(44 + 16000 * 40 * 2);
   wav.write("RIFF");
   wav.writeUInt32LE(wav.length - 8, 4);
   wav.write("WAVEfmt ", 8);
@@ -248,15 +450,60 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await expect(
     page.getByRole("button", { name: "Spela", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Spela", exact: true }).click();
+  const timeline = page.getByRole("slider", { name: "Ljudposition" });
+  await timeline.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect
+    .poll(() => page.locator("audio").evaluate((audio) => audio.currentTime))
+    .toBeGreaterThan(9.5);
+  await page.keyboard.press("Shift+ArrowLeft");
+  await expect
+    .poll(() => page.locator("audio").evaluate((audio) => audio.currentTime))
+    .toBeLessThan(0.2);
+  await page.keyboard.press("Space");
   await expect(page.locator("audio")).toHaveJSProperty("paused", false);
-  await page.getByRole("button", { name: "Pausa", exact: true }).click();
+  await expect(page.locator("#lecture-transcript-s1")).toHaveAttribute(
+    "data-audio-active",
+    "true",
+  );
+  await page.keyboard.press("Space");
+  await expect(page.locator("audio")).toHaveJSProperty("paused", true);
+  const activeTranscriptRow = page.locator("#lecture-transcript-s7");
+  await page.locator("audio").evaluate((audio: HTMLAudioElement) => {
+    audio.currentTime = 25;
+    audio.dispatchEvent(new Event("timeupdate"));
+  });
+  await expect(activeTranscriptRow).toHaveAttribute("data-audio-active", "true");
+  const distanceFromTranscriptCenter = () =>
+    activeTranscriptRow.evaluate((row) => {
+      const container = row.closest(".lecture-transcript-scroll")!;
+      const rowRect = row.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      return Math.abs(
+        rowRect.top + rowRect.height / 2 -
+          (containerRect.top + container.clientHeight / 2),
+      );
+    });
+  await expect.poll(distanceFromTranscriptCenter).toBeLessThan(32);
+  const transcriptScroll = page.locator(".lecture-transcript-scroll");
+  await transcriptScroll.hover();
+  await page.mouse.wheel(0, 380);
+  const resumeFollowing = page.getByRole("button", {
+    name: "Återuppta följning av transkriptet",
+  });
+  await expect(resumeFollowing).toBeVisible();
+  await expect.poll(distanceFromTranscriptCenter).toBeGreaterThan(80);
+  await resumeFollowing.click();
+  await expect.poll(distanceFromTranscriptCenter).toBeLessThan(32);
   await page.getByRole("tab", { name: "Anteckningar", exact: true }).click();
   await page
     .getByRole("textbox", { name: "Anteckningar", exact: true })
     .fill("Repetera kopplingen mellan filtration och återupptag.");
   await expect(page.getByText("Sparat lokalt", { exact: true })).toBeVisible();
-  await page.getByRole("tab", { name: "Transkript", exact: true }).click();
+  await page.keyboard.press("Control+f");
+  await expect(
+    page.getByRole("searchbox", { name: "Sök i transkriptet" }),
+  ).toBeFocused();
   await page
     .getByRole("searchbox", { name: "Sök i transkriptet" })
     .fill("helheten");
@@ -269,21 +516,26 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await page.getByRole("searchbox").click();
   await expect(page.locator(".lecture-transcript-row")).toHaveCount(1);
   await page.getByRole("searchbox").fill("");
-  await page.getByRole("button", { name: /Anki-kort/ }).click();
+  await page.getByRole("heading", {
+    name: "Njurfunktion och vätskebalans",
+    exact: true,
+  }).click();
+  await page.keyboard.press("Control+Enter");
+  await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Godkänn alla", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "Godkänt", exact: true }),
-  ).toBeDisabled();
+  await expect(page.getByRole("button", { name: /godkänt/i })).toBeDisabled();
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Stäng", exact: true })
     .click();
-  await page.getByRole("button", { name: "Spela in", exact: true }).click();
+  await page.keyboard.press("r");
+  await expect(page.getByText("Spelar in", { exact: true })).toBeVisible();
+  await page.keyboard.press("p");
+  await expect(page.getByText("Pausad", { exact: true })).toBeVisible();
+  await page.keyboard.press("p");
   await expect(page.getByText("Spelar in", { exact: true })).toBeVisible();
   await page.waitForTimeout(3200); // Exercise at least one durable MediaRecorder chunk, using a fake microphone.
-  await page
-    .getByRole("button", { name: "Stoppa och spara", exact: true })
-    .click();
+  await page.keyboard.press("r");
   await expect(
     page.getByRole("button", { name: "Spela in", exact: true }),
   ).toBeEnabled();
@@ -326,7 +578,7 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
     .evaluate((dialog) => {
       const root = getComputedStyle(document.documentElement);
       const probe = document.createElement("span");
-      probe.style.color = root.getPropertyValue("--arc-raised").trim();
+      probe.style.color = root.getPropertyValue("--arc-overlay-strong").trim();
       document.body.append(probe);
       const expected = getComputedStyle(probe).color;
       probe.remove();
@@ -363,6 +615,29 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await expect(
     page.getByRole("textbox", { name: "Anteckningar", exact: true }),
   ).toHaveValue("Repetera kopplingen mellan filtration och återupptag.");
+  const persistedLectureData = await page.evaluate(() => {
+    const state = JSON.parse(
+      localStorage.getItem("lectio-state-v1:next") ?? "{}",
+    ).state;
+    return {
+      audioNames: state.lectures.l.audioParts?.map(
+        (part: { name: string }) => part.name,
+      ),
+      transcriptCount: state.segments.filter(
+        (segment: { lectureId: string }) => segment.lectureId === "l",
+      ).length,
+      approvedCard: state.cards.find(
+        (card: { id: string }) => card.id === "card1",
+      )?.status,
+      notes: state.lectures.l.notes,
+    };
+  });
+  expect(persistedLectureData.audioNames).toContain("Föreläsning – del 1.wav");
+  expect(persistedLectureData.transcriptCount).toBe(20);
+  expect(persistedLectureData.approvedCard).toBe("approved");
+  expect(persistedLectureData.notes).toBe(
+    "Repetera kopplingen mellan filtration och återupptag.",
+  );
   expect(errors).toEqual([]);
 });
 
@@ -385,9 +660,11 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
     )
     .not.toBeNull();
   for (const category of [
+    "Allmänt",
     "Utseende",
     "Ljud och inspelning",
     "Transkribering",
+    "OCR och bildanalys",
     "AI och Anki",
     "Synk och anslutningar",
   ]) {
@@ -398,11 +675,31 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
   }
   await page.getByRole("button", { name: "Utseende", exact: true }).click();
   await expect(page.getByRole("radio")).toHaveCount(4);
+  const hasAmbientCanvas = await page.evaluate(() => {
+    const canvas = document.querySelector(
+      ".study-grainient canvas",
+    ) as HTMLCanvasElement | null;
+    if (canvas)
+      (
+        window as Window & { __lectioInitialAmbient?: HTMLCanvasElement }
+      ).__lectioInitialAmbient = canvas;
+    return Boolean(canvas);
+  });
   await page.getByRole("radio", { name: /Glöd/ }).click();
-  await expect(page.locator(".study-shell")).toHaveAttribute(
+  await expect(page.locator(".study-canvas")).toHaveAttribute(
     "data-tone",
     "dark",
   );
+  if (hasAmbientCanvas) {
+    expect(
+      await page.evaluate(
+        () =>
+          (window as Window & { __lectioInitialAmbient?: HTMLCanvasElement })
+            .__lectioInitialAmbient ===
+          document.querySelector(".study-grainient canvas"),
+      ),
+    ).toBe(true);
+  }
   await expect(page.locator(".study-sidebar")).toHaveCSS(
     "color",
     "rgb(255, 255, 255)",
@@ -416,9 +713,14 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
       ),
     )
     .toBe("orange-dark");
+  await expect
+    .poll(() =>
+      page.evaluate(() => localStorage.getItem("lectio-startup-palette:next")),
+    )
+    .toBe("orange-dark");
   await page.screenshot({ path: "test-results/next-settings-themes-dark.png" });
   await page.getByRole("radio", { name: /Himmel/ }).click();
-  await expect(page.locator(".study-shell")).toHaveAttribute(
+  await expect(page.locator(".study-canvas")).toHaveAttribute(
     "data-tone",
     "light",
   );
@@ -437,9 +739,36 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
     page.getByRole("button", { name: "20", exact: true }),
   ).toHaveAttribute("aria-pressed", "true");
   const search = page.getByRole("searchbox", { name: "Sök inställningar" });
+  await search.fill("grafikkort");
+  const accelerationResult = page.getByRole("button", {
+    name: /Acceleration Transkribering/,
+  });
+  await expect(accelerationResult).toBeVisible();
+  await accelerationResult.click();
+  await expect(
+    page.getByRole("heading", { name: "Transkribering", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator("#transcription-acceleration")).toBeVisible();
+  await search.fill("transkibering");
+  const transcriptionResult = page.getByRole("button", {
+    name: /Transkriptionsmotor Transkribering/,
+  });
+  await expect(transcriptionResult).toBeVisible();
+  await transcriptionResult.click();
+  await expect(page.locator("#transcription-method")).toBeVisible();
+  await search.fill("openai key");
+  const aiKeyResult = page
+    .locator("#study-settings-search-results")
+    .getByRole("button", { name: /API-nyckel för AI/ });
+  await expect(aiKeyResult).toBeVisible();
+  await aiKeyResult.click();
+  await expect(page.locator("#generation-method")).toBeVisible();
   await search.fill("zzzz");
   await expect(page.getByText("Inga matchande inställningar")).toBeVisible();
   await search.fill("");
+  await page
+    .getByRole("button", { name: "Bibliotek och data", exact: true })
+    .click();
   const before = await page.evaluate(
     () => JSON.parse(localStorage.getItem("lectio-state-v1:next")!).state,
   );
@@ -625,6 +954,28 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   page,
 }) => {
   test.skip(!nextMode, "Körs av test:e2e:next.");
+  test.setTimeout(90_000);
+  const dragWithPointer = async (
+    source: Locator,
+    target: Locator,
+    targetPosition = { x: 16, y: 14 },
+  ) => {
+    const sourceBox = await source.boundingBox();
+    const targetBox = await target.boundingBox();
+    expect(sourceBox).not.toBeNull();
+    expect(targetBox).not.toBeNull();
+    const startX = sourceBox!.x + sourceBox!.width / 2;
+    const startY = sourceBox!.y + sourceBox!.height / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + 8, startY + 4, { steps: 2 });
+    await page.mouse.move(
+      targetBox!.x + targetPosition.x,
+      targetBox!.y + targetPosition.y,
+      { steps: 12 },
+    );
+    await page.mouse.up();
+  };
   const errors: string[] = [];
   const settle = () =>
     page.evaluate(async () => {
@@ -682,13 +1033,83 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   const destination = page.locator(".study-tree-row").filter({
     has: page.getByRole("button", { name: "Akutmedicin", exact: true }),
   });
-  await lecture.dragTo(destination);
+  const clinicalCourse = page.locator(".study-tree-row").filter({
+    has: page.getByRole("button", {
+      name: "Klinisk medicin",
+      exact: true,
+    }),
+  });
+  await dragWithPointer(lecture, destination);
   await expect(
     destination.locator("..").getByRole("button", {
       name: "Prostatacancer – diagnostik och behandling",
       exact: true,
     }),
   ).toBeVisible();
+  await expect(page.locator(".study-sidebar-notice")).toContainText(
+    "flyttades till Akutmedicin",
+  );
+  await dragWithPointer(lecture, clinicalCourse);
+  // A course is not a valid direct parent for a lecture. Verify the tree is
+  // unchanged instead of relying on a transient notice from the pointer drag.
+  await expect(
+    destination.locator("..").getByRole("button", {
+      name: "Prostatacancer – diagnostik och behandling",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "Alternativ för Prostatacancer – diagnostik och behandling",
+      exact: true,
+    })
+    .focus();
+  await page.keyboard.press("Enter");
+  await page.getByRole("menuitem", { name: "Flytta till" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await page
+    .getByRole("menuitem", { name: "Urologi", exact: true })
+    .press("Enter");
+  await expect(
+    page
+      .locator(".study-tree-row")
+      .filter({
+        has: page.getByRole("button", { name: "Urologi", exact: true }),
+      })
+      .locator("..")
+      .getByRole("button", {
+        name: "Prostatacancer – diagnostik och behandling",
+        exact: true,
+      }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: "Alternativ för Urologi",
+      exact: true,
+    })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Ny föreläsning", exact: true })
+    .click();
+  await name.fill("Urologisk diagnostik");
+  await name.press("Enter");
+  const urologyLecture = page.getByRole("button", {
+    name: "Urologisk diagnostik",
+    exact: true,
+  });
+  await dragWithPointer(lecture, urologyLecture.locator(".."), {
+    x: 12,
+    y: 2,
+  });
+  await expect(page.locator(".study-sidebar-notice")).toContainText(
+    "placerades före Urologisk diagnostik",
+  );
+  const urologySiblingOrder = await page
+    .locator('.study-tree-row[data-depth="2"] .study-tree-select span')
+    .allTextContents();
+  expect(
+    urologySiblingOrder.indexOf("Prostatacancer – diagnostik och behandling"),
+  ).toBeLessThan(urologySiblingOrder.indexOf("Urologisk diagnostik"));
   await lecture.click();
   await page
     .getByRole("button", { name: "Sök i biblioteket", exact: true })
@@ -700,6 +1121,59 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   await page
     .getByRole("textbox", { name: "Sök i biblioteket" })
     .press("Escape");
+
+  // Cross-parent movement works for modules too, not only leaf lectures.
+  await page.getByRole("button", { name: "Skapa kurs", exact: true }).click();
+  await name.fill("Kardiologi");
+  await name.press("Enter");
+  await page
+    .getByRole("button", { name: "Alternativ för Kardiologi", exact: true })
+    .click();
+  await page.getByRole("menuitem", { name: "Ny modul", exact: true }).click();
+  await name.fill("Hjärtsjukdomar");
+  await name.press("Enter");
+  const cardiology = page.locator(".study-tree-row").filter({
+    has: page.getByRole("button", { name: "Kardiologi", exact: true }),
+  });
+  await dragWithPointer(
+    page
+      .locator(".study-sidebar")
+      .getByRole("button", { name: "Kardiologi", exact: true }),
+    clinicalCourse,
+    { x: 12, y: 2 },
+  );
+  const courseOrder = await page
+    .locator('.study-tree-row[data-depth="0"] .study-tree-select span')
+    .allTextContents();
+  expect(courseOrder.indexOf("Kardiologi")).toBeLessThan(
+    courseOrder.indexOf("Klinisk medicin"),
+  );
+  const urologyModule = page
+    .locator(".study-sidebar")
+    .getByRole("button", { name: "Urologi", exact: true });
+  await dragWithPointer(urologyModule, cardiology);
+  await expect(
+    cardiology
+      .locator("..")
+      .getByRole("button", { name: "Urologi", exact: true }),
+  ).toBeVisible();
+  await expect(page.locator(".study-sidebar-notice")).toContainText(
+    "flyttades till Kardiologi",
+  );
+  await dragWithPointer(
+    urologyModule,
+    page.locator(".study-tree-row").filter({
+      has: page.getByRole("button", { name: "Hjärtsjukdomar", exact: true }),
+    }),
+    { x: 12, y: 2 },
+  );
+  const moduleOrder = await page
+    .locator('.study-tree-row[data-depth="1"] .study-tree-select span')
+    .allTextContents();
+  expect(moduleOrder.indexOf("Urologi")).toBeLessThan(
+    moduleOrder.indexOf("Hjärtsjukdomar"),
+  );
+
   await page
     .getByRole("button", { name: "Dölj sidofält", exact: true })
     .focus();
@@ -711,6 +1185,18 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   await expect(
     page.getByRole("button", { name: "Inkorg", exact: true }),
   ).toHaveAttribute("aria-current", "page");
+  await expect(
+    page.getByRole("heading", {
+      name: "Koppla din Google Drive-inkorg",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: "Öppna synkinställningar",
+      exact: true,
+    }),
+  ).toBeVisible();
   const inboxButton = page.getByRole("button", {
     name: "Inkorg",
     exact: true,
@@ -743,10 +1229,23 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   await page.screenshot({ path: "test-results/next-sidebar-collapsed.png" });
   await page.keyboard.press("Control+b");
   await expect(page.locator(".study-sidebar")).toHaveCSS("width", "272px");
+  await page.keyboard.press("Control+1");
+  await expect(
+    page.getByRole("heading", { name: "Dina studier", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Control+5");
+  await expect(
+    page.getByRole("heading", { name: "Superåtgärder", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Välj alla", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "Starta transkribering nu", exact: true }),
+  ).toBeEnabled();
+  await lecture.click();
   await settle();
   await page.screenshot({ path: "test-results/next-sidebar-desktop.png" });
   await page.setViewportSize({ width: 860, height: 600 });
-  await expect(page.locator(".study-sidebar")).toHaveCSS("width", "272px");
+  await expect(page.locator(".study-sidebar")).toHaveCSS("width", "232px");
   await settle();
   await page.screenshot({ path: "test-results/next-sidebar-narrow.png" });
   expect(
@@ -754,8 +1253,41 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  await page.emulateMedia({ colorScheme: "dark" });
+  await page.setViewportSize({ width: 760, height: 680 });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.evaluate(() => {
+    const key = "lectio-state-v1:next";
+    const stored = JSON.parse(localStorage.getItem(key)!);
+    stored.state.settings.selectedPaletteId = "blue-dark";
+    localStorage.setItem(key, JSON.stringify(stored));
+  });
+  await page.reload();
+  await expect(page.locator(".study-shell")).toHaveAttribute(
+    "data-theme",
+    "blue-dark",
+  );
+  await expect(page.locator(".study-shell")).toHaveAttribute(
+    "data-tone",
+    "dark",
+  );
+  const darkPaletteBridge = await page
+    .locator(".study-shell")
+    .evaluate((shell) => {
+      const style = getComputedStyle(shell);
+      return {
+        softSurface: style.getPropertyValue("--arc-soft").trim(),
+        dangerForeground: style
+          .getPropertyValue("--palette-danger-foreground")
+          .trim(),
+      };
+    });
+  expect(darkPaletteBridge.softSurface).not.toBe("");
+  expect(darkPaletteBridge.dangerForeground).not.toBe("");
   await settle();
   await page.screenshot({ path: "test-results/next-sidebar-dark.png" });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -764,11 +1296,97 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   await page.getByRole("button", { name: "Bibliotek", exact: true }).click();
   await expect(
     page.locator(".study-library-flyout .study-tree-branch").first(),
-  ).toHaveCSS("transition-duration", "0s");
+  ).toHaveCSS("transition-property", "opacity");
+  await expect(
+    page.locator(".study-library-flyout .study-tree-branch").first(),
+  ).toHaveCSS("transition-duration", "0.08s");
   await expect(
     page.locator(".study-library-flyout .next-tree-row-selected"),
   ).not.toHaveCSS("box-shadow", "none");
   await settle();
   await page.screenshot({ path: "test-results/next-sidebar-flyout.png" });
   expect(errors).toEqual([]);
+});
+
+test("kollapsad sidebar har en jämn biblioteksknapp och vänsterställd popup", async ({
+  page,
+}) => {
+  test.skip(!nextMode, "Körs av test:e2e:next.");
+  await page.goto("/");
+  await expect(page.locator('[data-frontend="next"]')).toBeVisible();
+  await page
+    .getByRole("button", { name: "Dölj sidofält", exact: true })
+    .click();
+  await expect(page.locator(".study-sidebar")).toHaveCSS("width", "68px");
+
+  const destinations = page.locator(".study-destinations .study-destination");
+  const lastDestination = await destinations.last().boundingBox();
+  const libraryButton = page.getByRole("button", {
+    name: "Bibliotek",
+    exact: true,
+  });
+  const libraryBox = await libraryButton.boundingBox();
+  const sidebarBox = await page.locator(".study-sidebar").boundingBox();
+  const navigationBox = await page.locator(".study-destinations").boundingBox();
+  const footerBox = await page.locator(".study-sidebar-footer").boundingBox();
+  expect(lastDestination).not.toBeNull();
+  expect(libraryBox).not.toBeNull();
+  expect(sidebarBox).not.toBeNull();
+  expect(navigationBox).not.toBeNull();
+  expect(footerBox).not.toBeNull();
+  expect(libraryBox!.width).toBeCloseTo(lastDestination!.width, 1);
+  expect(libraryBox!.height).toBeCloseTo(lastDestination!.height, 1);
+  const gapCenter = (navigationBox!.y + navigationBox!.height + footerBox!.y) / 2;
+  expect(
+    Math.abs(libraryBox!.y + libraryBox!.height / 2 - gapCenter),
+  ).toBeLessThan(3);
+  expect(
+    Math.abs(
+      libraryBox!.x + libraryBox!.width / 2 -
+        (sidebarBox!.x + sidebarBox!.width / 2),
+    ),
+  ).toBeLessThan(1);
+  await expect(page.locator(".study-rail-library button button")).toHaveCount(
+    0,
+  );
+
+  await libraryButton.click();
+  await expect(page.locator(".study-library-flyout")).toBeVisible();
+  await expect(page.locator(".study-library-flyout")).toHaveCSS(
+    "text-align",
+    "left",
+  );
+  await expect(page.locator(".study-library-flyout")).toHaveCSS(
+    "border-radius",
+    "8px",
+  );
+  await page.keyboard.press("Escape");
+  await page.evaluate(() =>
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "?", bubbles: true }),
+    ),
+  );
+  const shortcuts = page.locator(".study-help");
+  await expect(shortcuts).toBeVisible();
+  await expect(shortcuts).toHaveCSS("text-align", "left");
+  await expect(shortcuts).toHaveCSS("border-radius", "8px");
+  await expect(shortcuts).toContainText("Mellanslag");
+  await expect(shortcuts).toContainText("Ctrl + Enter");
+  await expect(shortcuts).toContainText("Page Up / Down");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Control+4");
+  await expect(page.locator(".study-canvas")).toHaveAttribute(
+    "data-view",
+    "inbox",
+  );
+  await page.keyboard.press("Control+5");
+  await expect(page.locator(".study-canvas")).toHaveAttribute(
+    "data-view",
+    "super-actions",
+  );
+  await page.keyboard.press("Control+1");
+  await expect(page.locator(".study-canvas")).toHaveAttribute(
+    "data-view",
+    "dashboard",
+  );
 });

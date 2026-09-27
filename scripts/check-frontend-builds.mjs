@@ -5,6 +5,10 @@ import process from "node:process";
 
 const workspace = process.cwd();
 const outputRoot = path.join(workspace, "test-results", "frontend-builds");
+const profileByVariant = {
+  legacy: "main",
+  next: "next",
+};
 
 async function javascript(directory) {
   const entries = await readdir(directory, { withFileTypes: true });
@@ -36,7 +40,7 @@ function build(variant) {
       env: {
         ...process.env,
         LECTIO_FRONTEND: variant,
-        LECTIO_DATA_PROFILE: variant === "next" ? "next" : "main",
+        LECTIO_DATA_PROFILE: profileByVariant[variant],
       },
       encoding: "utf8",
       windowsHide: true,

@@ -1,5 +1,6 @@
 import {
   defaultCardGenerationSettings,
+  type AppNotification,
   type AppSettings,
   type BackgroundJob,
   type LibraryNode,
@@ -44,6 +45,8 @@ const emptySettings = (): AppSettings => ({
   transcriptionModel: "whisper-1",
   transcriptionBaseUrl: "https://api.openai.com/v1",
   transcriptionPrompt: "",
+  visualAnalysisProvider: "local",
+  visualAnalysisModel: "gpt-4.1-mini",
   localVisualDescriptions: "off",
   ankiUrl: "http://127.0.0.1:8765",
   defaultDeck: "Lectio",
@@ -90,12 +93,14 @@ export function createInMemoryLectioClient(): LectioClient {
   };
   let settings = emptySettings();
   let jobs: BackgroundJob[] = [];
+  let notifications: AppNotification[] = [];
   const credentials = new Set<string>();
   const installedModels = new Set<AppSettings["localTranscriptionModel"]>();
   const libraryListeners = new Set<(value: LibrarySnapshot) => void>();
   const sessionListeners = new Set<(value: SessionSnapshot) => void>();
   const settingsListeners = new Set<(value: AppSettings) => void>();
   const jobListeners = new Set<(value: BackgroundJob[]) => void>();
+  const notificationListeners = new Set<(value: AppNotification[]) => void>();
   const eventListeners = new Set<(event: LectioEvent) => void>();
   const publishLibrary = () => {
     libraryListeners.forEach((listener) => listener(library));
@@ -251,11 +256,151 @@ export function createInMemoryLectioClient(): LectioClient {
               ...(library.lectures[lectureId] ?? { lectureId, notes: "" }),
               slideAssetId: id,
               slideName: input.name,
+              slidePageSplits: undefined,
+              slidePages: undefined,
+              slideText: undefined,
             },
           },
         };
         publishLibrary();
         return ok(id);
+      },
+      async removeAudio(lectureId, assetId) {
+        const lecture = library.lectures[lectureId];
+        if (!lecture) return notFound();
+        const previous = lecture.audioParts?.length
+          ? lecture.audioParts
+          : lecture.audioAssetId
+            ? [
+                {
+                  assetId: lecture.audioAssetId,
+                  name: lecture.audioName ?? "Ljud",
+                  duration: lecture.audioDuration,
+                },
+              ]
+            : [];
+        const audioParts = previous.filter((part) => part.assetId !== assetId);
+        assets.delete(assetId);
+        library = {
+          ...library,
+          lectures: {
+            ...library.lectures,
+            [lectureId]: {
+              ...lecture,
+              audioAssetId: audioParts[0]?.assetId,
+              audioName: audioParts[0]?.name,
+              audioDuration: audioParts.reduce(
+                (sum, part) => sum + (part.duration ?? 0),
+                0,
+              ),
+              audioParts,
+            },
+          },
+        };
+        publishLibrary();
+        return ok(undefined);
+      },
+    },
+    visuals: {
+      async indexLecture(lectureId, progress) {
+        const lecture = library.lectures[lectureId];
+        if (!lecture?.slideAssetId) return notFound();
+        progress?.({ completed: 1, total: 1, detail: "Slide 1 analyserad." });
+        const visualIndex = [
+          {
+            id: `memory-visual-${lectureId}`,
+            slidePage: 1,
+            description: "Bild från slide 1",
+            keywords: [],
+            sourceHash: lecture.slideAssetId,
+          },
+        ];
+        library = {
+          ...library,
+          lectures: {
+            ...library.lectures,
+            [lectureId]: { ...lecture, visualIndex },
+          },
+        };
+        publishLibrary();
+        return ok(visualIndex.length);
+      },
+      async describeLecture(lectureId, progress) {
+        const lecture = library.lectures[lectureId];
+        if (!lecture?.visualIndex?.length) return ok(0);
+        progress?.({
+          completed: lecture.visualIndex.length,
+          total: lecture.visualIndex.length,
+          detail: "Bilder analyserade.",
+        });
+        return ok(lecture.visualIndex.length);
+      },
+      async thumbnail(lectureId, visualId) {
+        const lecture = library.lectures[lectureId];
+        if (!lecture?.visualIndex?.some((item) => item.id === visualId))
+          return notFound();
+        return ok(new Blob([], { type: "image/png" }));
+      },
+      async remove(lectureId, visualId) {
+        const lecture = library.lectures[lectureId];
+        if (!lecture) return notFound();
+        library = {
+          ...library,
+          lectures: {
+            ...library.lectures,
+            [lectureId]: {
+              ...lecture,
+              visualIndex: (lecture.visualIndex ?? []).filter(
+                (item) => item.id !== visualId,
+              ),
+              deletedVisualIds: [
+                ...new Set([...(lecture.deletedVisualIds ?? []), visualId]),
+              ],
+            },
+          },
+        };
+        publishLibrary();
+        return ok(undefined);
+      },
+    },
+    inbox: {
+      async list() {
+        return ok([]);
+      },
+      async import(files, lectureId, progress) {
+        if (!library.nodes.some((node) => node.id === lectureId)) {
+          return notFound();
+        }
+        const lecture = library.lectures[lectureId];
+        const imported = files.map((file, index) => {
+          const assetId = `memory-inbox-${++sequence}`;
+          assets.set(assetId, new Blob([], { type: file.mimeType }));
+          progress?.({
+            completed: index + 1,
+            total: files.length,
+            detail: `${file.name} är sparad`,
+          });
+          return { assetId, name: file.name };
+        });
+        const audioParts = [...(lecture?.audioParts ?? []), ...imported];
+        library = {
+          ...library,
+          lectures: {
+            ...library.lectures,
+            [lectureId]: {
+              ...(lecture ?? { lectureId, notes: "" }),
+              audioAssetId: audioParts[0]?.assetId,
+              audioName: audioParts[0]?.name,
+              audioParts,
+            },
+          },
+        };
+        publishLibrary();
+        return ok({
+          imported: files.length,
+          lectureId,
+          remoteMoveFailed: false,
+        });
       },
     },
     recordings: {
@@ -358,6 +503,50 @@ export function createInMemoryLectioClient(): LectioClient {
       async remove(key) {
         credentials.delete(key);
         return ok(undefined);
+      },
+    },
+    modelCatalog: {
+      async list(task) {
+        const models =
+          task === "transcription"
+            ? [
+                {
+                  id: "gpt-transcribe",
+                  label: "GPT-Transcribe",
+                  tier: "recommended" as const,
+                },
+                {
+                  id: "whisper-1",
+                  label: "Whisper 1",
+                  tier: "available" as const,
+                },
+              ]
+            : task === "vision"
+              ? [
+                  {
+                    id: "gpt-4.1-mini",
+                    label: "GPT-4.1 mini",
+                    tier: "recommended" as const,
+                  },
+                  {
+                    id: "gpt-4.1",
+                    label: "GPT-4.1",
+                    tier: "powerful" as const,
+                  },
+                ]
+              : [
+                  {
+                    id: "gpt-5.4-mini",
+                    label: "GPT-5.4 mini",
+                    tier: "recommended" as const,
+                  },
+                  {
+                    id: "gpt-5.5",
+                    label: "GPT-5.5",
+                    tier: "powerful" as const,
+                  },
+                ];
+        return ok({ models, source: "fallback" as const });
       },
     },
     localTranscription: {
@@ -522,6 +711,21 @@ export function createInMemoryLectioClient(): LectioClient {
         jobListeners.add(listener);
         return () => jobListeners.delete(listener);
       },
+      upsert(job) {
+        const timestamp = new Date().toISOString();
+        const old = jobs.find((item) => item.id === job.id);
+        const next = {
+          ...old,
+          ...job,
+          startedAt: old?.startedAt ?? job.startedAt ?? timestamp,
+          updatedAt: timestamp,
+        } satisfies BackgroundJob;
+        jobs = old
+          ? jobs.map((item) => (item.id === next.id ? next : item))
+          : [...jobs, next];
+        jobListeners.forEach((listener) => listener(jobs));
+        return ok(undefined);
+      },
       async cancel(id) {
         jobs = jobs.map((job) =>
           job.id === id ? { ...job, status: "cancelled" } : job,
@@ -532,6 +736,27 @@ export function createInMemoryLectioClient(): LectioClient {
       dismiss(id) {
         jobs = jobs.filter((job) => job.id !== id);
         jobListeners.forEach((listener) => listener(jobs));
+        return ok(undefined);
+      },
+    },
+    notifications: {
+      getSnapshot: () => notifications,
+      subscribe(listener) {
+        notificationListeners.add(listener);
+        return () => notificationListeners.delete(listener);
+      },
+      push(notification) {
+        const id = notification.id ?? `memory-notice-${++sequence}`;
+        notifications = [
+          ...notifications.filter((item) => item.id !== id),
+          { ...notification, id, createdAt: new Date().toISOString() },
+        ];
+        notificationListeners.forEach((listener) => listener(notifications));
+        return ok(id);
+      },
+      dismiss(id) {
+        notifications = notifications.filter((item) => item.id !== id);
+        notificationListeners.forEach((listener) => listener(notifications));
         return ok(undefined);
       },
     },

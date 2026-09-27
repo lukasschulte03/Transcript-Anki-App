@@ -227,6 +227,7 @@ export function LectureImportAssistant({
         });
         patch.slideAssetId = id;
         patch.slideName = slideFile.name;
+        patch.slidePageSplits = undefined;
         patch.visualIndex = undefined;
         patch.visualIndexHash = undefined;
         patch.visualIndexUpdatedAt = undefined;

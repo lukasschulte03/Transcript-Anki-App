@@ -8,38 +8,94 @@
     <title>Lectio – Föreläsningar till Anki</title>
   </head>
   <body>
-    <div id="root">
-      <main class="lectio-bootstrap" aria-label="Lectio startar" aria-live="polite">
-        <header><strong>Lectio</strong></header>
-        <div class="lectio-bootstrap__body">
-          <nav aria-hidden="true"><span></span><span></span><span></span></nav>
-          <section>
-            <div class="lectio-bootstrap__mark" aria-hidden="true"></div>
-            <p>Startar din arbetsyta…</p>
-          </section>
-        </div>
-      </main>
-    </div>
+    <div id="root"></div>
+    <main id="lectio-startup" class="lectio-bootstrap" aria-label="Lectio startar" aria-live="polite">
+      <span class="lectio-bootstrap__mark" aria-hidden="true"></span>
+      <strong class="lectio-bootstrap__title">Lectio</strong>
+      <span class="lectio-bootstrap__label">Förbereder din arbetsyta…</span>
+    </main>
     <style>
-      :root { color-scheme: light dark; }
-      body { margin: 0; background: #fafafa; color: #18181b; }
-      .lectio-bootstrap { height: 100vh; display: flex; flex-direction: column; background: #fafafa; font-family: ui-sans-serif, system-ui, sans-serif; }
-      .lectio-bootstrap header { height: 35px; flex: none; display: flex; align-items: center; padding: 0 12px; border-bottom: 1px solid #e4e4e7; background: #fff; font-size: 13px; }
-      .lectio-bootstrap__body { min-height: 0; flex: 1; display: flex; }
-      .lectio-bootstrap nav { width: 52px; flex: none; border-right: 1px solid #e4e4e7; background: #fff; padding-top: 16px; }
-      .lectio-bootstrap nav span { display: block; width: 18px; height: 18px; margin: 0 auto 18px; border-radius: 5px; background: #e4e4e7; }
-      .lectio-bootstrap section { flex: 1; display: grid; place-content: center; justify-items: center; gap: 12px; }
-      .lectio-bootstrap p { margin: 0; color: #71717a; font-size: 13px; }
-      .lectio-bootstrap__mark { width: 22px; height: 22px; border: 2px solid #d4d4d8; border-top-color: #2563eb; border-radius: 999px; animation: lectio-spin .8s linear infinite; }
-      @keyframes lectio-spin { to { transform: rotate(360deg); } }
-      @media (prefers-color-scheme: dark) {
-        body, .lectio-bootstrap { background: #09090b; color: #fafafa; }
-        .lectio-bootstrap header, .lectio-bootstrap nav { background: #111113; border-color: #27272a; }
-        .lectio-bootstrap nav span { background: #27272a; }
-        .lectio-bootstrap p { color: #a1a1aa; }
-        .lectio-bootstrap__mark { border-color: #3f3f46; border-top-color: #60a5fa; }
+      :root {
+        color-scheme: light;
+        background: #edf4fa;
+        --startup-coral: #9bc8ef;
+        --startup-rose: #73a7dc;
+        --startup-plum: #6679c7;
+        --startup-ink: #14283b;
+        --startup-muted: #526b80;
+        --startup-accent: #245f9e;
       }
-      @media (prefers-reduced-motion: reduce) { .lectio-bootstrap__mark { animation: none; } }
+      body { margin: 0; background: var(--startup-plum); }
+      .lectio-bootstrap {
+        position: fixed;
+        z-index: 9999;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 8px;
+        color: var(--startup-ink);
+        background:
+          radial-gradient(circle at 17% 0%, color-mix(in srgb, var(--startup-coral) 52%, transparent), transparent 34%),
+          linear-gradient(180deg, var(--startup-coral), var(--startup-rose) 46%, var(--startup-plum));
+        font-family: "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+        opacity: 1;
+        visibility: visible;
+        transition: opacity 260ms cubic-bezier(0.22, 1, 0.36, 1), visibility 0s linear 260ms;
+      }
+      :root[data-lectio-ready="true"] .lectio-bootstrap {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .lectio-bootstrap__mark {
+        width: 20px;
+        height: 20px;
+        margin-bottom: 5px;
+        border: 1.5px solid color-mix(in srgb, var(--startup-ink) 18%, transparent);
+        border-top-color: var(--startup-accent);
+        border-radius: 50%;
+        animation: lectio-spin 900ms linear infinite;
+      }
+      .lectio-bootstrap__title { font-size: 15px; font-weight: 560; letter-spacing: -0.02em; }
+      .lectio-bootstrap__label { color: var(--startup-muted); font-size: 12px; }
+      .lectio-startup-error {
+        min-height: 100vh;
+        display: grid;
+        place-content: center;
+        padding: 24px;
+        color: var(--startup-ink);
+        background: var(--startup-plum);
+        font: 13px/1.5 "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+      }
+      .lectio-startup-error section { max-width: min(560px, calc(100vw - 48px)); }
+      .lectio-startup-error p { color: var(--startup-muted); overflow-wrap: anywhere; }
+      @keyframes lectio-spin { to { transform: rotate(360deg); } }
+      .study-shell { opacity: 0; }
+      :root[data-lectio-ready="true"] .study-shell {
+        animation: lectio-workspace-in 280ms cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+      @keyframes lectio-workspace-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          background: #101923;
+          --startup-coral: #2b4f6d;
+          --startup-rose: #234361;
+          --startup-plum: #1b3651;
+          --startup-ink: #f4f8fc;
+          --startup-muted: #afc0cf;
+          --startup-accent: #75b8f0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .lectio-bootstrap { transition: none; }
+        .lectio-bootstrap__mark { animation: none; }
+        .study-shell { opacity: 1; animation: none !important; }
+      }
     </style>
     <script>window.__LECTIO_BOOTSTRAP_AT__ = performance.now();</script>
     <script type="module" src="/src/main.tsx"></script>

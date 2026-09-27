@@ -46,13 +46,19 @@ export const conciseVisualText = (value: string, limit = 220) => {
 };
 
 export const visualCandidateDescription = (candidate: VisualCandidate) =>
-  [candidate.cropText, candidate.localVision?.description]
+  [
+    candidate.visualAnalysis?.description,
+    candidate.localVision?.description,
+    candidate.visualAnalysis?.extractedText,
+    candidate.cropText,
+  ]
     .filter(Boolean)
     .join(" · ") || candidate.description;
 
 export const visualCandidateKeywords = (candidate: VisualCandidate) => [
   ...new Set([
     ...candidate.keywords,
+    ...(candidate.visualAnalysis?.keywords ?? []),
     ...(candidate.localVision?.keywords ?? []),
   ]),
 ];
@@ -244,10 +250,14 @@ export function selectVisualCandidates(
 
 export function visualPromptLines(candidates: VisualCandidate[]) {
   return candidates
-    .map(
-      (candidate) =>
-        `${candidate.id} | ${conciseVisualText(visualCandidateDescription(candidate), 180)}`,
-    )
+    .map((candidate) => {
+      const description =
+        candidate.visualAnalysis?.description ??
+        candidate.localVision?.description ??
+        candidate.description;
+      const text = candidate.visualAnalysis?.extractedText ?? candidate.cropText;
+      return `${candidate.id} | ${conciseVisualText(description, 120)}${text ? ` · Text: ${conciseVisualText(text, 70)}` : ""}`;
+    })
     .join("\n");
 }
 

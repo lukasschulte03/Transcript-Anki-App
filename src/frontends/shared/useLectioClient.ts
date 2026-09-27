@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type {
   AppSettings,
+  AppNotification,
   BackgroundJob,
   LectioClient,
   LibrarySnapshot,
@@ -24,3 +25,5 @@ export const useSettings = (client: LectioClient): AppSettings =>
   useReadable(client.settings);
 export const useJobs = (client: LectioClient): BackgroundJob[] =>
   useReadable(client.jobs);
+export const useNotifications = (client: LectioClient): AppNotification[] =>
+  useReadable(client.notifications);

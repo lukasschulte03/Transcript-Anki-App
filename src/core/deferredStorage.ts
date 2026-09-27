@@ -34,6 +34,31 @@ function parseStorageValue<T>(raw: string | null) {
   }
 }
 
+export function writeStartupPaletteHint(name: string, paletteId: string) {
+  if (paletteId.length === 0 || typeof window === "undefined") return;
+  const profile = name.startsWith("lectio-state-v1:")
+    ? name.slice("lectio-state-v1:".length)
+    : "main";
+  const hintKey = `lectio-startup-palette:${profile}`;
+  try {
+    if (window.localStorage.getItem(hintKey) !== paletteId)
+      window.localStorage.setItem(hintKey, paletteId);
+  } catch {
+    // This tiny hint only improves first paint; the full persisted palette is authoritative.
+  }
+  window.dispatchEvent(new CustomEvent("lectio:startup-palette", { detail: paletteId }));
+}
+
+function persistStartupPaletteHint<T>(
+  name: string,
+  value: StorageValue<T> | null,
+) {
+  const paletteId = (
+    value?.state as { settings?: { selectedPaletteId?: unknown } } | undefined
+  )?.settings?.selectedPaletteId;
+  if (typeof paletteId === "string") writeStartupPaletteHint(name, paletteId);
+}
+
 async function mirrorState(name: string, serialized: string) {
   const existing = await db.libraryStates.get(name);
   if (existing?.serialized === serialized) return;
@@ -108,6 +133,7 @@ export function createDeferredLocalStorage<T>(): PersistStorage<T> {
     const serialized = JSON.stringify(pending.value);
     if (serialized === lastSerialized) return;
     window.localStorage.setItem(pending.name, serialized);
+    persistStartupPaletteHint(pending.name, pending.value);
     lastSerialized = serialized;
     // localStorage remains a crash-safe rollback copy while Dexie becomes the
     // repository source. A failed mirror never invalidates the proven copy.
@@ -148,6 +174,7 @@ export function createDeferredLocalStorage<T>(): PersistStorage<T> {
       // local rollback snapshot is already valid. Migration/verification runs
       // in the background and is idempotent.
       if (localValue) {
+        persistStartupPaletteHint(name, localValue);
         lastSerialized = raw!;
         repositoryStatus = {
           source: "local-storage",
@@ -183,6 +210,7 @@ export function createDeferredLocalStorage<T>(): PersistStorage<T> {
       if (repositoryValue) {
         try {
           window.localStorage.setItem(name, repositoryRecord!.serialized);
+          persistStartupPaletteHint(name, repositoryValue);
           lastSerialized = repositoryRecord!.serialized;
         } catch {
           // Dexie remains sufficient when localStorage is full/unavailable.
@@ -239,6 +267,10 @@ export function createDeferredLocalStorage<T>(): PersistStorage<T> {
       maximumWriteTimer = undefined;
       lastSerialized = "";
       window.localStorage.removeItem(name);
+      const profile = name.startsWith("lectio-state-v1:")
+        ? name.slice("lectio-state-v1:".length)
+        : "main";
+      window.localStorage.removeItem(`lectio-startup-palette:${profile}`);
       void db.libraryStates.delete(name).catch(() => undefined);
     },
   };

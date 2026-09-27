@@ -21,11 +21,27 @@ export class AppErrorBoundary extends Component<{ children: ReactNode }, State> 
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <main className="ui-app-bg grid h-screen place-items-center p-6 text-[var(--palette-text)]">
-        <section className="w-full max-w-md rounded-xl border border-[var(--palette-border)] bg-[var(--palette-surface)] p-6 shadow-lg">
+      <main
+        className="grid h-screen place-items-center p-6"
+        style={{ backgroundColor: "#f8fafc", color: "#14283b" }}
+      >
+        <section
+          className="w-full max-w-md rounded-xl border p-6 shadow-lg"
+          style={{
+            backgroundColor: "#ffffff",
+            borderColor: "#d8e0e8",
+            color: "#14283b",
+          }}
+        >
           <AlertTriangle className="size-6 text-[var(--palette-warning)]" />
           <h1 className="mt-4 text-lg font-semibold">Lectio stötte på ett problem</h1>
-          <p className="mt-2 text-sm leading-6 text-[var(--palette-text-muted)]">Ditt bibliotek ligger kvar lokalt. Ladda om appen eller skicka en anonymiserad felrapport så kan vi lösa problemet.</p>
+          <p
+            className="mt-2 text-sm leading-6"
+            style={{ color: "#526b80" }}
+          >
+            Ditt bibliotek ligger kvar lokalt. Ladda om appen eller skicka en
+            anonymiserad felrapport så kan vi lösa problemet.
+          </p>
           <div className="mt-5 flex gap-2">
             <Button onClick={() => window.location.reload()}><RotateCcw /> Ladda om</Button>
             <Button variant="outline" onClick={() => this.setState({ feedbackOpen: true })}>Rapportera problem</Button>

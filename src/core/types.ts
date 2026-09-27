@@ -146,11 +146,26 @@ export interface VisualCandidate {
     generatedAt: string;
     sourceHash: string;
   };
+  /** Optional API result: concise description and OCR from this crop only. */
+  visualAnalysis?: {
+    description: string;
+    extractedText: string;
+    keywords: string[];
+    provider: string;
+    model: string;
+    generatedAt: string;
+    sourceHash: string;
+  };
 }
 
 export interface LectureData {
   lectureId: string;
   notes: string;
+  /** Shared normalized regions applied to every page of a contact-sheet PDF. */
+  slidePageSplits?: Record<
+    number,
+    { x: number; y: number; width: number; height: number }[]
+  >;
   slideText?: string;
   /** Extracted locally, one entry per PDF page, for source-aware slide use. */
   slidePages?: string[];
@@ -262,6 +277,9 @@ export interface AppSettings {
   transcriptionModel: string;
   transcriptionBaseUrl: string;
   transcriptionPrompt: string;
+  /** OCR and short descriptions for extracted slide crops; API is explicitly opt-in. */
+  visualAnalysisProvider: "local" | "api";
+  visualAnalysisModel: string;
   /** Optional, fully local Nvidia vision package used for automatic Anki visuals. */
   localVisualDescriptions: "off" | "nvidia";
   ankiUrl: string;
@@ -355,7 +373,7 @@ export interface RecordingChunk {
 }
 
 export type BackgroundJobKind =
-  "download" | "transcription" | "library" | "vision";
+  "download" | "transcription" | "library" | "vision" | "anki";
 export type BackgroundJobStatus =
   "queued" | "active" | "complete" | "error" | "cancelled";
 
@@ -368,6 +386,15 @@ export interface BackgroundJob {
   current: number;
   total?: number;
   detail?: string;
+  cancellable?: boolean;
   startedAt: string;
   updatedAt: string;
+}
+
+export interface AppNotification {
+  id: string;
+  level: "info" | "success" | "warning" | "error";
+  title: string;
+  detail?: string;
+  createdAt: string;
 }

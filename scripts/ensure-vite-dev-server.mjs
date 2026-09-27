@@ -10,9 +10,14 @@ async function existingLectioServer() {
       signal: AbortSignal.timeout(1_000),
     });
     const html = await response.text();
-    return response.ok && html.includes(expectedEntry);
+    if (!response.ok || !html.includes(expectedEntry)) return null;
+
+    return {
+      frontend: response.headers.get("x-lectio-frontend"),
+      dataProfile: response.headers.get("x-lectio-data-profile"),
+    };
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -31,9 +36,31 @@ async function portIsInUse() {
   });
 }
 
-if (await existingLectioServer()) {
-  console.log("[Lectio] Återanvänder Vite på port 1420.");
-  process.exit(0);
+const expectedFrontend = process.env.LECTIO_FRONTEND ?? "legacy";
+const expectedDataProfile =
+  process.env.LECTIO_DATA_PROFILE ??
+  (expectedFrontend === "next" ? "next" : "main");
+const existingServer = await existingLectioServer();
+
+if (existingServer) {
+  if (
+    existingServer.frontend === expectedFrontend &&
+    existingServer.dataProfile === expectedDataProfile
+  ) {
+    console.log(
+      `[Lectio] Återanvänder ${expectedFrontend}-Vite på port 1420.`,
+    );
+    process.exit(0);
+  }
+
+  const runningVariant = existingServer.frontend
+    ? `${existingServer.frontend} (dataprofil: ${existingServer.dataProfile ?? "okänd"})`
+    : "en äldre Lectio-server utan variantinformation";
+  console.error(
+    `[Lectio] Port 1420 används redan av ${runningVariant}. ` +
+      `Stoppa den servern med Ctrl+C och kör sedan pnpm desktop:dev:${expectedFrontend}.`,
+  );
+  process.exit(1);
 }
 
 if (await portIsInUse()) {

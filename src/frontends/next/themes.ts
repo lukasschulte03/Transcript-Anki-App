@@ -16,8 +16,10 @@ export type NextThemePreset = {
 const chromeById: Record<string, [string, string, string]> = {
   "blue-light": ["#9bc8ef", "#73a7dc", "#6679c7"],
   "orange-light": ["#f6b17e", "#e87d5b", "#bd5367"],
-  "blue-dark": ["#142a43", "#17466b", "#33345f"],
-  "orange-dark": ["#3a1d18", "#71311f", "#8e4829"],
+  // Dark chrome still carries a visible hue: three neighboring blue/orange
+  // shades, stepping down in brightness without fading toward black.
+  "blue-dark": ["#2b4f6d", "#234361", "#1b3651"],
+  "orange-dark": ["#71452f", "#623824", "#512d20"],
 };
 
 export const nextThemePresets: NextThemePreset[] = builtInPalettes.map(
@@ -48,10 +50,19 @@ export function nextThemeStyle(theme: NextThemePreset): CSSProperties {
     "--arc-deep": palette.primary,
     "--arc-ink": palette.text,
     "--arc-muted": palette.textMuted,
-    "--arc-subtle": palette.textSubtle,
-    "--arc-paper": palette.background,
+    // The authored light-palette subtle tones are decorative-level colors.
+    // Normal-sized helper text needs the stronger muted token for WCAG AA.
+    "--arc-subtle": dark ? palette.textSubtle : palette.textMuted,
+    // Keep the authored palette in the surrounding chrome, while the active
+    // workspace reads as a document material. This separation is what makes
+    // the single-canvas model legible in both bright and dark palettes.
+    "--arc-page": palette.background,
+    "--arc-paper": palette.surface,
     "--arc-raised": palette.surface,
     "--arc-muted-paper": palette.surfaceMuted,
+    // A shared, low-emphasis material used by list hover states, icons and
+    // quiet status surfaces. Keep it palette-derived so it works in both tones.
+    "--arc-soft": palette.surfaceMuted,
     "--arc-line": palette.border,
     "--arc-line-strong": palette.borderStrong,
     "--arc-focus": palette.focusRing,
@@ -66,20 +77,20 @@ export function nextThemeStyle(theme: NextThemePreset): CSSProperties {
       ? "rgba(255, 255, 255, 0.16)"
       : "rgba(12, 28, 42, 0.16)",
     "--arc-chrome-selected": dark
-      ? "rgba(255, 255, 255, 0.22)"
-      : "rgba(12, 28, 42, 0.22)",
+      ? "rgba(255, 255, 255, 0.16)"
+      : "rgba(12, 28, 42, 0.16)",
     "--arc-overlay": dark
-      ? "rgba(23, 34, 44, 0.72)"
-      : "rgba(255, 255, 255, 0.72)",
+      ? "rgba(23, 34, 44, 0.82)"
+      : "rgba(255, 255, 255, 0.82)",
     "--arc-overlay-strong": dark
       ? "rgba(23, 34, 44, 0.94)"
       : "rgba(255, 255, 255, 0.94)",
     "--arc-canvas-shadow": dark
-      ? "rgba(0, 0, 0, 0.48)"
-      : "rgba(10, 18, 26, 0.24)",
+      ? "rgba(0, 0, 0, 0.42)"
+      : "rgba(10, 18, 26, 0.18)",
     "--arc-canvas-shadow-strong": dark
-      ? "rgba(0, 0, 0, 0.68)"
-      : "rgba(10, 18, 26, 0.34)",
+      ? "rgba(0, 0, 0, 0.58)"
+      : "rgba(10, 18, 26, 0.28)",
     "--arc-selection": palette.primaryMuted,
     "--palette-background": palette.background,
     "--palette-surface": palette.surface,
@@ -99,9 +110,15 @@ export function nextThemeStyle(theme: NextThemePreset): CSSProperties {
     "--palette-focus-ring": palette.focusRing,
     "--palette-danger": palette.danger,
     "--palette-danger-muted": palette.dangerMuted,
+    "--palette-danger-foreground": palette.dangerForeground,
     "--palette-warning": palette.warning,
     "--palette-warning-muted": palette.warningMuted,
+    "--palette-warning-foreground": palette.warningForeground,
     "--palette-success": palette.success,
     "--palette-success-muted": palette.successMuted,
+    "--palette-success-foreground": palette.successForeground,
+    "--palette-info": palette.info,
+    "--palette-info-muted": palette.infoMuted,
+    "--palette-info-foreground": palette.infoForeground,
   } as CSSProperties;
 }

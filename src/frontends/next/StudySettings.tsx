@@ -10,6 +10,8 @@ import {
   Database,
   FolderOpen,
   History,
+  Image as ImageIcon,
+  Languages,
   LoaderCircle,
   Search,
   Settings2,
@@ -37,6 +39,10 @@ import {
   SettingsPanel,
   type SettingsCategoryId,
 } from "./settings/SettingsPanels";
+import {
+  searchSettings,
+  type SettingsSearchEntry,
+} from "./settings/settingsSearch";
 import "./settings.css";
 
 type CategoryId = "library" | SettingsCategoryId;
@@ -44,51 +50,48 @@ const categories: Array<{
   id: CategoryId;
   title: string;
   icon: typeof Database;
-  keywords: string;
 }> = [
   {
     id: "library",
     title: "Bibliotek och data",
     icon: Database,
-    keywords: "importera exportera zip json backup återställ lagring",
+  },
+  {
+    id: "general",
+    title: "Allmänt",
+    icon: Languages,
   },
   {
     id: "appearance",
     title: "Utseende",
     icon: SwatchBook,
-    keywords: "språk svenska english tema färg gränssnitt",
   },
   {
     id: "audio",
     title: "Ljud och inspelning",
     icon: AudioLines,
-    keywords: "mikrofon ljud kvalitet inspelning enhet",
   },
   {
     id: "transcription",
     title: "Transkribering",
     icon: Settings2,
-    keywords: "whisper modell nvidia cpu groq openai api fraslexikon",
+  },
+  {
+    id: "image-analysis",
+    title: "OCR och bildanalys",
+    icon: ImageIcon,
   },
   {
     id: "ai-anki",
     title: "AI och Anki",
     icon: Sparkles,
-    keywords: "anki ankiconnect kort api nyckel provider modell copy paste",
   },
   {
     id: "sync",
     title: "Synk och anslutningar",
     icon: Cloud,
-    keywords: "google drive moln oauth synka konto mapp",
   },
 ];
-const searchable = {
-  files:
-    "importera exportera bibliotek zip json filer säkerhetskopia ljud slides pdf",
-  backups:
-    "återställningspunkter säkerhet backup kopia historik behåll antal återställ",
-};
 const date = (value: string) =>
   new Intl.DateTimeFormat("sv-SE", {
     dateStyle: "medium",
@@ -106,6 +109,10 @@ export function StudySettings({
   const settings = useSettings(client);
   const [activeCategory, setActiveCategory] = useState<CategoryId>("library");
   const [query, setQuery] = useState("");
+  const [searchTarget, setSearchTarget] = useState<{
+    target: string;
+    fallbackTarget?: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const [progress, setProgress] = useState<LibraryTransferProgress | null>(
@@ -121,17 +128,8 @@ export function StudySettings({
     { file: File } | { backup: LibraryBackupSummary } | null
   >(null);
   const fileInput = useRef<HTMLInputElement>(null);
-  const normalizedQuery = query.trim().toLocaleLowerCase("sv-SE");
-  const matches = (text: string) =>
-    !normalizedQuery || text.includes(normalizedQuery);
-  const filesVisible = matches(searchable.files);
-  const backupsVisible = matches(searchable.backups);
-  const isolated = client.runtime.dataProfile === "next";
-  const categoryMatches = categories.filter((category) =>
-    `${category.title} ${category.keywords}`
-      .toLocaleLowerCase("sv-SE")
-      .includes(normalizedQuery),
-  );
+  const normalizedQuery = query.trim();
+  const searchResults = searchSettings(normalizedQuery);
 
   const updateSettings = (patch: Partial<typeof settings>) => {
     const result = client.settings.update(patch);
@@ -158,6 +156,16 @@ export function StudySettings({
       active = false;
     };
   }, [client]); // data is loaded only when this screen opens
+  useEffect(() => {
+    if (!searchTarget) return;
+    const frame = requestAnimationFrame(() => {
+      const target =
+        document.getElementById(searchTarget.target) ??
+        document.getElementById(searchTarget.fallbackTarget ?? "");
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeCategory, searchTarget]);
   useEffect(() => {
     if (!busy) return;
     const prevent = (event: BeforeUnloadEvent) => {
@@ -220,6 +228,14 @@ export function StudySettings({
         "Biblioteket har återställts.",
       );
   };
+  const chooseSearchResult = (entry: SettingsSearchEntry) => {
+    setActiveCategory(entry.category);
+    setQuery("");
+    setSearchTarget({
+      target: entry.target,
+      fallbackTarget: entry.fallbackTarget,
+    });
+  };
 
   return (
     <section className="study-settings" aria-label="Inställningar">
@@ -231,20 +247,19 @@ export function StudySettings({
           <Search aria-hidden="true" />
           <input
             type="search"
+            name="settings-search"
+            autoComplete="off"
             placeholder="Sök inställningar"
             aria-label="Sök inställningar"
+            aria-controls="study-settings-search-results"
             value={query}
-            onChange={(event) => {
-              const value = event.target.value;
-              setQuery(value);
-              const normalized = value.trim().toLocaleLowerCase("sv-SE");
-              if (!normalized) return;
-              const match = categories.find((category) =>
-                `${category.title} ${category.keywords}`
-                  .toLocaleLowerCase("sv-SE")
-                  .includes(normalized),
-              );
-              if (match) setActiveCategory(match.id);
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") setQuery("");
+              if (event.key === "Enter" && searchResults[0]) {
+                event.preventDefault();
+                chooseSearchResult(searchResults[0]);
+              }
             }}
           />
         </label>
@@ -269,60 +284,111 @@ export function StudySettings({
         </nav>
         <div className="study-settings-scroll">
           <div className="study-settings-content">
-            {activeCategory === "library" && (
-              <>
-                <NextSurface className="study-settings-intro" tone="subtle">
-                  <div className="study-settings-emblem" aria-hidden="true">
-                    <Database />
+            {normalizedQuery ? (
+              <div
+                id="study-settings-search-results"
+                className="study-settings-results"
+                aria-live="polite"
+              >
+                {searchResults.length > 0 && (
+                  <h2>
+                    {searchResults.length} träff
+                    {searchResults.length === 1 ? "" : "ar"}
+                  </h2>
+                )}
+                {searchResults.length ? (
+                  <div className="study-settings-result-list">
+                    {searchResults.slice(0, 12).map((entry) => {
+                      const category = categories.find(
+                        (item) => item.id === entry.category,
+                      );
+                      if (!category) return null;
+                      const Icon = category.icon;
+                      return (
+                        <button
+                          className="study-settings-result"
+                          key={entry.target}
+                          type="button"
+                          onClick={() => chooseSearchResult(entry)}
+                        >
+                          <Icon aria-hidden="true" />
+                          <span>
+                            <strong>{entry.title}</strong>
+                            <small>{category.title}</small>
+                          </span>
+                          <ChevronRight aria-hidden="true" />
+                        </button>
+                      );
+                    })}
                   </div>
-                  <h2>Bibliotek och data</h2>
-                  <p>
-                    En trygg plats för dina studier. Ta med dem dit du vill.
-                  </p>
-                </NextSurface>
-                <NextSurface
-                  className="study-library-summary"
-                  tone="subtle"
-                  aria-label="Ditt bibliotek"
-                >
-                  {[
-                    {
-                      label: "kurser",
-                      count: library.nodes.filter(
-                        (node) => node.type === "course",
-                      ).length,
-                    },
-                    {
-                      label: "föreläsningar",
-                      count: library.nodes.filter(
-                        (node) => node.type === "lecture",
-                      ).length,
-                    },
-                    { label: "Anki-kort", count: library.cards.length },
-                  ].map(({ label, count }) => (
-                    <span key={label}>
-                      <strong>{count.toLocaleString("sv-SE")}</strong>
-                      {label}
-                    </span>
-                  ))}
-                  <span className="study-library-local">
-                    <ShieldCheck aria-hidden="true" />
-                    {isolated ? "Separat testbibliotek" : "Lagras lokalt"}
-                  </span>
-                </NextSurface>
-                {isolated && (
-                  <p className="study-settings-profile">
-                    Det här är nya Lectios eget bibliotek. Importera en export
-                    för att komma igång — originalet i den vanliga appen
-                    påverkas inte.
+                ) : (
+                  <NextEmptyState
+                    className="study-settings-empty"
+                    icon={<Search />}
+                    title="Inga matchande inställningar"
+                    description="Prova ett kortare ord, en synonym eller sök på exempelvis mikrofon, GPU, API-nyckel eller backup."
+                    action={
+                      <NextButton onClick={() => setQuery("")}>
+                        Visa alla
+                      </NextButton>
+                    }
+                  />
+                )}
+                {searchResults.length > 12 && (
+                  <p className="study-settings-search-count">
+                    Visar 12 av {searchResults.length}. Skriv ett ord till för
+                    att begränsa sökningen.
                   </p>
                 )}
-                {filesVisible && (
+              </div>
+            ) : (
+              activeCategory === "library" && (
+                <>
+                  <NextSurface className="study-settings-intro" tone="subtle">
+                    <div className="study-settings-emblem" aria-hidden="true">
+                      <Database />
+                    </div>
+                    <h2>Bibliotek och data</h2>
+                    <p>
+                      En trygg plats för dina studier. Ta med dem dit du vill.
+                    </p>
+                  </NextSurface>
+                  <NextSurface
+                    className="study-library-summary"
+                    tone="subtle"
+                    aria-label="Ditt bibliotek"
+                  >
+                    {[
+                      {
+                        label: "kurser",
+                        count: library.nodes.filter(
+                          (node) => node.type === "course",
+                        ).length,
+                      },
+                      {
+                        label: "föreläsningar",
+                        count: library.nodes.filter(
+                          (node) => node.type === "lecture",
+                        ).length,
+                      },
+                      { label: "Anki-kort", count: library.cards.length },
+                    ].map(({ label, count }) => (
+                      <span key={label}>
+                        <strong>{count.toLocaleString("sv-SE")}</strong>
+                        {label}
+                      </span>
+                    ))}
+                    <span className="study-library-local">
+                      <ShieldCheck aria-hidden="true" />
+                      Lagras lokalt
+                    </span>
+                  </NextSurface>
                   <NextSection
                     className="study-settings-group"
                     title="Flytta ditt bibliotek"
                   >
                     <NextSettingRow
+                      id="library-import"
                       icon={<ArrowDownToLine />}
                       title="Importera bibliotek"
                       description="Läs in en Lectio-export. ZIP tar med ljud, PDF:er och bilder; JSON innehåller bara biblioteksdata."
@@ -340,6 +406,7 @@ export function StudySettings({
                         hidden
                         ref={fileInput}
                         type="file"
+                        name="library-import"
                         accept=".zip,.json,application/zip,application/json"
                         aria-label="Välj biblioteksexport"
                         onChange={(event) => {
@@ -350,6 +417,7 @@ export function StudySettings({
                       />
                     </NextSettingRow>
                     <NextSettingRow
+                      id="library-export"
                       icon={<ArrowUpFromLine />}
                       title="Exportera bibliotek"
                       description="Spara hela biblioteket och dess media i en ZIP-fil. Dina API-nycklar och kontoinställningar följer inte med."
@@ -370,13 +438,13 @@ export function StudySettings({
                       </NextButton>
                     </NextSettingRow>
                   </NextSection>
-                )}
-                {backupsVisible && (
+
                   <NextSection
                     className="study-settings-group"
                     title="Ett steg tillbaka, om det behövs"
                   >
                     <NextSettingRow
+                      id="backup-create"
                       icon={<History />}
                       title="Lokala återställningspunkter"
                       description="Sparar bibliotekets struktur och innehåll med referenser till dina mediafiler. Använd ZIP-export för en fullständig säkerhetskopia."
@@ -397,6 +465,7 @@ export function StudySettings({
                       </NextButton>
                     </NextSettingRow>
                     <NextSettingRow
+                      id="backup-limit"
                       icon={<ShieldCheck />}
                       title="Antal att behålla"
                       description="När en ny punkt sparas rensas de äldsta automatiskt."
@@ -480,26 +549,10 @@ export function StudySettings({
                       </div>
                     )}
                   </NextSection>
-                )}
-                {!filesVisible && !backupsVisible && (
-                  <NextEmptyState
-                    className="study-settings-empty"
-                    icon={<Search />}
-                    title="Inga matchande inställningar"
-                    description="Prova exempelvis ”import” eller ”backup”."
-                    action={
-                      <NextButton
-                        className="study-settings-button"
-                        onClick={() => setQuery("")}
-                      >
-                        Visa alla
-                      </NextButton>
-                    }
-                  />
-                )}
-              </>
+                </>
+              )
             )}
-            {activeCategory !== "library" && categoryMatches.length > 0 && (
+            {!normalizedQuery && activeCategory !== "library" && (
               <SettingsPanel
                 category={activeCategory}
                 client={client}
@@ -508,23 +561,13 @@ export function StudySettings({
                 onNotice={(text, error = false) => setNotice({ text, error })}
               />
             )}
-            {activeCategory !== "library" &&
-              normalizedQuery &&
-              categoryMatches.length === 0 && (
-                <NextEmptyState
-                  className="study-settings-empty"
-                  icon={<Search />}
-                  title="Inga matchande inställningar"
-                  description="Prova exempelvis ”mikrofon”, ”Whisper”, ”Anki” eller ”Drive”."
-                  action={
-                    <NextButton onClick={() => setQuery("")}>
-                      Visa alla
-                    </NextButton>
-                  }
-                />
-              )}
             {progress && (
-              <div className="study-transfer-status" role="status">
+              <div
+                className="study-transfer-status"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
                 <LoaderCircle className="study-spin" />
                 <div>
                   <span>{progress.detail}</span>
@@ -544,6 +587,8 @@ export function StudySettings({
                 className="study-settings-notice"
                 data-error={notice.error}
                 role={notice.error ? "alert" : "status"}
+                aria-live={notice.error ? "assertive" : "polite"}
+                aria-atomic="true"
               >
                 {notice.error ? <X /> : <Check />}
                 <span>{notice.text}</span>
@@ -585,7 +630,7 @@ export function StudySettings({
                   : date(pending.backup.createdAt)}
               </p>
             )}
-            <div>
+            <footer>
               <Dialog.Close asChild>
                 <NextButton className="study-settings-button">
                   Avbryt
@@ -598,7 +643,7 @@ export function StudySettings({
               >
                 {pending && "file" in pending ? "Importera" : "Återställ"}
               </NextButton>
-            </div>
+            </footer>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>

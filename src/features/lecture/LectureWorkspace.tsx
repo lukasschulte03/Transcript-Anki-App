@@ -303,6 +303,7 @@ export function LectureWorkspace({
     updateLecture(lectureId, {
       slideAssetId: id,
       slideName: file.name,
+      slidePageSplits: undefined,
       slideText: undefined,
       slidePages: undefined,
       visualIndex: undefined,

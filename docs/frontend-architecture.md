@@ -44,9 +44,11 @@ Frontendvalet i `vite.config.ts` mappar aliaset `@lectio-frontend` till exakt en
 
 ## Next: föreläsningsvy
 
-`NextApp` laddar `lecture/LectureView.tsx` först när en föreläsning väljs. Den nya vyn använder egna komponenter för PDF, ljud och text, inte legacy-panelerna. Slides och transkript är oberoende; inga transkript–slidekopplingar läses eller skapas. Smal arbetsyta visar slides eller textpanelen i taget. Anki-dialogen granskar/godkänner befintliga kort; full kortgenerering och synk i den nya UI:n är inte implementerade där ännu.
+`NextApp` laddar `lecture/LectureView.tsx` först när en föreläsning väljs. Den nya vyn använder egna komponenter för PDF, ljud och text, inte legacy-panelerna. Slides och transkript är oberoende; inga transkript–slidekopplingar läses eller skapas. Smal arbetsyta visar slides eller textpanelen i taget. Föreläsningens Anki-dialog skapar, granskar, godkänner, raderar och synkar kort. Slidepanelen kan indexera och granska lokala bildutklipp genom `LectioClient.visuals`, och ljudspelaren kan permanent ta bort en enskild ljuddel genom `LectioClient.assets`.
 
 `LectioClient.assets.read` läser media. PDF.js renderar bara aktuell sida, med pixelbudget, avbrytbara renderingar och städning av dokument/worker. Sidans inbyggda text finns som skärmläsaralternativ; bildbaserade PDF:er får ingen automatisk OCR vid import. `extractPdfPages(..., {ocr:false})` extraherar text sekventiellt i next-importen. Legacy kan fortfarande begära OCR via standardalternativet.
+
+Next kan föreslå uppdelning när den visade PDF-sidan ser ut att innehålla flera slides. Studenten granskar ett rutnätsförslag, kan välja ett annat rutnät och bekräftar innan sidan visas som virtuella beskärningar. `LectureData.slidePageSplits` innehåller endast normaliserade regioner; PDF-originalet ändras inte, uppdelningen kan återställas och metadata följer bibliotekets vanliga export/synk. Ersättning av PDF rensar äldre siduppdelningar.
 
 `LectioClient.recordings` kapslar in start, beständiga ljuddelar, avslut och återställning via `services/lectureRecording.ts`. MediaRecorder sparar var tredje sekund; endast aktuell ljuddel har en objekt-URL. Navigation låses under inspelning och filimport. Transkript redigeras med begränsat antal synliga rader, sökningen behåller träffar under redigering, och anteckningar sparas debouncat samt vid lämnad vy. Transkribering köas med befintliga sparade inställningar.
 
@@ -54,11 +56,17 @@ Det riktade Playwright-flödet i `frontend-entrypoints.spec.ts` använder syntet
 
 ## Next: bibliotek och data
 
-`StudySettings.tsx` samlar färdiga kategorier för bibliotek/data, utseende, inspelning, transkribering, AI/Anki och Google Drive. De enkla värdena går genom `LectioClient.settings`; API-nycklar, lokal Whisper/NVIDIA, AnkiConnect och Google OAuth går genom separata kontraktsoperationer så Next aldrig importerar providers, Tauri eller Zustand direkt. Dataprofilen visas uttryckligen; import ersätter endast den aktiva profilens bibliotek, aldrig inställningar eller synkidentitet.
+`StudySettings.tsx` samlar färdiga kategorier för bibliotek/data, utseende, inspelning, transkribering, OCR/bildanalys, AI/Anki och Google Drive. Transkribering kan köras med lokal Whisper eller OpenAI/Groq-API; OCR och beskärning av slidebilder körs lokalt med PaddleOCR, med valfri OpenAI-bildanalys för uttryckligen valda utklipp. API-nycklar ligger i Windows Credential Manager. De enkla värdena går genom `LectioClient.settings`; API-nycklar, lokala modeller, AnkiConnect och Google OAuth går genom separata kontraktsoperationer så Next aldrig importerar providers, Tauri eller Zustand direkt. Dataprofilen visas uttryckligen; import ersätter endast den aktiva profilens bibliotek, aldrig inställningar eller synkidentitet.
 
 Utseendet har fyra inbyggda paletter: blå och orange i ljus respektive mörk variant. Tidigare standardpaletter migreras till närmaste ljus/mörk blå variant och egna gamla paletter tas inte med i det förenklade systemet. Valet sparas i `AppSettings.selectedPaletteId`; `frontends/next/themes.ts` översätter paletten till både innehållsytor, sidebartext och Grainient-färger.
 
 Filoperationerna går via `LectioClient.workflows` till den lazy-laddade `services/libraryTransfer.ts`. Import validerar före mutation och skapar en återställningspunkt; överlappande media behålls i denna punkt. Vanliga punkter innehåller endast mediareferenser. Återställning vägrar om nödvändiga media saknas. Export innehåller bibliotek och tillhörande media, inte kontoinställningar. Överföringar har progress, storleksgräns 1,5 GB och pausad navigation/redigering; arkiven bearbetas asynkront men fortfarande i minnet. En strömmande export för större bibliotek är framtida arbete.
+
+## Next: Google Drive-inkorg
+
+`inbox/InboxView.tsx` läser oimporterade ljudfiler från den avgränsade mappen `<vald Lectio-mapp>/Inbox`. Flera filer kan markeras och läggas till i en befintlig föreläsning eller i en ny föreläsning under vald modul. Efter lyckad lokal import öppnas föreläsningen; Drive-originalen flyttas till `media` och märks med Lectio-metadata.
+
+Frontendvyn anropar endast `LectioClient.inbox`. `services/googleDriveInbox.ts` äger hämtning, lokal lagring, kvitton och fjärrflytt. Om en lokal del misslyckas tas skapade assets bort och föreläsningens tidigare ljudreferenser återställs. En misslyckad fjärrflytt rullar däremot inte tillbaka en lyckad lokal import; UI:t visar i stället att filen kan synkas senare. Importprogress rapporteras per fil.
 
 ## Importregler
 
@@ -74,6 +82,6 @@ Reglerna körs av `pnpm check:boundaries`.
 
 Next byggs nu om en yta i taget. Första delen är ett nytt appskal och sidofält i `src/frontends/next/StudySidebar.tsx`, med egen CSS och samlad svensk copy. Det tidigare experimentets material-/transkriptvy har tagits bort; arbetsytan visar tills vidare bara vald destination eller objekttitel och en neutral bakgrund.
 
-Sidofältet läser och ändrar bibliotek via `LectioClient`: skapa kurs/modul/ämne/föreläsning, namnbyte, sökning, scopeval, omordning före ett syskon och flytt till en annan förälder. Drop-feedback använder domänens validering. Trädets öppna grenar och kollaps sparas separat som UI-preferenser under `lectio-next-sidebar-*`; bibliotekets scrollposition bevaras mellan rail/flyout. Navigationens knappar ändrar sessionens vy, men övriga vyer byggs i senare steg.
+Sidofältet läser och ändrar bibliotek via `LectioClient`: skapa kurs/modul/ämne/föreläsning, namnbyte, sökning, scopeval, omordning före ett syskon och flytt till en annan förälder. Drop-feedback använder domänens validering. Samma flyttar kan göras från tangentbord via nodens meny. Trädets öppna grenar och kollaps sparas separat som UI-preferenser under `lectio-next-sidebar-*`; bibliotekets scrollposition bevaras mellan rail/flyout. Hem visar bibliotekets aktuella status och senaste föreläsningar. Superåtgärder väljer föreläsningar hierarkiskt och köar kontraktets transkribering-, generering-, godkännande- och synkflöden; massradering av kort skapar först backup och återanvänder den inkrementella Anki-raderingskön.
 
 Sidofältets visuella riktning dokumenteras i `src/frontends/next/DESIGN.md`. `pnpm test:e2e:next` kontrollerar isolerad persistens, profillås och sidofältets huvudflöden. Standard byts först när feature-parity-matrisen och hela `qa:stability` är gröna mot en kopia av ett realistiskt bibliotek. Ett frontendbyte får aldrig i sig trigga datamigrering.

@@ -1,14 +1,20 @@
 import { expect, seedLibrary, test } from "./qa-fixtures";
 
-test("visar ett startupskal även innan applikationskoden körs", async ({ browser }) => {
+test("visar ett startupskal även innan applikationskoden körs", async ({
+  browser,
+}) => {
   const context = await browser.newContext({ javaScriptEnabled: false });
   const staticPage = await context.newPage();
   await staticPage.goto("/");
-  await expect(staticPage.getByText("Startar din arbetsyta…")).toBeVisible();
+  const startupShell = staticPage.getByRole("main", { name: "Lectio startar" });
+  await expect(startupShell).toContainText("Lectio");
+  await expect(startupShell).toContainText("Förbereder din arbetsyta");
   await context.close();
 });
 
-test("öppnar ett realistiskt stort bibliotek inom startupbudgeten", async ({ page }) => {
+test("öppnar ett realistiskt stort bibliotek inom startupbudgeten", async ({
+  page,
+}) => {
   await page.goto("/");
   await seedLibrary(page);
   await page.reload();
@@ -31,13 +37,17 @@ test("öppnar ett realistiskt stort bibliotek inom startupbudgeten", async ({ pa
 
   const startedAt = Date.now();
   await page.reload();
-  await expect(page.getByText("Akut buk", { exact: true }).first()).toBeVisible({
-    timeout: 3_000,
-  });
+  await expect(page.getByText("Akut buk", { exact: true }).first()).toBeVisible(
+    {
+      timeout: 3_000,
+    },
+  );
   expect(Date.now() - startedAt).toBeLessThan(3_000);
 });
 
-test("återhämtar ett trasigt persistensvärde utan vit skärm", async ({ page }) => {
+test("återhämtar ett trasigt persistensvärde utan vit skärm", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.getByRole("heading", { name: "Översikt" }).waitFor();
   await page.evaluate(() =>

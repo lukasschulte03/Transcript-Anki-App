@@ -37,8 +37,15 @@ export const cloudApiTranscription: TranscriptionProvider = {
     const form = new FormData();
     form.append("file", audio, "lecture.webm");
     form.append("model", settings.transcriptionModel);
-    form.append("response_format", "verbose_json");
-    form.append("timestamp_granularities[]", "segment");
+    // Only Whisper supports verbose_json/timestamp_granularities. Newer GPT
+    // transcription models return plain transcript JSON and reject these.
+    const supportsWhisperTimestamps =
+      settings.transcriptionProvider === "groq" ||
+      settings.transcriptionModel === "whisper-1";
+    if (supportsWhisperTimestamps) {
+      form.append("response_format", "verbose_json");
+      form.append("timestamp_granularities[]", "segment");
+    }
     if (prompt.trim()) form.append("prompt", prompt);
     const response = await netFetch(`${base}/audio/transcriptions`, {
       method: "POST",

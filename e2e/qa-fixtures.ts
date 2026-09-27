@@ -103,9 +103,10 @@ export async function seedLibrary(page: Page) {
       activeView: "workspace",
     };
     // Keep this fixture on the current persisted schema. A deliberately old
-    // version belongs in a dedicated migration test; using one here reruns the
-    // upgrade path and can replace the just-seeded library with defaults.
-    stored.version = 16;
+    // version belongs in a dedicated migration test; migration intentionally
+    // routes upgraded libraries to the dashboard, which invalidates workflow
+    // tests that expect the seeded lecture to be selected.
+    stored.version = 18;
     localStorage.setItem(key, JSON.stringify(stored));
   }, seededNodes);
   await page.evaluate(async (name) => {

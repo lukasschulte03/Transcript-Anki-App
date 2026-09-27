@@ -2,11 +2,13 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
   ArrowUpRight,
+  AudioLines,
   Bookmark,
   Check,
   ChevronRight,
   FileText,
   Headphones,
+  Image as ImageIcon,
   Layers,
   LoaderCircle,
   MessageSquareText,
@@ -20,12 +22,76 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   LectioClient,
   TranscriptSegment,
+  VisualCandidate,
 } from "../../../application/lectioClient";
-import { useJobs, useLibrary } from "../../shared/useLectioClient";
+import { useJobs, useLibrary, useSettings } from "../../shared/useLectioClient";
 import { LectureAudio } from "./LectureAudio";
 import { LecturePdf } from "./LecturePdf";
 import { lectureCopy as c, formatTime } from "./lectureCopy";
+import { isKeyboardShortcutBlocked } from "../keyboardShortcuts";
 import "./lecture.css";
+
+function VisualPreview({
+  client,
+  lectureId,
+  visual,
+  onRemove,
+}: {
+  client: LectioClient;
+  lectureId: string;
+  visual: VisualCandidate;
+  onRemove(): void;
+}) {
+  const [url, setUrl] = useState("");
+  useEffect(() => {
+    let disposed = false;
+    let objectUrl = "";
+    void client.visuals.thumbnail(lectureId, visual.id).then((result) => {
+      if (!disposed && result.ok) {
+        objectUrl = URL.createObjectURL(result.value);
+        setUrl(objectUrl);
+      }
+    });
+    return () => {
+      disposed = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [client, lectureId, visual.id]);
+  return (
+    <article className="lecture-visual-card">
+      {url ? (
+        <img
+          src={url}
+          alt={visual.description || `Bild från slide ${visual.slidePage}`}
+        />
+      ) : (
+        <div className="lecture-visual-placeholder">
+          <LoaderCircle className="lecture-spin" />
+        </div>
+      )}
+      <div>
+        <strong>Slide {visual.slidePage}</strong>
+        <p>
+          {visual.visualAnalysis?.description ||
+            visual.localVision?.description ||
+            visual.cropText ||
+            visual.description ||
+            "Ingen beskrivning ännu."}
+        </p>
+        {visual.visualAnalysis?.extractedText && (
+          <p>OCR: {visual.visualAnalysis.extractedText}</p>
+        )}
+      </div>
+      <button
+        className="lecture-icon"
+        aria-label="Radera bild"
+        onClick={onRemove}
+      >
+        <Trash2 />
+      </button>
+    </article>
+  );
+}
 
 function TranscriptRow({
   segment,
@@ -46,7 +112,11 @@ function TranscriptRow({
       )
     : [segment.text];
   return (
-    <article className="lecture-transcript-row">
+    <article
+      id={`lecture-transcript-${segment.id}`}
+      className="lecture-transcript-row"
+      data-segment-id={segment.id}
+    >
       <button
         className="lecture-timestamp"
         onClick={() => onSeek(segment.start)}
@@ -56,6 +126,7 @@ function TranscriptRow({
       </button>
       {editing ? (
         <textarea
+          name={`transcript-segment-${segment.id}`}
           aria-label={`Redigera avsnitt ${formatTime(segment.start)}`}
           autoFocus
           value={text}
@@ -104,6 +175,7 @@ export function LectureView({
   onBusyChange(value: boolean): void;
 }) {
   const library = useLibrary(client);
+  const settings = useSettings(client);
   const jobs = useJobs(client);
   const node = library.nodes.find((item) => item.id === lectureId)!;
   const lecture = library.lectures[lectureId] ?? { lectureId, notes: "" };
@@ -118,6 +190,13 @@ export function LectureView({
     .filter((item) => item.lectureId === lectureId)
     .sort((a, b) => a.time - b.time);
   const cards = library.cards.filter((item) => item.lectureId === lectureId);
+  const slideCount = lecture.slidePages
+    ? lecture.slidePages.length +
+      Object.values(lecture.slidePageSplits ?? {}).reduce(
+        (total, regions) => total + Math.max(0, regions.length - 1),
+        0,
+      )
+    : 0;
   const [tab, setTab] = useState("transcript");
   const [mobilePanel, setMobilePanel] = useState("slides");
   const [error, setError] = useState("");
@@ -126,19 +205,158 @@ export function LectureView({
   const [importing, setImporting] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [query, setQuery] = useState("");
+  const [followTranscript, setFollowTranscript] = useState(true);
   const [matches, setMatches] = useState<Set<string> | null>(null);
   const [limit, setLimit] = useState(80);
   const [notes, setNotes] = useState(lecture.notes);
   const [noteStatus, setNoteStatus] = useState(c.saved as string);
   const [confirm, setConfirm] = useState(false);
+  const [markerToRemove, setMarkerToRemove] = useState<string | null>(null);
   const [cardsOpen, setCardsOpen] = useState(false);
+  const [cancellingJob, setCancellingJob] = useState(false);
+  const [syncingCards, setSyncingCards] = useState(false);
+  const [generatingCards, setGeneratingCards] = useState(false);
+  const [cardDeleteTarget, setCardDeleteTarget] = useState<
+    "all" | string | null
+  >(null);
+  const [imagesOpen, setImagesOpen] = useState(false);
+  const [lectureJobIds, setLectureJobIds] = useState<string[]>([]);
   const [seek, setSeek] = useState({ time: 0, serial: 0 });
+  const filtered = useMemo(
+    () =>
+      matches ? segments.filter((item) => matches.has(item.id)) : segments,
+    [matches, segments],
+  );
+  const hasAudio = Boolean(lecture.audioAssetId || lecture.audioParts?.length);
+  const running = jobs.filter(
+    (job) =>
+      job.kind === "transcription" &&
+      (job.status === "active" || job.status === "queued") &&
+      lectureJobIds.includes(job.id),
+  );
+  const imageJob = jobs.find(
+    (job) =>
+      (job.id === `visual-index:${lectureId}` ||
+        job.id === `visual-describe:${lectureId}`) &&
+      (job.status === "active" || job.status === "queued"),
+  );
+  const indexingImages = Boolean(imageJob);
   const position = useRef(0);
-  const updatePosition = useCallback((time: number) => {
-    position.current = time;
+  const segmentsRef = useRef(segments);
+  const filteredRef = useRef(filtered);
+  const limitRef = useRef(limit);
+  const activeSegmentId = useRef<string | null>(null);
+  const activeTranscriptRow = useRef<HTMLElement | null>(null);
+  const transcriptScroll = useRef<HTMLDivElement>(null);
+  const followTranscriptRef = useRef(true);
+  segmentsRef.current = segments;
+  filteredRef.current = filtered;
+  limitRef.current = limit;
+  const syncActiveTranscriptRow = useCallback(() => {
+    const candidateRow = activeSegmentId.current
+      ? document.getElementById(`lecture-transcript-${activeSegmentId.current}`)
+      : null;
+    const nextRow =
+      candidateRow && transcriptScroll.current?.contains(candidateRow)
+        ? candidateRow
+        : null;
+    if (activeTranscriptRow.current !== nextRow) {
+      activeTranscriptRow.current?.removeAttribute("data-audio-active");
+      activeTranscriptRow.current = nextRow;
+    }
+    nextRow?.setAttribute("data-audio-active", "true");
   }, []);
+  const centerActiveTranscriptRow = useCallback(() => {
+    if (!followTranscriptRef.current) return;
+    requestAnimationFrame(() => {
+      const container = transcriptScroll.current;
+      const row = activeSegmentId.current
+        ? document.getElementById(
+            `lecture-transcript-${activeSegmentId.current}`,
+          )
+        : null;
+      if (!container || !row || !container.contains(row)) return;
+      const containerRect = container.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const centeredTop =
+        container.scrollTop +
+        rowRect.top -
+        containerRect.top -
+        (container.clientHeight - rowRect.height) / 2;
+      const maxTop = container.scrollHeight - container.clientHeight;
+      container.scrollTo({
+        top: Math.max(0, Math.min(maxTop, centeredTop)),
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    });
+  }, []);
+  const pauseTranscriptFollow = useCallback(() => {
+    const container = transcriptScroll.current;
+    if (
+      !followTranscriptRef.current ||
+      !container ||
+      container.scrollHeight <= container.clientHeight + 2
+    ) {
+      return;
+    }
+    followTranscriptRef.current = false;
+    setFollowTranscript(false);
+  }, []);
+  const resumeTranscriptFollow = useCallback(() => {
+    followTranscriptRef.current = true;
+    setFollowTranscript(true);
+    centerActiveTranscriptRow();
+  }, [centerActiveTranscriptRow]);
+  const updatePosition = useCallback(
+    (time: number) => {
+      position.current = time;
+      const source = segmentsRef.current;
+      let low = 0;
+      let high = source.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (source[middle].start <= time) low = middle + 1;
+        else high = middle;
+      }
+      const candidate = source[low - 1];
+      const nextId = candidate && time <= candidate.end ? candidate.id : null;
+      if (activeSegmentId.current === nextId) return;
+
+      activeSegmentId.current = nextId;
+      syncActiveTranscriptRow();
+      if (!nextId) return;
+      centerActiveTranscriptRow();
+
+      const visibleIndex = filteredRef.current.findIndex(
+        (segment) => segment.id === nextId,
+      );
+      if (visibleIndex >= limitRef.current) {
+        const nextLimit = Math.min(
+          filteredRef.current.length,
+          Math.ceil((visibleIndex + 1) / 80) * 80,
+        );
+        limitRef.current = nextLimit;
+        setLimit(nextLimit);
+      }
+    },
+    [centerActiveTranscriptRow, syncActiveTranscriptRow],
+  );
+  useEffect(() => {
+    syncActiveTranscriptRow();
+    centerActiveTranscriptRow();
+  }, [
+    centerActiveTranscriptRow,
+    filtered,
+    limit,
+    segments,
+    syncActiveTranscriptRow,
+    tab,
+  ]);
   const pdfInput = useRef<HTMLInputElement>(null);
   const audioInput = useRef<HTMLInputElement>(null);
+  const transcriptSearchRef = useRef<HTMLInputElement>(null);
   const pendingNotes = useRef<string | null>(null);
   const dragDepth = useRef(0);
   const setOccupied = useCallback(
@@ -157,7 +375,7 @@ export function LectureView({
       pendingNotes.current = null;
       setNoteStatus(c.saved);
     } else setError(result.error.message);
-  }, [client, lectureId]);
+  }, [client, lectureId, setError]);
   useEffect(() => {
     const timer = setTimeout(saveNotes, 600);
     return () => clearTimeout(timer);
@@ -169,6 +387,43 @@ export function LectureView({
     },
     [saveNotes, onBusyChange],
   );
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (event.altKey) return;
+      const key = event.key.toLowerCase();
+      const hasCommand = event.ctrlKey || event.metaKey;
+      if (isKeyboardShortcutBlocked(event, hasCommand && key === "f")) return;
+
+      if (hasCommand && key === "f") {
+        event.preventDefault();
+        setTab("transcript");
+        requestAnimationFrame(() => transcriptSearchRef.current?.focus());
+      } else if (hasCommand && event.key === "Enter") {
+        event.preventDefault();
+        setCardsOpen(true);
+      } else if (!hasCommand && event.shiftKey && key === "t") {
+        event.preventDefault();
+        setTab("transcript");
+        requestAnimationFrame(() => transcriptSearchRef.current?.focus());
+      } else if (!hasCommand && event.shiftKey && key === "i") {
+        event.preventDefault();
+        audioInput.current?.click();
+      }
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  }, []);
+  if (!node) {
+    return (
+      <div className="lecture-missing" role="alert">
+        <FileText />
+        <h1>Föreläsningen kunde inte öppnas</h1>
+        <p>
+          Objektet finns inte längre i biblioteket. Välj en annan föreläsning.
+        </p>
+      </div>
+    );
+  }
   const ancestry: typeof library.nodes = [];
   let parent = library.nodes.find((item) => item.id === node.parentId);
   const seen = new Set<string>();
@@ -177,16 +432,6 @@ export function LectureView({
     if (parent.type !== "workspace") ancestry.unshift(parent);
     parent = library.nodes.find((item) => item.id === parent!.parentId);
   }
-  const filtered = matches
-    ? segments.filter((item) => matches.has(item.id))
-    : segments;
-  const hasAudio = Boolean(lecture.audioAssetId || lecture.audioParts?.length);
-  const running = jobs.filter(
-    (job) =>
-      job.kind === "transcription" &&
-      (job.status === "active" || job.status === "queued"),
-  );
-
   const importFiles = async (files: File[]) => {
     if (busy || !files.length) return;
     setOccupied(true);
@@ -225,8 +470,66 @@ export function LectureView({
       [lectureId],
       overwrite,
     );
-    if (result.ok) setNotice(c.queued);
+    if (result.ok) {
+      setLectureJobIds((current) => [
+        ...new Set([...current, ...result.value]),
+      ]);
+      setNotice(c.queued);
+    } else setError(result.error.message);
+  };
+  const cancelTranscription = async () => {
+    const job = running[0];
+    if (!job || cancellingJob) return;
+    setCancellingJob(true);
+    setError("");
+    const result = await client.jobs.cancel(job.id);
+    if (result.ok) setNotice("Transkriberingen avbryts…");
     else setError(result.error.message);
+    setCancellingJob(false);
+  };
+  const approveCards = (ids: string[]) => {
+    const result = client.cards.approve(ids);
+    if (result.ok) setNotice(`${result.value} kort godkändes.`);
+    else setError(result.error.message);
+  };
+  const syncApprovedCards = async () => {
+    if (syncingCards) return;
+    setSyncingCards(true);
+    setError("");
+    const result = await client.workflows.enqueue("sync", [lectureId]);
+    if (result.ok) setNotice("Godkända kort har lagts i synkkön.");
+    else setError(result.error.message);
+    setSyncingCards(false);
+  };
+  const generateCards = async () => {
+    if (generatingCards) return;
+    if (cards.length) {
+      const backup = await client.workflows.createBackup();
+      if (!backup.ok) return setError(backup.error.message);
+    }
+    setGeneratingCards(true);
+    const result = await client.workflows.enqueue(
+      "generate",
+      [lectureId],
+      cards.length > 0,
+    );
+    if (result.ok) setNotice("Kortgenereringen har lagts i kön.");
+    else setError(result.error.message);
+    setGeneratingCards(false);
+  };
+  const extractImages = async () => {
+    if (indexingImages) return;
+    setImagesOpen(false);
+    const result = await client.visuals.indexLecture(lectureId);
+    if (!result.ok) setError(result.error.message);
+    else setNotice(`${result.value} slidebilder hittades.`);
+  };
+  const describeImages = async () => {
+    if (indexingImages) return;
+    setImagesOpen(false);
+    const result = await client.visuals.describeLecture(lectureId);
+    if (!result.ok) setError(result.error.message);
+    else setNotice(`${result.value} bildutklipp analyserades.`);
   };
   const jump = (time: number) =>
     setSeek((previous) => ({ time, serial: previous.serial + 1 }));
@@ -260,6 +563,7 @@ export function LectureView({
       <input
         ref={pdfInput}
         type="file"
+        name="lecture-slides"
         accept="application/pdf,.pdf"
         hidden
         aria-label="Välj PDF"
@@ -271,6 +575,7 @@ export function LectureView({
       <input
         ref={audioInput}
         type="file"
+        name="lecture-audio"
         accept="audio/*,.m4a,.mp3,.wav,.webm,.ogg,.flac"
         hidden
         multiple
@@ -304,9 +609,7 @@ export function LectureView({
             {lecture.slideAssetId && (
               <span>
                 <FileText />
-                {lecture.slidePages?.length
-                  ? `${lecture.slidePages.length} slides`
-                  : c.slides}
+                {slideCount ? `${slideCount} slides` : c.slides}
               </span>
             )}
             {hasAudio && (
@@ -321,10 +624,11 @@ export function LectureView({
         </div>
         <button
           className="lecture-action lecture-card-action"
+          aria-label={`Öppna Anki-kort för ${node.title}`}
           onClick={() => setCardsOpen(true)}
         >
           <Layers />
-          {c.cards}
+          Anki-kort
           {cards.length > 0 && (
             <span className="lecture-count">{cards.length}</span>
           )}
@@ -358,8 +662,28 @@ export function LectureView({
           client={client}
           assetId={lecture.slideAssetId}
           name={lecture.slideName}
+          slidePageSplits={lecture.slidePageSplits}
           busy={busy}
           onImport={() => pdfInput.current?.click()}
+          onSplitPagesChange={(sourcePages, regions) => {
+            const next: NonNullable<typeof lecture.slidePageSplits> = {};
+            for (const sourcePage of sourcePages) {
+              if (regions) next[sourcePage] = regions;
+            }
+            const result = client.library.updateLecture(lectureId, {
+              slidePageSplits: Object.keys(next).length ? next : undefined,
+            });
+            if (!result.ok) setError(result.error.message);
+            else
+              setNotice(
+                regions
+                  ? "Samma uppdelning har använts på alla PDF-sidor."
+                  : "Uppdelningen har återställts på alla PDF-sidor.",
+              );
+            return result.ok;
+          }}
+          onImages={() => setImagesOpen(true)}
+          imageCount={lecture.visualIndex?.length ?? 0}
         />
         <Tabs.Root
           className="lecture-text-pane"
@@ -396,7 +720,10 @@ export function LectureView({
               <label className="lecture-search">
                 <Search />
                 <input
+                  ref={transcriptSearchRef}
                   type="search"
+                  name="transcript-search"
+                  autoComplete="off"
                   aria-label={c.search}
                   placeholder={c.search}
                   value={query}
@@ -431,7 +758,12 @@ export function LectureView({
               </button>
             </div>
             {running.length > 0 && (
-              <div className="lecture-inline-progress" role="status">
+              <div
+                className="lecture-inline-progress"
+                role="status"
+                aria-live="polite"
+                aria-label="Transkribering pågår"
+              >
                 <LoaderCircle className="lecture-spin" />
                 <span>
                   {running[0].label}
@@ -439,9 +771,34 @@ export function LectureView({
                     ? ` · ${running[0].current}/${running[0].total}`
                     : ""}
                 </span>
+                <button
+                  className="lecture-action lecture-cancel-job"
+                  disabled={cancellingJob}
+                  onClick={() => void cancelTranscription()}
+                >
+                  <X />
+                  {cancellingJob ? "Avbryter…" : "Avbryt"}
+                </button>
               </div>
             )}
-            <div className="lecture-transcript-scroll">
+            <div
+              className="lecture-transcript-scroll"
+              ref={transcriptScroll}
+              onWheel={pauseTranscriptFollow}
+              onTouchStart={pauseTranscriptFollow}
+              onPointerDown={(event) => {
+                const element = event.currentTarget;
+                const scrollbarWidth =
+                  element.offsetWidth - element.clientWidth;
+                const bounds = element.getBoundingClientRect();
+                if (
+                  scrollbarWidth > 0 &&
+                  event.clientX >= bounds.right - scrollbarWidth
+                ) {
+                  pauseTranscriptFollow();
+                }
+              }}
+            >
               {!segments.length ? (
                 <div className="lecture-empty">
                   <MessageSquareText />
@@ -480,6 +837,16 @@ export function LectureView({
                 </>
               )}
             </div>
+            {!followTranscript && activeSegmentId.current && (
+              <button
+                className="lecture-action lecture-follow-transcript"
+                aria-label="Återuppta följning av transkriptet"
+                onClick={resumeTranscriptFollow}
+              >
+                <AudioLines aria-hidden="true" />
+                Återuppta
+              </button>
+            )}
           </Tabs.Content>
           <Tabs.Content value="notes" className="lecture-text-content">
             <div className="lecture-note-status" aria-live="polite">
@@ -488,6 +855,7 @@ export function LectureView({
             </div>
             <textarea
               className="lecture-notes"
+              name="lecture-notes"
               aria-label={c.notes}
               placeholder={c.notesPlaceholder}
               value={notes}
@@ -528,11 +896,14 @@ export function LectureView({
                   <div className="lecture-marker" key={marker.id}>
                     <button
                       className="lecture-timestamp"
+                      aria-label={`Spela från markeringen ${formatTime(marker.time)}`}
                       onClick={() => jump(marker.time)}
                     >
                       {formatTime(marker.time)}
                     </button>
                     <input
+                      name={`marker-note-${marker.id}`}
+                      autoComplete="off"
                       aria-label={`Anteckning vid ${formatTime(marker.time)}`}
                       defaultValue={marker.note}
                       placeholder="Vad vill du komma ihåg?"
@@ -543,7 +914,7 @@ export function LectureView({
                     <button
                       className="lecture-icon"
                       aria-label={c.removeMarker}
-                      onClick={() => client.markers.remove(marker.id)}
+                      onClick={() => setMarkerToRemove(marker.id)}
                     >
                       <Trash2 />
                     </button>
@@ -561,6 +932,19 @@ export function LectureView({
         onPosition={updatePosition}
         seek={seek}
         onImport={() => audioInput.current?.click()}
+        onMark={() => {
+          if (!hasAudio) return;
+          const result = client.markers.add({
+            lectureId,
+            time: position.current,
+            note: "",
+          });
+          if (!result.ok) setError(result.error.message);
+          else
+            setNotice(
+              `Ögonblick markerat vid ${formatTime(position.current)}.`,
+            );
+        }}
         onBusy={setOccupied}
         onError={setError}
       />
@@ -615,14 +999,48 @@ export function LectureView({
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+      <Dialog.Root
+        open={markerToRemove !== null}
+        onOpenChange={(open) => {
+          if (!open) setMarkerToRemove(null);
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="lecture-dialog-overlay" />
+          <Dialog.Content className="lecture-dialog lecture-confirm">
+            <Dialog.Title>Ta bort markeringen?</Dialog.Title>
+            <Dialog.Description>
+              Anteckningen och tidspositionen tas bort permanent.
+            </Dialog.Description>
+            <div className="lecture-dialog-actions">
+              <Dialog.Close className="lecture-action">Behåll</Dialog.Close>
+              <button
+                className="lecture-action lecture-danger-action"
+                onClick={() => {
+                  if (!markerToRemove) return;
+                  const result = client.markers.remove(markerToRemove);
+                  if (!result.ok) setError(result.error.message);
+                  else setNotice("Markeringen togs bort.");
+                  setMarkerToRemove(null);
+                }}
+              >
+                <Trash2 />
+                Ta bort
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
       <Dialog.Root open={cardsOpen} onOpenChange={setCardsOpen}>
         <Dialog.Portal>
           <Dialog.Overlay className="lecture-dialog-overlay" />
           <Dialog.Content className="lecture-dialog lecture-cards">
             <header>
               <div>
-                <Dialog.Title>{c.cards}</Dialog.Title>
-                <Dialog.Description>{node.title}</Dialog.Description>
+                <Dialog.Title>Anki-kort</Dialog.Title>
+                <Dialog.Description>
+                  {node.title} · Skapa, granska, godkänn, radera och synka kort.
+                </Dialog.Description>
               </div>
               <Dialog.Close className="lecture-icon" aria-label={c.close}>
                 <X />
@@ -642,7 +1060,7 @@ export function LectureView({
                     <button
                       className="lecture-action"
                       disabled={card.status !== "generated"}
-                      onClick={() => client.cards.approve([card.id])}
+                      onClick={() => approveCards([card.id])}
                     >
                       <Check />
                       {card.status === "generated"
@@ -651,32 +1069,186 @@ export function LectureView({
                           ? c.synced
                           : c.approved}
                     </button>
+                    <button
+                      className="lecture-icon"
+                      aria-label="Radera kort"
+                      onClick={() => setCardDeleteTarget(card.id)}
+                    >
+                      <Trash2 />
+                    </button>
                   </article>
                 ))
               ) : (
                 <div className="lecture-empty">
                   <Layers />
                   <h2>{c.cardsEmpty}</h2>
-                  <p>{c.cardsHint}</p>
+                  <p>
+                    Skapa kort direkt för den här föreläsningen. Dina sparade
+                    inställningar för Anki-generering används automatiskt.
+                  </p>
                 </div>
               )}
             </div>
             <footer>
-              <span>{cards.length} kort</span>
+              <span aria-live="polite">
+                {cards.length} kort ·{" "}
+                {cards.filter((card) => card.status === "generated").length} att
+                granska ·{" "}
+                {cards.filter((card) => card.status === "approved").length}{" "}
+                godkända
+              </span>
+              <div className="lecture-card-footer-actions">
+                <button
+                  className="lecture-action"
+                  disabled={generatingCards}
+                  onClick={() => void generateCards()}
+                >
+                  {generatingCards ? (
+                    <LoaderCircle className="lecture-spin" />
+                  ) : (
+                    <Sparkles />
+                  )}
+                  {cards.length ? "Generera på nytt" : "Generera kort"}
+                </button>
+                {cards.length > 0 && (
+                  <button
+                    className="lecture-action"
+                    onClick={() => setCardDeleteTarget("all")}
+                  >
+                    <Trash2 /> Radera alla
+                  </button>
+                )}
+                <button
+                  className="lecture-action"
+                  disabled={!cards.some((card) => card.status === "generated")}
+                  onClick={() =>
+                    approveCards(
+                      cards
+                        .filter((card) => card.status === "generated")
+                        .map((card) => card.id),
+                    )
+                  }
+                >
+                  <Check />
+                  {c.approveAll}
+                </button>
+                <button
+                  className="lecture-action lecture-primary-action"
+                  disabled={
+                    syncingCards ||
+                    !cards.some((card) => card.status === "approved")
+                  }
+                  onClick={() => void syncApprovedCards()}
+                >
+                  {syncingCards && <LoaderCircle className="lecture-spin" />}
+                  {syncingCards ? "Lägger i kö…" : "Synka godkända"}
+                </button>
+              </div>
+            </footer>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <Dialog.Root
+        open={cardDeleteTarget !== null}
+        onOpenChange={(open) => !open && setCardDeleteTarget(null)}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="lecture-dialog-overlay" />
+          <Dialog.Content className="lecture-dialog lecture-confirm">
+            <Dialog.Title>
+              Radera {cardDeleteTarget === "all" ? "alla kort" : "kortet"}?
+            </Dialog.Title>
+            <Dialog.Description>
+              Synkade kort tas även bort ur Anki vid nästa synkning.
+            </Dialog.Description>
+            <div className="lecture-dialog-actions">
+              <Dialog.Close className="lecture-action">Behåll</Dialog.Close>
               <button
-                className="lecture-action"
-                disabled={!cards.some((card) => card.status === "generated")}
-                onClick={() =>
-                  client.cards.approve(
-                    cards
-                      .filter((card) => card.status === "generated")
-                      .map((card) => card.id),
-                  )
-                }
+                className="lecture-action lecture-danger-action"
+                onClick={async () => {
+                  const backup = await client.workflows.createBackup();
+                  if (!backup.ok) return setError(backup.error.message);
+                  const ids =
+                    cardDeleteTarget === "all"
+                      ? cards.map((card) => card.id)
+                      : cardDeleteTarget
+                        ? [cardDeleteTarget]
+                        : [];
+                  ids.forEach((id) => client.cards.remove(id));
+                  setCardDeleteTarget(null);
+                  setNotice(`${ids.length} kort togs bort.`);
+                }}
               >
-                <Check />
-                {c.approveAll}
+                <Trash2 /> Radera
               </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <Dialog.Root open={imagesOpen} onOpenChange={setImagesOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="lecture-dialog-overlay" />
+          <Dialog.Content className="lecture-dialog lecture-cards lecture-visuals">
+            <header>
+              <div>
+                <Dialog.Title>Slidebilder</Dialog.Title>
+                <Dialog.Description>
+                  Extraherade bilder från {node.title}. Granska dem innan de
+                  används till Anki-kort.
+                </Dialog.Description>
+              </div>
+              <Dialog.Close className="lecture-icon" aria-label={c.close}>
+                <X />
+              </Dialog.Close>
+            </header>
+            {imageJob && (
+              <p className="lecture-visual-job-status" role="status">
+                {imageJob.label}: {imageJob.detail ?? "Arbetar…"}
+              </p>
+            )}
+            <div className="lecture-visual-grid">
+              {lecture.visualIndex?.length ? (
+                lecture.visualIndex.map((visual) => (
+                  <VisualPreview
+                    key={visual.id}
+                    client={client}
+                    lectureId={lectureId}
+                    visual={visual}
+                    onRemove={() =>
+                      void client.visuals.remove(lectureId, visual.id)
+                    }
+                  />
+                ))
+              ) : (
+                <div className="lecture-empty">
+                  <ImageIcon />
+                  <h2>Inga bilder extraherade</h2>
+                  <p>
+                    Analysera slides för att hitta diagram, illustrationer och
+                    fotografier.
+                  </p>
+                </div>
+              )}
+            </div>
+            <footer>
+              <span>{lecture.visualIndex?.length ?? 0} bilder</span>
+              <button
+                className="lecture-action lecture-primary-action"
+                disabled={indexingImages}
+                onClick={() => void extractImages()}
+              >
+                <Sparkles /> Extrahera bilder
+              </button>
+              {settings.visualAnalysisProvider === "api" &&
+                Boolean(lecture.visualIndex?.length) && (
+                  <button
+                    className="lecture-action"
+                    disabled={indexingImages}
+                    onClick={() => void describeImages()}
+                  >
+                    <Sparkles /> Analysera med API
+                  </button>
+                )}
             </footer>
           </Dialog.Content>
         </Dialog.Portal>

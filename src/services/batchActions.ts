@@ -29,6 +29,7 @@ import {
 } from "./transcription";
 import { inheritedGlossary } from "./glossary";
 import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
+import { commitCardReplacement, planCardReplacement } from "./cardReplacement";
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import { recordDiagnostic } from "./diagnostics";
 import {
@@ -51,6 +52,8 @@ export type BatchJob = {
   createdAt: string;
   updatedAt: string;
   overwrite?: boolean;
+  current?: number;
+  total?: number;
 };
 
 const storageKey =
@@ -182,6 +185,8 @@ async function transcribe(job: BatchJob) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     patchJob(job.id, {
       detail: `Transkriberar ljuddel ${index + 1} av ${parts.length}…`,
+      current: index,
+      total: parts.length,
     });
     const asset = await db.assets.get(parts[index].assetId);
     if (!asset) throw new Error("En ljuddel saknas lokalt.");
@@ -333,11 +338,16 @@ async function generate(job: BatchJob) {
       courseId(state.nodes, card.lectureId) ===
       courseId(state.nodes, job.lectureId),
   );
+  const replacement = planCardReplacement(
+    existing,
+    job.lectureId,
+    Boolean(job.overwrite),
+  );
   const chunks = planGenerationChunks(
     generation.sources.transcript ? lectureSegments : [],
   );
   const known = new Set(
-    existing.map((card) =>
+    replacement.referenceCards.map((card) =>
       `${card.front}\0${card.back}`.toLocaleLowerCase("sv"),
     ),
   );
@@ -345,6 +355,8 @@ async function generate(job: BatchJob) {
   for (const chunk of chunks) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     patchJob(job.id, {
+      current: chunk.index,
+      total: chunk.total,
       detail:
         chunks.length > 1
           ? `Skapar kort · del ${chunk.index + 1} av ${chunk.total}…`
@@ -383,10 +395,12 @@ async function generate(job: BatchJob) {
       preferences: generation.preferences,
       cardStyle: Object.assign({}, ...chain.map((item) => item.settings))
         .cardStyle,
-      existingCards: [...existing, ...generated].map(({ front, back }) => ({
-        front,
-        back,
-      })),
+      existingCards: [...replacement.referenceCards, ...generated].map(
+        ({ front, back }) => ({
+          front,
+          back,
+        }),
+      ),
     });
     const raw = await generateCardsWithApi(prompt, state.settings, apiKey);
     const visualIds = new Set(visualSources.keys());
@@ -417,8 +431,16 @@ async function generate(job: BatchJob) {
         return true;
       }),
     );
+    patchJob(job.id, {
+      current: chunk.index + 1,
+      total: chunk.total,
+      detail: `Del ${chunk.index + 1} av ${chunk.total} klar.`,
+    });
   }
-  libraryRepository.getState().addCards(generated);
+  if (!generated.length && replacement.replacedCardIds.length) {
+    return "Inga nya kort skapades; de befintliga korten behölls.";
+  }
+  commitCardReplacement(replacement, generated, libraryRepository.getState());
   return `${generated.length} nya kort skapades för granskning.`;
 }
 
@@ -428,7 +450,14 @@ async function approve(job: BatchJob) {
   const cards = state.cards.filter(
     (card) => card.lectureId === job.lectureId && card.status === "generated",
   );
-  cards.forEach((card) => state.updateCard(card.id, { status: "approved" }));
+  cards.forEach((card, index) => {
+    state.updateCard(card.id, { status: "approved" });
+    patchJob(job.id, {
+      current: index + 1,
+      total: cards.length,
+      detail: `Godkänner kort ${index + 1} av ${cards.length}…`,
+    });
+  });
   return `${cards.length} kort godkändes.`;
 }
 
@@ -440,6 +469,7 @@ async function sync(job: BatchJob) {
     (item) => item.lectureId === job.lectureId,
   );
   const failures: string[] = [];
+  let completed = 0;
   for (const deletion of deletions) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
@@ -452,6 +482,12 @@ async function sync(job: BatchJob) {
         .markAnkiNoteDeletionError(deletion.ankiId, message);
       failures.push(message);
     }
+    completed += 1;
+    patchJob(job.id, {
+      current: completed,
+      total: deletions.length,
+      detail: `Tar bort gammalt kort ${completed} av ${deletions.length}…`,
+    });
   }
   state = libraryRepository.getState();
   const deck = await ensureDeck(
@@ -464,6 +500,7 @@ async function sync(job: BatchJob) {
       (card.status === "approved" || card.status === "synced") &&
       (needsAnkiSync(card, deck) || Boolean(card.ankiSyncError)),
   );
+  const total = completed + cards.length;
   for (const card of cards) {
     if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
     try {
@@ -495,6 +532,12 @@ async function sync(job: BatchJob) {
       });
       failures.push(message);
     }
+    completed += 1;
+    patchJob(job.id, {
+      current: completed,
+      total,
+      detail: `Synkar kort ${completed} av ${total}…`,
+    });
   }
   if (failures.length)
     throw new Error(

@@ -10,11 +10,14 @@ import {
 } from "./googleDriveSync";
 import { libraryRepository } from "../infrastructure/libraryRepository";
 import { db } from "../core/database";
+import type {
+  InboxAudioFile,
+  InboxImportProgress,
+  InboxImportResult,
+} from "../application/lectioClient";
+import { confirmStorageForImport, uid } from "../lib/utils";
 
-export type InboxAudioFile = Required<Pick<DriveFile, "id" | "name">> &
-  Pick<DriveFile, "mimeType" | "modifiedTime"> & {
-    size: number;
-  };
+export type { InboxAudioFile } from "../application/lectioClient";
 
 const audioExtension = /\.(m4a|mp3|wav|aac|ogg|opus|flac|webm|mp4)$/i;
 
@@ -116,4 +119,121 @@ export async function moveGoogleDriveInboxFilesToMedia(
       ),
     ),
   );
+}
+
+async function contentHash(blob: Blob) {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await blob.arrayBuffer(),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Imports a set of remote recordings as one local transaction. Receipts are
+ * written only after every local asset and the lecture reference are durable.
+ */
+export async function importGoogleDriveInboxFiles(
+  files: InboxAudioFile[],
+  lectureId: string,
+  progress?: (value: InboxImportProgress) => void,
+): Promise<InboxImportResult> {
+  if (!files.length) throw new Error("Välj minst en ljudfil först.");
+  const state = libraryRepository.getState();
+  const lectureNode = state.nodes.find(
+    (node) => node.id === lectureId && node.type === "lecture",
+  );
+  if (!lectureNode) throw new Error("Föreläsningen kunde inte hittas.");
+
+  const lecture = state.lectures[lectureId];
+  const existingParts = lecture?.audioParts?.length
+    ? lecture.audioParts
+    : lecture?.audioAssetId
+      ? [
+          {
+            assetId: lecture.audioAssetId,
+            name: lecture.audioName ?? "Ljudinspelning",
+            duration: lecture.audioDuration,
+          },
+        ]
+      : [];
+  const createdAssetIds: string[] = [];
+  const parts: { assetId: string; name: string }[] = [];
+  const movedFiles: Array<{
+    id: string;
+    assetId: string;
+    contentHash: string;
+    originalName: string;
+  }> = [];
+  let lectureUpdated = false;
+
+  try {
+    for (const [index, file] of files.entries()) {
+      progress?.({
+        completed: index,
+        total: files.length,
+        detail: `Hämtar ${file.name}`,
+      });
+      const blob = await downloadGoogleDriveInboxFile(file);
+      if (!(await confirmStorageForImport(blob, "ljudfilen"))) {
+        throw new Error("Importen avbröts på grund av ledigt utrymme.");
+      }
+      const assetId = uid();
+      await db.assets.put({
+        id: assetId,
+        lectureId,
+        kind: "audio",
+        name: file.name,
+        mimeType: file.mimeType || blob.type || "audio/mpeg",
+        blob,
+        createdAt: new Date().toISOString(),
+      });
+      createdAssetIds.push(assetId);
+      parts.push({ assetId, name: file.name });
+      movedFiles.push({
+        id: file.id,
+        assetId,
+        contentHash: await contentHash(blob),
+        originalName: file.name,
+      });
+      progress?.({
+        completed: index + 1,
+        total: files.length,
+        detail: `${file.name} är sparad`,
+      });
+    }
+
+    const audioParts = [...existingParts, ...parts];
+    libraryRepository.getState().updateLecture(lectureId, {
+      audioAssetId: audioParts[0]?.assetId,
+      audioName: audioParts[0]?.name,
+      audioParts,
+    });
+    lectureUpdated = true;
+    await markGoogleDriveInboxFilesImported(
+      files.map((file) => file.id),
+      lectureId,
+    );
+  } catch (error) {
+    if (lectureUpdated) {
+      libraryRepository.getState().updateLecture(lectureId, {
+        audioAssetId: lecture?.audioAssetId,
+        audioName: lecture?.audioName,
+        audioDuration: lecture?.audioDuration,
+        audioParts: lecture?.audioParts,
+      });
+    }
+    if (createdAssetIds.length) await db.assets.bulkDelete(createdAssetIds);
+    throw error;
+  }
+
+  let remoteMoveFailed = false;
+  try {
+    await moveGoogleDriveInboxFilesToMedia(movedFiles, lectureId);
+  } catch {
+    remoteMoveFailed = true;
+  }
+  return { imported: files.length, lectureId, remoteMoveFailed };
 }

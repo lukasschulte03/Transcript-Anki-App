@@ -23,6 +23,15 @@ att en regression visar både vilken budget som bröts och det faktiska värdet.
 
 Ett inbyggt säkerhetstest stoppar körningen om testroten överlappar projektet, hemkatalogen, vanlig appdata eller en katalog utanför stability-roten.
 
+Testtäckningen innehåller även regressioner för gränsfall i testrotens
+Windows-sökvägar, transkriberingsköns felåterhämtning och avbrottssignaler,
+trevägsmerge vid radering kontra redigering, rekursiv merge av oberoende
+metadatafält samt Sync v2:s tomma diffar, fältbegränsade patchar,
+sekvensnummer och deterministiska konflikthantering. Stabilitetsprofilens
+Playwright-test skickar flera progresshändelser för samma jobb, kontrollerar
+att progressen uppdateras i stället för att skapa dubbletter och verifierar
+att felstatus kan stängas.
+
 ## Faser
 
 Körningen omfattar isoleringsskydd, lint, Vitest, frontendkontrakt och isolerade

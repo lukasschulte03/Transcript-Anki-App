@@ -15,7 +15,10 @@ const dataProfile =
 export default defineConfig({
   // Browser QA and the user's running dev app must not rewrite each other's
   // dependency cache (which can force a reload in the middle of recording).
-  cacheDir: process.env.VITE_NEXT_E2E === "true" ? "node_modules/.vite-next-e2e" : "node_modules/.vite",
+  cacheDir:
+    process.env.VITE_NEXT_E2E === "true"
+      ? "node_modules/.vite-next-e2e"
+      : "node_modules/.vite",
   plugins: [react(), tailwindcss()],
   resolve: {
     dedupe: ["react", "react-dom"],
@@ -42,6 +45,10 @@ export default defineConfig({
   server: {
     port: 1420,
     strictPort: true,
+    headers: {
+      "X-Lectio-Frontend": frontend,
+      "X-Lectio-Data-Profile": dataProfile,
+    },
     watch: {
       ignored: ["**/src-tauri/target/**", "**/release/**"],
     },

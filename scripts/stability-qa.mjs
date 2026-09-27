@@ -78,6 +78,10 @@ await writeFile(path.join(testRoot, ".lectio-stability-root"), runId, "utf8");
 
 const testEnvironment = {
   ...process.env,
+  // The broad Playwright suite exercises the supported production frontend.
+  // Do not inherit a developer's `LECTIO_FRONTEND=next*` selection into it.
+  LECTIO_FRONTEND: "legacy",
+  LECTIO_DATA_PROFILE: "stability",
   LECTIO_TEST_MODE: "1",
   LECTIO_STABILITY_ROOT: testRoot,
   LECTIO_QA_OUTPUT_DIR: artifactDir,

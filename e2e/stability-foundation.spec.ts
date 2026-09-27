@@ -10,7 +10,13 @@ test("stability-profilen isolerar biblioteket och visar bakgrundsjobb", async ({
   await page.goto("/");
   await seedLibrary(page);
   await page.reload();
-
+  await page.locator('input[value="Akut buk"]').waitFor();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
   const databaseNames = await page.evaluate(async () =>
     (await indexedDB.databases()).map((database) => database.name),
   );
@@ -39,6 +45,54 @@ test("stability-profilen isolerar biblioteket och visar bakgrundsjobb", async ({
     animations: "disabled",
     mask: [page.getByText(/Lectio · v/)],
   });
+});
+
+test("progressuppdateringar ersätter samma jobb och fel kan stängas", async ({
+  page,
+}) => {
+  test.skip(!stabilityMode, "Körs endast av qa:stability.");
+  await page.goto("/");
+  await seedLibrary(page);
+  await page.reload();
+  await page.locator('input[value="Akut buk"]').waitFor();
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+
+  const publish = (status: "active" | "error", current: number, detail: string) =>
+    page.evaluate(
+      ({ status, current, detail }) => {
+        window.dispatchEvent(
+          new CustomEvent("lectio:stability-progress", {
+            detail: {
+              id: "progress-lifecycle",
+              kind: "transcription",
+              label: "Livscykeltest",
+              phase: status === "active" ? "transcribing" : "error",
+              status,
+              current,
+              total: 10,
+              detail,
+            },
+          }),
+        );
+      },
+      { status, current, detail },
+    );
+
+  await publish("active", 2, "2 av 10 segment");
+  await expect(page.getByText("20%")).toBeVisible();
+  await publish("active", 8, "8 av 10 segment");
+  await expect(page.getByText("80%")).toBeVisible();
+  await expect(page.getByText("Livscykeltest", { exact: true })).toHaveCount(1);
+
+  await publish("error", 8, "Testfel");
+  await expect(page.getByText("Testfel")).toBeVisible();
+  await page.getByRole("button", { name: "Stäng förlopp" }).click();
+  await expect(page.getByText("Livscykeltest", { exact: true })).toHaveCount(0);
 });
 
 base(
