@@ -240,6 +240,221 @@ export function makeSlideGrid(
   };
 }
 
+export type SlideResizeHandle = "top" | "right" | "bottom" | "left";
+
+export type SlideResizeOptions = {
+  preserveAspectRatio?: boolean;
+  fromCenter?: boolean;
+};
+
+const minimumSlideRegionSize = 0.035;
+const geometryEpsilon = 0.000001;
+
+function resizeCandidate(
+  grid: SlideGrid,
+  referenceIndex: number,
+  handle: SlideResizeHandle,
+  targetWidth: number,
+  targetHeight: number,
+  fromCenter: boolean,
+): SlideGrid {
+  const reference = grid.regions[referenceIndex];
+  const scaleX = targetWidth / reference.width;
+  const scaleY = targetHeight / reference.height;
+  const widthChange = (region: SlideRegion) => region.width * (scaleX - 1);
+  const heightChange = (region: SlideRegion) => region.height * (scaleY - 1);
+  const maxColumn = Math.max(1, grid.columns - 1);
+  const maxRow = Math.max(1, grid.rows - 1);
+
+  return {
+    ...grid,
+    regions: grid.regions.map((region, index) => {
+      const row = Math.floor(index / grid.columns);
+      const column = index % grid.columns;
+      const width = region.width * scaleX;
+      const height = region.height * scaleY;
+      let x = region.x;
+      let y = region.y;
+
+      if (fromCenter) {
+        x += (region.width - width) / 2;
+        y += (region.height - height) / 2;
+      } else {
+        const dw = widthChange(region);
+        const dh = heightChange(region);
+        if (handle === "left") x -= dw * (1 - column / maxColumn);
+        if (handle === "right") x -= dw * (column / maxColumn);
+        if (handle === "top") y -= dh * (1 - row / maxRow);
+        if (handle === "bottom") y -= dh * (row / maxRow);
+
+        // A side handle keeps the corresponding outside edge fixed across the
+        // whole grid; an aspect-locked change on the other axis stays centered.
+        if (handle === "left" || handle === "right")
+          y += (region.height - height) / 2;
+        else x += (region.width - width) / 2;
+      }
+
+      return { x, y, width, height };
+    }),
+  };
+}
+
+function validSlideRegions(regions: SlideRegion[]) {
+  return regions.every(
+    ({ x, y, width, height }) =>
+      Number.isFinite(x) &&
+      Number.isFinite(y) &&
+      Number.isFinite(width) &&
+      Number.isFinite(height) &&
+      width >= minimumSlideRegionSize - geometryEpsilon &&
+      height >= minimumSlideRegionSize - geometryEpsilon &&
+      x >= 0 &&
+      y >= 0 &&
+      x + width <= 1 &&
+      y + height <= 1,
+  );
+}
+
+/**
+ * Resize the shared crop geometry from one box. All regions receive the same
+ * proportional size change, and a binary-searched clamp keeps every box on
+ * the original PDF page.
+ */
+export function resizeSlideGrid(
+  grid: SlideGrid,
+  regionIndex: number,
+  handle: SlideResizeHandle,
+  delta: { x: number; y: number },
+  options: SlideResizeOptions = {},
+): SlideGrid {
+  const reference = grid.regions[regionIndex];
+  if (!reference || grid.regions.length === 0) return grid;
+
+  const horizontal = handle === "left" || handle === "right";
+  const direction = handle === "right" || handle === "bottom" ? 1 : -1;
+  const fromCenter = options.fromCenter ?? false;
+  const multiplier = fromCenter ? 2 : 1;
+  let targetWidth = reference.width;
+  let targetHeight = reference.height;
+
+  if (horizontal) {
+    targetWidth += direction * delta.x * multiplier;
+    if (options.preserveAspectRatio)
+      targetHeight = targetWidth / (reference.width / reference.height);
+  } else {
+    targetHeight += direction * delta.y * multiplier;
+    if (options.preserveAspectRatio)
+      targetWidth = targetHeight * (reference.width / reference.height);
+  }
+
+  targetWidth = Math.max(minimumSlideRegionSize, targetWidth);
+  targetHeight = Math.max(minimumSlideRegionSize, targetHeight);
+
+  const candidateAt = (progress: number) =>
+    resizeCandidate(
+      grid,
+      regionIndex,
+      handle,
+      reference.width + (targetWidth - reference.width) * progress,
+      reference.height + (targetHeight - reference.height) * progress,
+      fromCenter,
+    );
+
+  const full = candidateAt(1);
+  if (validSlideRegions(full.regions)) return full;
+
+  let low = 0;
+  let high = 1;
+  for (let iteration = 0; iteration < 32; iteration++) {
+    const middle = (low + high) / 2;
+    if (validSlideRegions(candidateAt(middle).regions)) low = middle;
+    else high = middle;
+  }
+  return candidateAt(low);
+}
+
+function mirroredMoveFactors(
+  regions: SlideRegion[],
+  activeIndex: number,
+  axis: "x" | "y",
+  divisions: number,
+) {
+  const active = regions[activeIndex];
+  const activeCenter =
+    axis === "x" ? active.x + active.width / 2 : active.y + active.height / 2;
+  const activeSide = Math.sign(activeCenter - 0.5);
+
+  // A lone column/row can translate as a unit. With multiple divisions, a
+  // center cell is the symmetry anchor and cannot drift off the page center.
+  if (divisions > 1 && activeSide === 0) return regions.map(() => 0);
+
+  return regions.map((region) => {
+    if (divisions <= 1) return 1;
+    const center =
+      axis === "x" ? region.x + region.width / 2 : region.y + region.height / 2;
+    const side = Math.sign(center - 0.5);
+    if (side === 0) return 0;
+    return side === activeSide ? 1 : -1;
+  });
+}
+
+function clampSymmetricDelta(
+  regions: SlideRegion[],
+  factors: number[],
+  axis: "x" | "y",
+  delta: number,
+) {
+  let minimum = -Infinity;
+  let maximum = Infinity;
+  regions.forEach((region, index) => {
+    const factor = factors[index];
+    if (!factor) return;
+    const position = axis === "x" ? region.x : region.y;
+    const size = axis === "x" ? region.width : region.height;
+    const first = -position / factor;
+    const second = (1 - position - size) / factor;
+    minimum = Math.max(minimum, Math.min(first, second));
+    maximum = Math.min(maximum, Math.max(first, second));
+  });
+  return Math.min(maximum, Math.max(minimum, delta));
+}
+
+/**
+ * Move one crop while mirroring its movement across the source page center.
+ * Opposite columns/rows travel in the opposite direction so the layout stays
+ * centered; a single row or column translates together.
+ */
+export function moveSlideGridSymmetrically(
+  grid: SlideGrid,
+  regionIndex: number,
+  delta: { x: number; y: number },
+): SlideGrid {
+  if (!grid.regions[regionIndex]) return grid;
+  const xFactors = mirroredMoveFactors(
+    grid.regions,
+    regionIndex,
+    "x",
+    grid.columns,
+  );
+  const yFactors = mirroredMoveFactors(
+    grid.regions,
+    regionIndex,
+    "y",
+    grid.rows,
+  );
+  const dx = clampSymmetricDelta(grid.regions, xFactors, "x", delta.x);
+  const dy = clampSymmetricDelta(grid.regions, yFactors, "y", delta.y);
+
+  return {
+    ...grid,
+    regions: grid.regions.map((region, index) => ({
+      ...region,
+      x: region.x + dx * xFactors[index],
+      y: region.y + dy * yFactors[index],
+    })),
+  };
+}
+
 type RelativeCrop = {
   left: number;
   top: number;

@@ -32,13 +32,27 @@ import { chunkCardCeiling, planGenerationChunks } from "./ankiChunking";
 import { commitCardReplacement, planCardReplacement } from "./cardReplacement";
 import { runExclusiveTranscription } from "./transcriptionQueue";
 import { recordDiagnostic } from "./diagnostics";
+import { analyzeVisualCrop } from "./apiVisualAnalysis";
 import {
+  getLocalVisionStatus,
+  localNvidiaVisionProvider,
+} from "./localVision";
+import { runExclusiveVision } from "./visualDescriptionQueue";
+import {
+  buildStoredSlideVisualIndex,
   moduleVisualCandidates,
+  resolveVisualDescriptionImage,
   resolveVisualMedia,
   selectVisualCandidates,
 } from "./visualIndex";
 
-export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
+export type BatchAction =
+  | "transcribe"
+  | "generate"
+  | "approve"
+  | "sync"
+  | "extractImages"
+  | "describeImages";
 export type BatchJobStatus =
   "queued" | "running" | "waiting" | "complete" | "error" | "cancelled";
 
@@ -549,11 +563,232 @@ async function sync(job: BatchJob) {
   return `${cards.length} kort synkades${deletions.length ? ` och ${deletions.length} raderades` : ""}.`;
 }
 
+async function extractImages(job: BatchJob) {
+  if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
+  const initial = libraryRepository.getState().lectures[job.lectureId];
+  if (!initial?.slideAssetId) throw new Error("Lägg till slides först.");
+  const sourceAssetId = initial.slideAssetId;
+  const indexed = await runQueuedVisionJob(job, (signal) =>
+    buildStoredSlideVisualIndex(initial, (current, total, detail) => {
+      if (cancelled.has(job.id) || signal.aborted)
+        throw new Error("BATCH_CANCELLED");
+      patchJob(job.id, { current, total, detail });
+    }),
+  );
+  if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
+  if (!indexed) throw new Error("Slides kunde inte analyseras.");
+
+  const latest = libraryRepository.getState().lectures[job.lectureId];
+  if (!latest || latest.slideAssetId !== sourceAssetId)
+    throw new Error("Slides ändrades under extraheringen. Försök igen.");
+
+  const deleted = new Set(latest.deletedVisualIds ?? []);
+  const existingVision = new Map(
+    (latest.visualIndex ?? []).map((item) => [item.id, item.localVision]),
+  );
+  const existingAnalysis = new Map(
+    (latest.visualIndex ?? []).map((item) => [item.id, item.visualAnalysis]),
+  );
+  const candidates = indexed.candidates
+    .filter((item) => !deleted.has(item.id))
+    .map((item) => ({
+      ...item,
+      localVision: existingVision.get(item.id),
+      visualAnalysis: existingAnalysis.get(item.id),
+    }));
+  if (candidates.length || !latest.visualIndex?.length) {
+    libraryRepository.getState().updateLecture(job.lectureId, {
+      visualIndex: candidates,
+      visualIndexHash: indexed.sourceHash,
+      visualIndexVersion: 2,
+      visualIndexUpdatedAt: new Date().toISOString(),
+    });
+  }
+  return `${candidates.length} bildutklipp hittades.`;
+}
+
+function runQueuedVisionJob<T>(
+  job: BatchJob,
+  run: (signal: AbortSignal) => Promise<T>,
+) {
+  return new Promise<T>((resolve, reject) => {
+    runExclusiveVision(job.id, async (signal) => {
+      try {
+        if (cancelled.has(job.id)) throw new Error("BATCH_CANCELLED");
+        resolve(await run(signal));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+async function describeImages(job: BatchJob) {
+  const state = libraryRepository.getState();
+  const lecture = state.lectures[job.lectureId];
+  const candidates = lecture?.visualIndex ?? [];
+  if (!lecture || !candidates.length)
+    throw new Error("Extrahera bilder från slides innan du beskriver dem.");
+  const settings = state.settings;
+  const useApi = settings.visualAnalysisProvider === "api";
+  let apiKey = "";
+  if (useApi) {
+    const savedKey = await readCredential("visual:openai");
+    if (!savedKey)
+      throw new Error("Spara en OpenAI-nyckel under Inställningar → Bildanalys först.");
+    apiKey = savedKey;
+  } else {
+    const status = await getLocalVisionStatus();
+    if (!status.ready)
+      throw new Error(
+        status.nvidiaDetected && !status.nvidiaRuntimeReady
+          ? "Nvidia hittades, men CUDA-stödet i Lectios bildmotor är inte redo. Öppna Inställningar och välj Reparera Nvidia-stöd."
+          : status.nvidiaDetected
+            ? "Den lokala bildmotorn är inte redo. Kontrollera den under Inställningar."
+          : "Lokala bildbeskrivningar kräver en Nvidia-GPU.",
+      );
+  }
+
+  const model = settings.visualAnalysisModel;
+  const pending = candidates.filter((candidate) =>
+    job.overwrite
+      ? true
+      : useApi
+        ? candidate.visualAnalysis?.provider !== "openai" ||
+          candidate.visualAnalysis.model !== model ||
+          candidate.visualAnalysis.sourceHash !== candidate.sourceHash
+        : candidate.localVision?.sourceHash !==
+          (candidate.contentHash ?? candidate.sourceHash),
+  );
+  if (!pending.length) return "Alla bilder har redan en aktuell AI-beskrivning.";
+  patchJob(job.id, {
+    current: 0,
+    total: pending.length,
+    detail: "Väntar på bildmotorn…",
+  });
+
+  const title =
+    state.nodes.find((node) => node.id === job.lectureId)?.title ??
+    job.lectureTitle;
+  let completed = 0;
+  await runQueuedVisionJob(job, async (signal) => {
+    for (const candidate of pending) {
+      if (cancelled.has(job.id) || signal.aborted)
+        throw new Error("BATCH_CANCELLED");
+      const latestState = libraryRepository.getState();
+      const currentLecture = latestState.lectures[job.lectureId];
+      const currentCandidate = currentLecture?.visualIndex?.find(
+        (item) => item.id === candidate.id,
+      );
+      if (!currentLecture || !currentCandidate) {
+        completed += 1;
+        continue;
+      }
+      patchJob(job.id, {
+        current: completed,
+        total: pending.length,
+        detail: `Beskriver bild ${completed + 1} av ${pending.length}…`,
+      });
+      const image = await resolveVisualDescriptionImage(
+        currentCandidate,
+        currentLecture,
+      );
+      if (!image)
+        throw new Error(
+          `Bildutklippet från slide ${candidate.slidePage} kunde inte öppnas.`,
+        );
+
+      if (useApi) {
+        const result = await analyzeVisualCrop(image, {
+          apiKey,
+          model,
+          localOcrText: currentCandidate.cropText,
+        });
+        if (cancelled.has(job.id) || signal.aborted)
+          throw new Error("BATCH_CANCELLED");
+        const latest = libraryRepository.getState().lectures[job.lectureId];
+        if (latest?.visualIndex) {
+          libraryRepository.getState().updateLecture(job.lectureId, {
+            visualIndex: latest.visualIndex.map((item) =>
+              item.id === candidate.id
+                ? {
+                    ...item,
+                    visualAnalysis: {
+                      ...result,
+                      provider: "openai",
+                      model,
+                      generatedAt: new Date().toISOString(),
+                      sourceHash: item.sourceHash,
+                    },
+                  }
+                : item,
+            ),
+          });
+        }
+      } else {
+        const chain = [] as string[];
+        let node = latestState.nodes.find((item) => item.id === job.lectureId);
+        const visited = new Set<string>();
+        while (node && !visited.has(node.id)) {
+          visited.add(node.id);
+          if (node.context?.trim()) chain.unshift(node.context.trim());
+          node = node.parentId
+            ? latestState.nodes.find((item) => item.id === node?.parentId)
+            : undefined;
+        }
+        const slideText =
+          currentLecture.slidePages?.[
+            Math.max(0, currentCandidate.slidePage - 1)
+          ] ?? currentCandidate.description;
+        const context = [
+          `Föreläsning: ${title}`,
+          `Slide ${currentCandidate.slidePage}: ${slideText}`,
+          chain.length ? `Studiecontext: ${chain.join(" ")}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        const result = await localNvidiaVisionProvider.describe(
+          image,
+          signal,
+          context,
+        );
+        const latest = libraryRepository.getState().lectures[job.lectureId];
+        if (latest?.visualIndex) {
+          libraryRepository.getState().updateLecture(job.lectureId, {
+            visualIndex: latest.visualIndex.map((item) =>
+              item.id === candidate.id
+                ? {
+                    ...item,
+                    localVision: {
+                      ...result,
+                      model: "Lectio Nvidia Vision",
+                      generatedAt: new Date().toISOString(),
+                      sourceHash: item.contentHash ?? item.sourceHash,
+                    },
+                  }
+                : item,
+            ),
+          });
+        }
+      }
+      completed += 1;
+      patchJob(job.id, {
+        current: completed,
+        total: pending.length,
+        detail: `Bild ${completed} av ${pending.length} beskriven.`,
+      });
+    }
+  });
+  return `${completed} bilder fick AI-beskrivningar.`;
+}
+
 async function execute(job: BatchJob) {
   if (job.action === "transcribe")
     return runExclusiveTranscription(job.id, () => transcribe(job));
   if (job.action === "generate") return generate(job);
   if (job.action === "approve") return approve(job);
+  if (job.action === "extractImages") return extractImages(job);
+  if (job.action === "describeImages") return describeImages(job);
   return sync(job);
 }
 
@@ -570,7 +805,12 @@ async function drain() {
         if (detail === "WAITING") break;
         patchJob(job.id, { status: "complete", detail });
       } catch (error) {
-        recordDiagnostic("batch-transcription", error);
+        recordDiagnostic(
+          job.action === "extractImages" || job.action === "describeImages"
+            ? "batch-vision"
+            : "batch-transcription",
+          error,
+        );
         const wasCancelled =
           cancelled.has(job.id) || String(error).includes("BATCH_CANCELLED");
         patchJob(job.id, {
@@ -632,6 +872,10 @@ export async function cancelBatchJob(id: string) {
   const job = jobs.find((item) => item.id === id);
   if (job?.action === "transcribe")
     await cancelLocalTranscription(id).catch(() => undefined);
+  if (job?.action === "extractImages" || job?.action === "describeImages") {
+    const { cancelActiveVision } = await import("./visualDescriptionQueue");
+    cancelActiveVision(id);
+  }
   if (job?.status === "queued" || job?.status === "waiting") {
     patchJob(id, { status: "cancelled", detail: "Avbruten." });
     void drain();

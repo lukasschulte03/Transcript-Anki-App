@@ -47,6 +47,10 @@ export function NextApp({ client }: { client: LectioClient }) {
   const [nativeError, setNativeError] = useState("");
   const [libraryBusy, setLibraryBusy] = useState(false);
   const selected = library.nodes.find((node) => node.id === session.selectedId);
+  const notificationBottomOffset =
+    session.activeView === "workspace" && selected?.type === "lecture"
+      ? 156
+      : 20;
   const title =
     session.activeView === "workspace"
       ? (selected?.title ?? copy.library)
@@ -175,10 +179,7 @@ export function NextApp({ client }: { client: LectioClient }) {
           )}
         </main>
       </div>
-      <ProgressCenter
-        client={client}
-        bottomOffset={selected?.type === "lecture" ? 92 : 20}
-      />
+      <ProgressCenter client={client} bottomOffset={notificationBottomOffset} />
     </div>
   );
 }

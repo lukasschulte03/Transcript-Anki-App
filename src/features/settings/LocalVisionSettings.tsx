@@ -70,7 +70,13 @@ export function LocalVisionSettings() {
             ) : (
               <DownloadCloud className="size-3.5" />
             )}
-            {working ? "Förbereder bildmotorn…" : "Aktivera och ladda ner"}
+            {working
+              ? "Förbereder bildmotorn…"
+              : status?.modelInstalled && !status.nvidiaRuntimeReady
+                ? "Reparera Nvidia-stöd"
+                : status?.nvidiaRuntimeReady && !status.modelWeightsReady
+                  ? "Hämta bildmodell · 10,5 GB"
+                  : "Aktivera bildmotor"}
           </Button>
         ) : (
           <span className="inline-flex items-center gap-1.5 text-xs font-medium text-[var(--palette-success)]">
@@ -91,7 +97,11 @@ export function LocalVisionSettings() {
           <span className="mt-1 block text-xs text-[var(--palette-text-muted)]">
             {status?.ready
               ? "Den lokala Nvidia-bildmotorn är redo"
-              : "Aktivera bildmotorn först"}
+              : status?.nvidiaDetected && status.modelInstalled && !status.nvidiaRuntimeReady
+                ? "CUDA-stödet saknas i Python-miljön"
+                : status?.nvidiaRuntimeReady && !status.modelWeightsReady
+                  ? "Hämta Moondream-modellen (cirka 10,5 GB) i inställningarna"
+                : "Aktivera bildmotorn först"}
           </span>
         </button>
       </div>
@@ -102,9 +112,9 @@ export function LocalVisionSettings() {
       )}
       {status?.nvidiaDetected && !status.ready && (
         <p className="mt-3 text-xs text-[var(--palette-text-subtle)]">
-          {status.nvidiaName ?? "Nvidia-GPU"} används när den lokala
-          bildanalysen körs. Nedladdningen visas i förloppspanelen och kan
-          avbrytas.
+          {status.nvidiaName ?? "Nvidia-GPU"} hittades. {status.nvidiaRuntimeReady
+            ? "Modellhämtningen är cirka 10,5 GB och visas med progress i förloppspanelen; den kan avbrytas och återupptas."
+            : "Lectios lokala Python-miljö saknar fungerande CUDA-stöd. Reparera Nvidia-stödet här; installationen visas i förloppspanelen."}
         </p>
       )}
       {status?.ready && (

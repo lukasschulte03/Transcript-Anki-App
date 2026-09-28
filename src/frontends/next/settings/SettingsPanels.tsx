@@ -30,6 +30,7 @@ import type {
   AppSettings,
   LectioClient,
   LectioResult,
+  LocalVisionSetup,
   LocalTranscriptionSetup,
   ModelCatalogTask,
 } from "../../../application/lectioClient";
@@ -910,6 +911,31 @@ function ImageAnalysisPanel({
   update,
   onNotice,
 }: PanelProps) {
+  const [localVision, setLocalVision] = useState<LocalVisionSetup>();
+  const [visionBusy, setVisionBusy] = useState(false);
+
+  useEffect(() => {
+    let current = true;
+    void client.visuals.localStatus().then((result) => {
+      if (current && result.ok) setLocalVision(result.value);
+    });
+    return () => {
+      current = false;
+    };
+  }, [client]);
+
+  const repairLocalVision = async () => {
+    setVisionBusy(true);
+    const result = await client.visuals.installLocalVision();
+    setVisionBusy(false);
+    if (result.ok) {
+      setLocalVision(result.value);
+      onNotice("Den lokala Nvidia-bildmotorn är redo.");
+    } else {
+      onNotice(result.error.message, true);
+    }
+  };
+
   return (
     <>
       <PanelIntro
@@ -959,6 +985,44 @@ function ImageAnalysisPanel({
             description="Känner igen text i beskurna slidebilder på datorn. Kör bildextraheringen i föreläsningen för att uppdatera OCR-texten."
           >
             <span className="study-value-chip">Körs lokalt</span>
+          </NextSettingRow>
+          <NextSettingRow
+            id="local-vision"
+            icon={<Sparkles />}
+            title="AI-bildbeskrivningar"
+            description={
+              localVision?.ready
+                ? `${localVision.nvidiaName ?? "Nvidia-GPU"} är redo. Beskrivningar körs lokalt och bilderna lämnar inte datorn.`
+                : localVision?.nvidiaDetected && localVision.modelInstalled && !localVision.nvidiaRuntimeReady
+                  ? "Nvidia hittades, men CUDA-stödet saknas i Python-miljön. Reparera det här för att kunna beskriva bilder lokalt."
+                  : localVision?.nvidiaDetected && localVision.nvidiaRuntimeReady && !localVision.modelWeightsReady
+                    ? "Hämta bildmodellen här först. Den är cirka 10,5 GB och nedladdningen visas med verklig progress i hörnet."
+                  : localVision?.nvidiaDetected
+                    ? "Installera den lokala bildmotorn för att skapa korta AI-beskrivningar utan att skicka bilder till en tjänst."
+                    : "Kräver en Nvidia-GPU. Textigenkänning med PaddleOCR fungerar ändå lokalt utan den."
+            }
+          >
+            {localVision?.ready ? (
+              <span className="study-value-chip study-value-success">
+                <Check /> Redo
+              </span>
+            ) : (
+              <NextButton
+                disabled={visionBusy || !localVision?.nvidiaDetected}
+                onClick={() => void repairLocalVision()}
+              >
+                {visionBusy ? <LoaderCircle className="study-spin" /> : <ImageIcon />}
+                {visionBusy
+                  ? "Installerar…"
+                  : localVision?.modelInstalled && localVision.nvidiaDetected
+                    ? !localVision.nvidiaRuntimeReady
+                      ? "Reparera Nvidia-stöd"
+                      : "Hämta bildmodell · 10,5 GB"
+                    : localVision?.nvidiaDetected
+                      ? "Installera lokal motor"
+                      : "Nvidia-GPU krävs"}
+              </NextButton>
+            )}
           </NextSettingRow>
         </NextSection>
       ) : (

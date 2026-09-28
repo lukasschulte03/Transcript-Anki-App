@@ -3,10 +3,12 @@ import {
   CheckCheck,
   ChevronRight,
   FileText,
-  Layers2,
+  Images,
+  ScanText,
   Send,
   Sparkles,
   Trash2,
+  Layers2,
 } from "lucide-react";
 import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import type { LectioClient, LibraryNode } from "../../application/lectioClient";
@@ -30,6 +32,18 @@ const actions: Array<{
     label: "Transkribera",
     action: "Starta transkribering",
     Icon: FileText,
+  },
+  {
+    id: "extractImages",
+    label: "Extrahera bilder",
+    action: "Extrahera slidebilder",
+    Icon: Images,
+  },
+  {
+    id: "describeImages",
+    label: "Beskriv bilder",
+    action: "Skapa korta AI-beskrivningar",
+    Icon: ScanText,
   },
   {
     id: "generate",
@@ -130,6 +144,15 @@ export function SuperActionsView({ client }: { client: LectioClient }) {
   );
   const isComplete = (lectureId: string) => {
     if (action === "transcribe") return index.transcriptLectures.has(lectureId);
+    if (action === "extractImages")
+      return Boolean(lectureData[lectureId]?.visualIndex?.length);
+    if (action === "describeImages") {
+      const visuals = lectureData[lectureId]?.visualIndex ?? [];
+      return (
+        visuals.length > 0 &&
+        visuals.every((item) => item.localVision || item.visualAnalysis)
+      );
+    }
     const cards = index.cardsByLecture.get(lectureId) ?? [];
     if (action === "generate") return cards.length > 0;
     if (action === "delete") return cards.length === 0;
@@ -351,7 +374,11 @@ export function SuperActionsView({ client }: { client: LectioClient }) {
               <span>
                 <strong>Tillåt att befintligt resultat ersätts</strong>
                 <small>
-                  {action === "generate"
+                  {action === "extractImages"
+                    ? "Välj även föreläsningar där slidebilder redan har extraherats. Befintliga beskrivningar och OCR bevaras där det går."
+                    : action === "describeImages"
+                      ? "Välj även föreläsningar med befintliga beskrivningar för att uppdatera dem med vald lokal/API-modell."
+                    : action === "generate"
                     ? "Välj även klara föreläsningar. Gamla kort ersätts när nya har skapats."
                     : action === "transcribe"
                       ? "Välj även klara föreläsningar. Gamla transkript ersätts först efter lyckad körning."

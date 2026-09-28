@@ -16,7 +16,14 @@ import {
   Undo2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent,
+} from "react";
 import type {
   PDFDocumentProxy,
   PDFDocumentLoadingTask,
@@ -29,9 +36,12 @@ import { isKeyboardShortcutBlocked } from "../keyboardShortcuts";
 import {
   detectSlideGrid,
   makeSlideGrid,
+  moveSlideGridSymmetrically,
+  resizeSlideGrid,
   trimSlideGrid,
   type SlideGrid,
   type SlideRegion,
+  type SlideResizeHandle,
 } from "./slideGrid";
 
 type VisiblePage = { sourcePage: number; region?: SlideRegion };
@@ -44,6 +54,17 @@ const splitLayouts = [
   [2, 3],
 ] as const;
 const splitLayoutKey = (rows: number, columns: number) => `${rows}x${columns}`;
+type SplitPointerAction =
+  | { kind: "move"; regionIndex: number }
+  | { kind: "resize"; regionIndex: number; handle: SlideResizeHandle };
+type SplitPointerGesture = SplitPointerAction & {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  width: number;
+  height: number;
+  grid: SlideGrid;
+};
 const sameGridGeometry = (left: SlideGrid, right: SlideGrid) =>
   left.regions.length === right.regions.length &&
   left.regions.every((region, index) => {
@@ -104,8 +125,11 @@ export function LecturePdf({
     cropMode: "standard" | "fitted";
     manualChoiceRequired: boolean;
     excludedRegions: number[];
+    activeRegion: number;
   }>();
   const [splitPreview, setSplitPreview] = useState("");
+  const splitOverlay = useRef<HTMLDivElement>(null);
+  const splitGesture = useRef<SplitPointerGesture | null>(null);
   const previewUrl = useRef("");
   const detectedPages = useRef(new Set<number>());
 
@@ -423,6 +447,7 @@ export function LecturePdf({
       cropMode: initialCropMode,
       manualChoiceRequired: !detected,
       excludedRegions: [],
+      activeRegion: 0,
     });
   };
   const currentSuggestion =
@@ -459,6 +484,122 @@ export function LecturePdf({
       setSuggestion(undefined);
       detectedPages.current.clear();
     }
+  };
+
+  const beginSplitGesture = (
+    event: PointerEvent<HTMLButtonElement>,
+    action: SplitPointerAction,
+  ) => {
+    if (!splitEditor || !splitOverlay.current) return;
+    const bounds = splitOverlay.current.getBoundingClientRect();
+    if (!bounds.width || !bounds.height) return;
+    event.preventDefault();
+    event.stopPropagation();
+    splitOverlay.current.setPointerCapture(event.pointerId);
+    splitGesture.current = {
+      ...action,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      width: bounds.width,
+      height: bounds.height,
+      grid: splitEditor.grid,
+    };
+    setSplitEditor((current) =>
+      current ? { ...current, activeRegion: action.regionIndex } : current,
+    );
+  };
+
+  const updateSplitGesture = (event: PointerEvent<HTMLDivElement>) => {
+    const gesture = splitGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    const delta = {
+      x: (event.clientX - gesture.startX) / gesture.width,
+      y: (event.clientY - gesture.startY) / gesture.height,
+    };
+    const grid =
+      gesture.kind === "move"
+        ? moveSlideGridSymmetrically(
+            gesture.grid,
+            gesture.regionIndex,
+            delta,
+          )
+        : resizeSlideGrid(
+            gesture.grid,
+            gesture.regionIndex,
+            gesture.handle,
+            delta,
+            {
+              preserveAspectRatio: event.shiftKey,
+              fromCenter: event.ctrlKey || event.metaKey,
+            },
+          );
+    setSplitEditor((current) => (current ? { ...current, grid } : current));
+  };
+
+  const endSplitGesture = (event: PointerEvent<HTMLDivElement>) => {
+    if (splitGesture.current?.pointerId === event.pointerId)
+      splitGesture.current = null;
+  };
+
+  const moveSplitWithKeyboard = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    regionIndex: number,
+  ) => {
+    const direction: Record<string, { x: number; y: number }> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const step = direction[event.key];
+    if (!step) return;
+    event.preventDefault();
+    setSplitEditor((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        activeRegion: regionIndex,
+        grid: moveSlideGridSymmetrically(current.grid, regionIndex, {
+          x: step.x * (event.shiftKey ? 0.025 : 0.008),
+          y: step.y * (event.shiftKey ? 0.025 : 0.008),
+        }),
+      };
+    });
+  };
+
+  const resizeSplitWithKeyboard = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    regionIndex: number,
+    handle: SlideResizeHandle,
+  ) => {
+    const direction: Record<string, { x: number; y: number }> = {
+      ArrowLeft: { x: -1, y: 0 },
+      ArrowRight: { x: 1, y: 0 },
+      ArrowUp: { x: 0, y: -1 },
+      ArrowDown: { x: 0, y: 1 },
+    };
+    const step = direction[event.key];
+    if (!step) return;
+    event.preventDefault();
+    const amount = (event.shiftKey ? 0.025 : 0.008) * (event.ctrlKey || event.metaKey ? 0.5 : 1);
+    setSplitEditor((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        activeRegion: regionIndex,
+        grid: resizeSlideGrid(
+          current.grid,
+          regionIndex,
+          handle,
+          { x: step.x * amount, y: step.y * amount },
+          {
+            preserveAspectRatio: event.shiftKey,
+            fromCenter: event.ctrlKey || event.metaKey,
+          },
+        ),
+      };
+    });
   };
 
   return (
@@ -644,7 +785,7 @@ export function LecturePdf({
                 <Dialog.Description>
                   {splitEditor?.manualChoiceRequired
                     ? "Vi hittade inget säkert rutnät. Välj en layout och kontrollera förhandsvisningen. Samma uppdelning används på alla PDF-sidor. Originalfilen ändras inte."
-                    : "Granska rutorna och välj en layout. Samma uppdelning används på alla PDF-sidor. Originalfilen ändras inte."}
+                    : "Dra en ruta för att flytta hela rutnätet symmetriskt. Dra i sidhandtagen för att ändra alla rutor. Shift behåller bildförhållandet · Ctrl skalar från mitten. Samma uppdelning används på alla PDF-sidor."}
                 </Dialog.Description>
               </div>
               <Dialog.Close className="lecture-icon" aria-label={c.close}>
@@ -662,33 +803,82 @@ export function LecturePdf({
                 />
               )}
               {!splitEditor?.manualChoiceRequired && (
-                <div className="lecture-split-regions">
+                <div
+                  ref={splitOverlay}
+                  className="lecture-split-regions"
+                  onPointerMove={updateSplitGesture}
+                  onPointerUp={endSplitGesture}
+                  onPointerCancel={endSplitGesture}
+                  onLostPointerCapture={endSplitGesture}
+                >
                   {splitEditor?.grid.regions.map((region, index) => (
-                    <button
-                      key={`${region.x}-${region.y}`}
-                      type="button"
-                      aria-label={`${splitEditor.excludedRegions.includes(index) ? "Ta med" : "Ta bort"} del ${index + 1}`}
-                      aria-pressed={
-                        !splitEditor.excludedRegions.includes(index)
-                      }
+                    <div
+                      key={index}
+                      className={`lecture-split-region${splitEditor.activeRegion === index ? " is-active" : ""}${splitEditor.excludedRegions.includes(index) ? " is-excluded" : ""}`}
                       style={{
                         left: `${region.x * 100}%`,
                         top: `${region.y * 100}%`,
                         width: `${region.width * 100}%`,
                         height: `${region.height * 100}%`,
                       }}
-                      onClick={() =>
-                        setSplitEditor((current) => {
-                          if (!current) return current;
-                          const excluded = new Set(current.excludedRegions);
-                          if (excluded.has(index)) excluded.delete(index);
-                          else excluded.add(index);
-                          return { ...current, excludedRegions: [...excluded] };
-                        })
-                      }
                     >
-                      <span>{index + 1}</span>
-                    </button>
+                      <button
+                        className="lecture-split-region-move"
+                        type="button"
+                        aria-label={`Välj och flytta ruta ${index + 1}; piltangenter flyttar`}
+                        aria-pressed={splitEditor.activeRegion === index}
+                        onPointerDown={(event) =>
+                          beginSplitGesture(event, { kind: "move", regionIndex: index })
+                        }
+                        onKeyDown={(event) => moveSplitWithKeyboard(event, index)}
+                        onFocus={() =>
+                          setSplitEditor((current) =>
+                            current ? { ...current, activeRegion: index } : current,
+                          )
+                        }
+                      >
+                        <span>{index + 1}</span>
+                      </button>
+                      <button
+                        className="lecture-split-region-toggle"
+                        type="button"
+                        aria-label={`${splitEditor.excludedRegions.includes(index) ? "Ta med" : "Ta bort"} ruta ${index + 1}`}
+                        title={splitEditor.excludedRegions.includes(index) ? "Ta med ruta" : "Ta bort ruta"}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={() =>
+                          setSplitEditor((current) => {
+                            if (!current) return current;
+                            const excluded = new Set(current.excludedRegions);
+                            if (excluded.has(index)) excluded.delete(index);
+                            else excluded.add(index);
+                            return { ...current, excludedRegions: [...excluded] };
+                          })
+                        }
+                      >
+                        {splitEditor.excludedRegions.includes(index) ? <Plus /> : <X />}
+                      </button>
+                      {splitEditor.activeRegion === index &&
+                        !splitEditor.excludedRegions.includes(index) &&
+                        (["top", "right", "bottom", "left"] as const).map((handle) => (
+                          <button
+                            key={handle}
+                            className={`lecture-split-resize lecture-split-resize-${handle}`}
+                            type="button"
+                            aria-label={`Ändra storlek på alla rutor från ${handle === "top" ? "överkanten" : handle === "right" ? "högerkanten" : handle === "bottom" ? "underkanten" : "vänsterkanten"}`}
+                            title="Dra för att ändra alla rutor · Shift: behåll proportioner · Ctrl: från mitten"
+                            onPointerDown={(event) =>
+                              beginSplitGesture(event, {
+                                kind: "resize",
+                                regionIndex: index,
+                                handle,
+                              })
+                            }
+                            onKeyDown={(event) =>
+                              resizeSplitWithKeyboard(event, index, handle)
+                            }
+                          />
+                        ))}
+                    </div>
                   ))}
                 </div>
               )}
@@ -725,6 +915,7 @@ export function LecturePdf({
                             cropMode: "standard",
                             manualChoiceRequired: false,
                             excludedRegions: [],
+                            activeRegion: 0,
                           }
                         : current,
                     )
@@ -805,7 +996,7 @@ export function LecturePdf({
               <span>
                 {splitEditor?.manualChoiceRequired
                   ? "Välj en layout för att fortsätta"
-                  : `Alla PDF-sidor delas i ${Math.max(0, (splitEditor?.grid.regions.length ?? 0) - (splitEditor?.excludedRegions.length ?? 0))} delar · klicka på rutor som inte ska med`}
+                : `Alla PDF-sidor delas i ${Math.max(0, (splitEditor?.grid.regions.length ?? 0) - (splitEditor?.excludedRegions.length ?? 0))} delar · dra för att flytta · välj ruta för handtag`}
               </span>
               <button
                 className="lecture-action"

@@ -8,6 +8,8 @@ export type LocalVisionStatus = {
   nvidiaVramTotalMb: number | null;
   runtimeInstalled: boolean;
   modelInstalled: boolean;
+  modelWeightsReady: boolean;
+  nvidiaRuntimeReady: boolean;
   ready: boolean;
 };
 
@@ -28,6 +30,8 @@ export async function getLocalVisionStatus(): Promise<LocalVisionStatus> {
     nvidiaVramTotalMb: null,
     runtimeInstalled: false,
     modelInstalled: false,
+    modelWeightsReady: false,
+    nvidiaRuntimeReady: false,
     ready: false,
   };
   return invoke<LocalVisionStatus>("local_vision_status");

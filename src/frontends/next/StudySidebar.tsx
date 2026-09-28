@@ -1160,18 +1160,54 @@ export function StudySidebar({
                 </section>
                 <section className="study-help-group">
                   <h3>I föreläsningsvyn</h3>
-                  <p><span>Spela eller pausa</span><kbd>Mellanslag</kbd></p>
-                  <p><span>Hoppa 10 sekunder</span><kbd>← / →</kbd></p>
-                  <p><span>Hoppa 30 sekunder</span><kbd>Shift + ← / →</kbd></p>
-                  <p><span>Markera ögonblick</span><kbd>M</kbd></p>
-                  <p><span>Starta eller stoppa inspelning</span><kbd>R</kbd></p>
-                  <p><span>Pausa eller fortsätt inspelning</span><kbd>P</kbd></p>
-                  <p><span>Importera ljud</span><kbd>Shift + I</kbd></p>
-                  <p><span>Visa transkript</span><kbd>Shift + T</kbd></p>
-                  <p><span>Sök i transkript</span><kbd>Ctrl + F</kbd></p>
-                  <p><span>Öppna Anki-kort</span><kbd>Ctrl + Enter</kbd></p>
-                  <p><span>Byt slide</span><kbd>Page Up / Down</kbd></p>
-                  <p><span>Första eller sista slide</span><kbd>Home / End</kbd></p>
+                  <p>
+                    <span>Spela eller pausa</span>
+                    <kbd>Mellanslag</kbd>
+                  </p>
+                  <p>
+                    <span>Hoppa 10 sekunder</span>
+                    <kbd>← / →</kbd>
+                  </p>
+                  <p>
+                    <span>Hoppa 30 sekunder</span>
+                    <kbd>Shift + ← / →</kbd>
+                  </p>
+                  <p>
+                    <span>Markera ögonblick</span>
+                    <kbd>M</kbd>
+                  </p>
+                  <p>
+                    <span>Starta eller stoppa inspelning</span>
+                    <kbd>R</kbd>
+                  </p>
+                  <p>
+                    <span>Pausa eller fortsätt inspelning</span>
+                    <kbd>P</kbd>
+                  </p>
+                  <p>
+                    <span>Importera ljud</span>
+                    <kbd>Shift + I</kbd>
+                  </p>
+                  <p>
+                    <span>Visa transkript</span>
+                    <kbd>Shift + T</kbd>
+                  </p>
+                  <p>
+                    <span>Sök i transkript</span>
+                    <kbd>Ctrl + F</kbd>
+                  </p>
+                  <p>
+                    <span>Öppna Anki-kort</span>
+                    <kbd>Ctrl + Enter</kbd>
+                  </p>
+                  <p>
+                    <span>Byt slide</span>
+                    <kbd>Page Up / Down</kbd>
+                  </p>
+                  <p>
+                    <span>Första eller sista slide</span>
+                    <kbd>Home / End</kbd>
+                  </p>
                 </section>
                 <NextButton
                   tone="quiet"

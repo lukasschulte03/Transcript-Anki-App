@@ -8,7 +8,7 @@ import {
   LoaderCircle,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AppNotification,
   BackgroundJob,
@@ -209,7 +209,65 @@ export function ProgressCenter({
   const [hovered, setHovered] = useState(false);
   const [pinned, setPinned] = useState(false);
   const timers = useRef(new Map<string, number>());
+  const hoverLeaveTimer = useRef<number | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   const expanded = hovered || pinned;
+  const previousExpanded = useRef(expanded);
+  const previousFirstEntryTop = useRef<number | null>(null);
+  const updateHovered = (next: boolean) => {
+    if (next && hoverLeaveTimer.current !== null) {
+      window.clearTimeout(hoverLeaveTimer.current);
+      hoverLeaveTimer.current = null;
+    }
+    if (!next) {
+      if (!hovered || hoverLeaveTimer.current !== null) return;
+      hoverLeaveTimer.current = window.setTimeout(() => {
+        hoverLeaveTimer.current = null;
+        const firstEntry = listRef.current?.querySelector<HTMLElement>(
+          ".notification-entry",
+        );
+        if (firstEntry)
+          previousFirstEntryTop.current =
+            firstEntry.getBoundingClientRect().top;
+        setHovered(false);
+      }, 150);
+      return;
+    }
+    if (hovered) return;
+    const firstEntry = listRef.current?.querySelector<HTMLElement>(
+      ".notification-entry",
+    );
+    if (firstEntry)
+      previousFirstEntryTop.current = firstEntry.getBoundingClientRect().top;
+    setHovered(next);
+  };
+
+  useLayoutEffect(() => {
+    if (previousExpanded.current === expanded) return;
+    previousExpanded.current = expanded;
+    const firstEntry = listRef.current?.querySelector<HTMLElement>(
+      ".notification-entry",
+    );
+    const previousTop = previousFirstEntryTop.current;
+    previousFirstEntryTop.current = null;
+    if (!firstEntry || previousTop === null) return;
+    const offset = previousTop - firstEntry.getBoundingClientRect().top;
+    if (
+      Math.abs(offset) < 1 ||
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    )
+      return;
+    firstEntry.animate(
+      [
+        { transform: `translateY(${offset}px)` },
+        { transform: "translateY(0)" },
+      ],
+      {
+        duration: 210,
+        easing: "cubic-bezier(0.16, 1, 0.3, 1)",
+      },
+    );
+  }, [expanded]);
 
   useEffect(
     () =>
@@ -309,6 +367,8 @@ export function ProgressCenter({
     () => () => {
       timers.current.forEach(window.clearTimeout);
       timers.current.clear();
+      if (hoverLeaveTimer.current !== null)
+        window.clearTimeout(hoverLeaveTimer.current);
     },
     [],
   );
@@ -326,10 +386,40 @@ export function ProgressCenter({
     () => [...activeJobs, ...recentJobs],
     [activeJobs, recentJobs],
   );
+  const entries = useMemo(
+    () =>
+      [
+        ...notifications.map((item) => ({
+          key: `notice:${item.id}`,
+          createdAt: item.createdAt,
+          type: "notification" as const,
+          item,
+        })),
+        ...visibleJobs.map((job) => ({
+          key: `job:${job.id}`,
+          createdAt: job.startedAt,
+          type: "job" as const,
+          job,
+        })),
+      ].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+    [notifications, visibleJobs],
+  );
+  const entryKeys = entries.map((entry) => entry.key).join("\u001f");
+  useEffect(() => {
+    if (!expanded || !listRef.current) return;
+    const frame = window.requestAnimationFrame(() => {
+      listRef.current?.scrollTo({
+        top: listRef.current.scrollHeight,
+        behavior: "smooth",
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [expanded, entryKeys]);
+
   const pendingCount = visibleJobs.filter(
     (job) => job.status === "active" || job.status === "queued",
   ).length;
-  const count = visibleJobs.length + notifications.length;
+  const count = entries.length;
   if (!count) return null;
 
   return (
@@ -339,24 +429,39 @@ export function ProgressCenter({
       data-count={Math.min(count, 5)}
       style={{ bottom: `max(16px, ${bottomOffset}px)` }}
       aria-label="Notiser och pågående uppgifter"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      onFocusCapture={() => setHovered(true)}
+      onFocusCapture={() => updateHovered(true)}
       onBlurCapture={(event) => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null))
-          setHovered(false);
+          updateHovered(false);
       }}
     >
-      <div className="notification-list" aria-live="polite">
-        {notifications.map((item) => (
-          <MessageCard
-            key={`notice:${item.id}`}
-            {...item}
-            onDismiss={(id) => void client.notifications.dismiss(id)}
-          />
-        ))}
-        {visibleJobs.map((job) => (
-          <JobCard key={`job:${job.id}`} job={job} client={client} />
+      <div ref={listRef} className="notification-list" aria-live="polite">
+        {entries.map((entry) => (
+          <div
+            key={entry.key}
+            className="notification-entry"
+            onMouseEnter={() => updateHovered(true)}
+            onMouseLeave={(event) => {
+              const nextTarget = event.relatedTarget;
+              if (
+                !(nextTarget instanceof Element) ||
+                !nextTarget.closest(
+                  ".notification-entry, .notification-stack-toggle",
+                )
+              ) {
+                updateHovered(false);
+              }
+            }}
+          >
+            {entry.type === "notification" ? (
+              <MessageCard
+                {...entry.item}
+                onDismiss={(id) => void client.notifications.dismiss(id)}
+              />
+            ) : (
+              <JobCard job={entry.job} client={client} />
+            )}
+          </div>
         ))}
       </div>
       {count > 1 && (
@@ -364,6 +469,18 @@ export function ProgressCenter({
           type="button"
           className="notification-stack-toggle"
           aria-expanded={expanded}
+          onMouseEnter={() => updateHovered(true)}
+          onMouseLeave={(event) => {
+            const nextTarget = event.relatedTarget;
+            if (
+              !(nextTarget instanceof Element) ||
+              !nextTarget.closest(
+                ".notification-entry, .notification-stack-toggle",
+              )
+            ) {
+              updateHovered(false);
+            }
+          }}
           onClick={() => setPinned((value) => !value)}
         >
           {pendingCount

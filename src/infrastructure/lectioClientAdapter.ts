@@ -19,7 +19,6 @@ import { isTauri } from "../services/platform";
 const listeners = new Set<(event: LectioEvent) => void>();
 let stopBatchJobTracking: (() => void) | undefined;
 let batchJobTrackingPromise: Promise<void> | undefined;
-const dismissedBatchJobIds = new Set<string>();
 const activeTrackedJobIds = new Set<string>();
 
 async function trackBatchJobs() {
@@ -28,13 +27,7 @@ async function trackBatchJobs() {
   batchJobTrackingPromise = (async () => {
     const { subscribeBatchJobs } = await import("../services/batchActions");
     stopBatchJobTracking = subscribeBatchJobs((batchJobs) => {
-      const knownIds = new Set(batchJobs.map((job) => job.id));
-      for (const id of dismissedBatchJobIds)
-        if (!knownIds.has(id)) dismissedBatchJobIds.delete(id);
       for (const job of batchJobs) {
-        if (job.status === "running" || job.status === "waiting")
-          dismissedBatchJobIds.delete(job.id);
-        if (dismissedBatchJobIds.has(job.id)) continue;
         const status: BackgroundJob["status"] =
           job.status === "running"
             ? "active"
@@ -43,7 +36,13 @@ async function trackBatchJobs() {
               : job.status;
         useJobStore.getState().upsertJob({
           id: job.id,
-          kind: job.action === "transcribe" ? "transcription" : "anki",
+          kind:
+            job.action === "transcribe"
+              ? "transcription"
+              : job.action === "extractImages"
+                || job.action === "describeImages"
+                ? "vision"
+                : "anki",
           label: `${
             job.action === "transcribe"
               ? "Transkriberar"
@@ -51,7 +50,11 @@ async function trackBatchJobs() {
                 ? "Skapar Anki-kort"
                 : job.action === "approve"
                   ? "Godkänner Anki-kort"
-                  : "Synkar Anki-kort"
+                  : job.action === "extractImages"
+                    ? "Extraherar slidebilder"
+                    : job.action === "describeImages"
+                      ? "Beskriver bilder"
+                    : "Synkar Anki-kort"
           } · ${job.lectureTitle}`,
           phase: job.status,
           status,
@@ -482,6 +485,16 @@ export const lectioClient: LectioClient = {
       }, "Slides kunde inte importeras."),
   },
   visuals: {
+    localStatus: () =>
+      asyncCommand(async () => {
+        const { getLocalVisionStatus } = await import("../services/localVision");
+        return getLocalVisionStatus();
+      }, "Den lokala bildmotorn kunde inte kontrolleras."),
+    installLocalVision: () =>
+      asyncCommand(async () => {
+        const { installLocalVisionModel } = await import("../services/localVision");
+        return installLocalVisionModel();
+      }, "Nvidia-bildstödet kunde inte installeras."),
     indexLecture: (lectureId, progress) =>
       asyncCommand(async () => {
         const lecture = libraryRepository.getState().lectures[lectureId];
@@ -962,7 +975,22 @@ export const lectioClient: LectioClient = {
         if (!job) return;
         if (job.cancellable === false)
           throw new Error("Den här uppgiften kan inte avbrytas här.");
-        if (job.kind === "transcription" || job.kind === "anki") {
+        if (id.startsWith("batch:")) {
+          const { cancelBatchJob } = await import("../services/batchActions");
+          await cancelBatchJob(id);
+          if (job.kind === "transcription") {
+            const [
+              { cancelActiveTranscription, cancelQueuedTranscription },
+              { cancelLocalTranscription },
+            ] = await Promise.all([
+              import("../services/transcriptionQueue"),
+              import("../services/localStt"),
+            ]);
+            cancelQueuedTranscription(id);
+            cancelActiveTranscription(id);
+            await cancelLocalTranscription(id).catch(() => undefined);
+          }
+        } else if (job.kind === "transcription" || job.kind === "anki") {
           const [
             { cancelBatchJob },
             { cancelActiveTranscription, cancelQueuedTranscription },
@@ -994,7 +1022,6 @@ export const lectioClient: LectioClient = {
       }, "Jobbet kunde inte avbrytas."),
     dismiss: (id) =>
       command(() => {
-        if (id.startsWith("batch:")) dismissedBatchJobIds.add(id);
         useJobStore.getState().dismissJob(id);
       }, "Jobbet kunde inte döljas."),
   },

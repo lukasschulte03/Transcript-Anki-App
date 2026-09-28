@@ -51,6 +51,20 @@ export function buildSuperActionEligibility(
           return [id, hasAudio ? null : "Saknar ljud"] as const;
         }
 
+        if (action === "extractImages") {
+          return [
+            id,
+            lecture?.slideAssetId?.trim() ? null : "Saknar slides",
+          ] as const;
+        }
+
+        if (action === "describeImages") {
+          return [
+            id,
+            lecture?.visualIndex?.length ? null : "Inga extraherade bilder",
+          ] as const;
+        }
+
         if (action === "generate") {
           const hasMaterial = Boolean(
             transcriptLectureIds.has(id) ||

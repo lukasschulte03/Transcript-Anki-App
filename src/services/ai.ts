@@ -33,6 +33,19 @@ async function providerError(response: Response) {
   return new Error(`API-fel ${response.status}${body ? `: ${body}` : ""}`);
 }
 
+async function rejectsNonDefaultTemperature(response: Response) {
+  if (response.status !== 400) return false;
+  try {
+    const body = await response.clone().json();
+    return (
+      body?.error?.param === "temperature" &&
+      body?.error?.code === "unsupported_value"
+    );
+  } catch {
+    return false;
+  }
+}
+
 function apiBaseUrl(settings: AppSettings) {
   const configured = settings.aiBaseUrl.trim().replace(/\/+$/, "");
   if (!settings.aiModel.trim())
@@ -389,19 +402,36 @@ export async function generateCardsWithApi(
     const json = await response.json();
     return String(json.candidates?.[0]?.content?.parts?.[0]?.text ?? "");
   }
-  const response = await netFetch(`${base}/chat/completions`, {
+  const endpoint = `${base}/chat/completions`;
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+  const requestBody: {
+    model: string;
+    messages: Array<{ role: string; content: string }>;
+    temperature?: number;
+    response_format: { type: string };
+  } = {
+    model: settings.aiModel,
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.2,
+    response_format: { type: "json_object" },
+  };
+  let response = await netFetch(endpoint, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: settings.aiModel,
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      response_format: { type: "json_object" },
-    }),
+    headers,
+    body: JSON.stringify(requestBody),
   });
+  if (!response.ok && await rejectsNonDefaultTemperature(response)) {
+    const compatibleBody = { ...requestBody };
+    delete compatibleBody.temperature;
+    response = await netFetch(endpoint, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(compatibleBody),
+    });
+  }
   if (!response.ok) throw await providerError(response);
   const json = await response.json();
   return String(json.choices?.[0]?.message?.content ?? "");

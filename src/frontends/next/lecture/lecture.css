@@ -969,36 +969,47 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
+  touch-action: none;
 }
-.lecture-split-regions > div {
+.lecture-split-region {
   position: absolute;
-  display: grid;
-  place-items: start;
-  border: 2px dashed var(--palette-primary);
-  background: color-mix(in srgb, var(--palette-primary-muted) 10%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--palette-primary) 88%, white);
+  background: color-mix(in srgb, var(--palette-primary-muted) 9%, transparent);
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
-.lecture-split-regions > button {
-  position: absolute;
-  display: grid;
-  place-items: start;
-  padding: 0;
-  border: 2px dashed var(--palette-primary);
-  color: inherit;
-  background: color-mix(in srgb, var(--palette-primary-muted) 10%, transparent);
-  cursor: pointer;
-  pointer-events: auto;
+.lecture-split-region.is-active {
+  z-index: 2;
+  border-style: solid;
+  border-color: var(--palette-primary);
+  background: color-mix(in srgb, var(--palette-primary-muted) 15%, transparent);
 }
-.lecture-split-regions > button[aria-pressed="false"] {
+.lecture-split-region.is-excluded {
   border-style: dotted;
   border-color: var(--arc-muted);
-  background: color-mix(in srgb, var(--arc-paper) 62%, transparent);
+  background: color-mix(in srgb, var(--arc-paper) 52%, transparent);
 }
-.lecture-split-regions > button:focus-visible {
-  z-index: 1;
+.lecture-split-region-move {
+  position: absolute;
+  inset: 0;
+  display: block;
+  padding: 0;
+  border: 0;
+  color: transparent;
+  background: transparent;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+}
+.lecture-split-region-move:active {
+  cursor: grabbing;
+}
+.lecture-split-region-move:focus-visible {
   outline: 2px solid var(--palette-focus-ring);
   outline-offset: -4px;
 }
-.lecture-split-regions span {
+.lecture-split-region-move span {
   display: grid;
   width: 22px;
   height: 22px;
@@ -1009,6 +1020,72 @@
   background: var(--palette-primary);
   font-size: var(--type-caption);
   font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.lecture-split-region-toggle {
+  position: absolute;
+  z-index: 3;
+  top: 3px;
+  right: 3px;
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  color: var(--palette-primary-foreground);
+  background: var(--palette-primary);
+  cursor: pointer;
+  pointer-events: auto;
+}
+.lecture-split-region-toggle svg {
+  width: 13px;
+  height: 13px;
+}
+.lecture-split-resize {
+  position: absolute;
+  z-index: 4;
+  display: block;
+  width: 12px;
+  height: 12px;
+  padding: 0;
+  border: 2px solid var(--palette-primary-foreground);
+  border-radius: 999px;
+  background: var(--palette-primary);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+.lecture-split-resize:focus-visible,
+.lecture-split-region-toggle:focus-visible {
+  outline: 2px solid var(--palette-focus-ring);
+  outline-offset: 2px;
+}
+.lecture-split-resize-top,
+.lecture-split-resize-bottom {
+  left: 50%;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+}
+.lecture-split-resize-top {
+  top: -6px;
+}
+.lecture-split-resize-bottom {
+  bottom: -6px;
+}
+.lecture-split-resize-left,
+.lecture-split-resize-right {
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+}
+.lecture-split-resize-left {
+  left: -6px;
+}
+.lecture-split-resize-right {
+  right: -6px;
 }
 .lecture-split-layouts {
   display: flex;

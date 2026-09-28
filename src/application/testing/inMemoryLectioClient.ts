@@ -24,6 +24,14 @@ const notFound = (): Extract<LectioResult, { ok: false }> => ({
     message: "Det valda objektet kunde inte hittas.",
   },
 });
+const unavailable = (message: string): Extract<LectioResult, { ok: false }> => ({
+  ok: false,
+  error: {
+    code: "capability-unavailable",
+    messageKey: "lectio.error.capability-unavailable",
+    message,
+  },
+});
 const emptySettings = (): AppSettings => ({
   locale: "sv",
   onboardingDismissed: true,
@@ -302,6 +310,21 @@ export function createInMemoryLectioClient(): LectioClient {
       },
     },
     visuals: {
+      async localStatus() {
+        return ok({
+          nvidiaDetected: false,
+          nvidiaName: null,
+          nvidiaVramTotalMb: null,
+          runtimeInstalled: false,
+          modelInstalled: false,
+          modelWeightsReady: false,
+          nvidiaRuntimeReady: false,
+          ready: false,
+        });
+      },
+      async installLocalVision() {
+        return unavailable("Lokal Nvidia-bildanalys är inte tillgänglig i testmiljön.");
+      },
       async indexLecture(lectureId, progress) {
         const lecture = library.lectures[lectureId];
         if (!lecture?.slideAssetId) return notFound();

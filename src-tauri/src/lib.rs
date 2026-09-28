@@ -950,6 +950,10 @@ struct LocalModelStatus {
 
 const LOCAL_VISION_MODEL: &str = "moondream3.1-9B-A2B";
 const LOCAL_VISION_PYTHON_PACKAGE: &str = "moondream==2.2.0";
+// Keep this aligned with the torch version required by the pinned Kestrel
+// runtime. PyPI's default Windows wheel is CPU-only; Photon needs CUDA.
+const LOCAL_VISION_TORCH_PACKAGE: &str = "torch==2.14.0+cu130";
+const LOCAL_VISION_TORCH_INDEX: &str = "https://download.pytorch.org/whl/cu130";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -959,6 +963,8 @@ struct LocalVisionStatus {
     nvidia_vram_total_mb: Option<u32>,
     runtime_installed: bool,
     model_installed: bool,
+    model_weights_ready: bool,
+    nvidia_runtime_ready: bool,
     ready: bool,
 }
 
@@ -967,7 +973,7 @@ async fn local_vision_status_inner(app: &AppHandle) -> LocalVisionStatus {
     let metrics = nvidia_metrics().await;
     let runtime = pp_structure_sidecar(app).ok();
     let runtime_installed = runtime.is_some();
-    let model_installed = if let Some((python, _)) = runtime {
+    let model_installed = if let Some((python, _)) = runtime.as_ref() {
         Command::new(python)
             .args(["-c", "import moondream; print('ok')"])
             .output()
@@ -978,13 +984,98 @@ async fn local_vision_status_inner(app: &AppHandle) -> LocalVisionStatus {
         false
     };
     let nvidia_detected = nvidia_name.is_some();
+    let nvidia_runtime_ready = if model_installed && nvidia_detected {
+        if let Some((python, layout_script)) = runtime {
+            let worker_script = layout_script
+                .parent()
+                .map(|path| path.join("local_vision_worker.py"))
+                .filter(|path| path.is_file());
+            if let Some(worker_script) = worker_script {
+                match Command::new(python)
+                    .arg(worker_script)
+                    .arg("--check")
+                    .env("PYTHONUTF8", "1")
+                    .env("PYTHONIOENCODING", "utf-8")
+                    .output()
+                    .await
+                {
+                    Ok(output) if output.status.success() => true,
+                    Ok(output) => {
+                        let detail = String::from_utf8_lossy(&output.stdout);
+                        log::warn!("vision: lokal CUDA-runtime är inte redo: {}", detail.trim());
+                        false
+                    }
+                    Err(error) => {
+                        log::warn!("vision: kunde inte kontrollera CUDA-runtime: {error}");
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    let model_weights_ready = if model_installed {
+        if let Some((python, layout_script)) = pp_structure_sidecar(app).ok() {
+            let worker_script = layout_script
+                .parent()
+                .map(|path| path.join("local_vision_worker.py"))
+                .filter(|path| path.is_file());
+            if let Some(worker_script) = worker_script {
+                match Command::new(python)
+                    .arg(worker_script)
+                    .arg("--weights-status")
+                    .env("PYTHONUTF8", "1")
+                    .env("PYTHONIOENCODING", "utf-8")
+                    .output()
+                    .await
+                {
+                    Ok(output) if output.status.success() => {
+                        serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("modelWeightsReady")
+                                    .and_then(serde_json::Value::as_bool)
+                            })
+                            .unwrap_or(false)
+                    }
+                    Ok(output) => {
+                        log::warn!(
+                            "vision: kunde inte kontrollera cachad Moondream-modell: {}",
+                            String::from_utf8_lossy(&output.stdout).trim()
+                        );
+                        false
+                    }
+                    Err(error) => {
+                        log::warn!(
+                            "vision: kunde inte kontrollera cachad Moondream-modell: {error}"
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
     LocalVisionStatus {
         nvidia_detected,
         nvidia_name,
         nvidia_vram_total_mb: metrics.vram_total_mb,
         runtime_installed,
         model_installed,
-        ready: model_installed && nvidia_detected,
+        model_weights_ready,
+        nvidia_runtime_ready,
+        ready: model_installed && model_weights_ready && nvidia_detected && nvidia_runtime_ready,
     }
 }
 
@@ -1187,7 +1278,7 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
             .map(|path| path.join("local_vision_worker.py"))
             .filter(|path| path.is_file())
             .ok_or_else(|| "Lectios lokala Nvidia-bildmotor saknas i installationen. Installera senaste versionen av Lectio.".to_string())?;
-        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "preparing", "active", 0, Some(3), Some("Förbereder lokal Nvidia-bildmotor…".into()));
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "preparing", "active", 0, Some(100), Some("Förbereder lokal Nvidia-bildmotor…".into()));
         if download_is_cancelled(job_id) { return Err("Nedladdningen avbröts".into()); }
         let output = Command::new(&python)
             .args(["-m", "pip", "install", "--disable-pip-version-check", "--upgrade", LOCAL_VISION_PYTHON_PACKAGE])
@@ -1202,7 +1293,26 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
             return Err(format!("Kunde inte installera den lokala Nvidia-bildmotorn. {detail}"));
         }
         if download_is_cancelled(job_id) { return Err("Nedladdningen avbröts".into()); }
-        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "verifying", "active", 2, Some(3), Some("Verifierar den lokala bildmotorn…".into()));
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "installing-cuda", "active", 5, Some(100), Some("Installerar Nvidia-stöd…".into()));
+        let output = Command::new(&python)
+            .args([
+                "-m", "pip", "install", "--disable-pip-version-check",
+                "--index-url", "https://pypi.org/simple",
+                "--extra-index-url", LOCAL_VISION_TORCH_INDEX,
+                LOCAL_VISION_TORCH_PACKAGE,
+            ])
+            .env("PYTHONUTF8", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .await
+            .map_err(|error| format!("Kunde inte starta installationen av Nvidia CUDA-stöd: {error}"))?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
+            return Err(format!("Kunde inte installera PyTorch med Nvidia CUDA-stöd. {detail}"));
+        }
+        if download_is_cancelled(job_id) { return Err("Nedladdningen avbröts".into()); }
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "verifying-runtime", "active", 15, Some(100), Some("Verifierar Nvidia-stödet…".into()));
         let output = Command::new(&python)
             .arg(&worker_script)
             .arg("--check")
@@ -1213,6 +1323,8 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
             .await
             .map_err(|error| format!("Kunde inte verifiera bildmotorn: {error}"))?;
         if !output.success() { return Err("Den lokala Nvidia-bildmotorn kunde inte verifieras.".into()); }
+        emit_progress(&app, job_id, "download", "Automatiska bilder i Anki", "downloading-model", "active", 20, Some(100), Some("Hämtar Moondream-bildmodellen (cirka 10,5 GB)…".into()));
+        download_local_vision_weights(&app, &python, &worker_script, job_id).await?;
         Ok(())
     }.await;
     match result {
@@ -1228,8 +1340,8 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
                 "Automatiska bilder i Anki",
                 "complete",
                 "complete",
-                1,
-                Some(1),
+                100,
+                Some(100),
                 Some("Den lokala Nvidia-bildmotorn är redo.".into()),
             );
             Ok(status)
@@ -1259,6 +1371,137 @@ async fn install_local_vision_model(app: AppHandle) -> Result<LocalVisionStatus,
     }
 }
 
+fn format_model_download_size(bytes: u64) -> String {
+    format!("{:.1} GB", bytes as f64 / 1_000_000_000.0)
+}
+
+async fn download_local_vision_weights(
+    app: &AppHandle,
+    python: &PathBuf,
+    script: &PathBuf,
+    job_id: &str,
+) -> Result<(), String> {
+    let mut child = Command::new(python)
+        .arg(script)
+        .arg("--download-model")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONIOENCODING", "utf-8")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("Kunde inte starta modellhämtningen: {error}"))?;
+    let Some(stdout) = child.stdout.take() else {
+        terminate_local_vision_child(&mut child).await;
+        return Err("Modellhämtningen saknar statusutmatning.".into());
+    };
+    let mut lines = BufReader::new(stdout).lines();
+    loop {
+        let line = tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(line)) => Some(line),
+                Ok(None) => None,
+                Err(error) => {
+                    terminate_local_vision_child(&mut child).await;
+                    return Err(format!("Kunde inte läsa modellhämtningens status: {error}"));
+                }
+            },
+            _ = time::sleep(Duration::from_millis(400)) => {
+                if download_is_cancelled(job_id) {
+                    terminate_local_vision_child(&mut child).await;
+                    return Err("Nedladdningen avbröts".into());
+                }
+                continue;
+            }
+        };
+        let Some(line) = line else { break };
+        let event: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(event) => event,
+            Err(_) => {
+                terminate_local_vision_child(&mut child).await;
+                return Err("Modellhämtningen skickade ett ogiltigt statusmeddelande.".into());
+            }
+        };
+        match event.get("event").and_then(serde_json::Value::as_str) {
+            Some("download_progress") => {
+                let file = event
+                    .get("file")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("model");
+                let current = event
+                    .get("current")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let total = event
+                    .get("total")
+                    .and_then(serde_json::Value::as_u64)
+                    .filter(|total| *total > 0);
+                let (overall_current, detail) = if file == "tokenizer" {
+                    (98, "Slutför modellhämtningen…".to_string())
+                } else if let Some(total) = total {
+                    let fraction = (current as f64 / total as f64).clamp(0.0, 1.0);
+                    let overall = 20 + (fraction * 77.0).round() as u64;
+                    (
+                        overall,
+                        format!(
+                            "Hämtar Moondream: {} av {}",
+                            format_model_download_size(current),
+                            format_model_download_size(total)
+                        ),
+                    )
+                } else {
+                    (20, "Hämtar Moondream-modellen…".to_string())
+                };
+                emit_progress(
+                    app,
+                    job_id,
+                    "download",
+                    "Automatiska bilder i Anki",
+                    "downloading-model",
+                    "active",
+                    overall_current,
+                    Some(100),
+                    Some(detail),
+                );
+            }
+            Some("download_complete") => emit_progress(
+                app,
+                job_id,
+                "download",
+                "Automatiska bilder i Anki",
+                "verifying-model",
+                "active",
+                99,
+                Some(100),
+                Some("Modellen är hämtad. Verifierar lokala filer…".into()),
+            ),
+            Some("error") => {
+                let detail = event
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Okänt fel från modellhämtningen.");
+                terminate_local_vision_child(&mut child).await;
+                return Err(detail.to_string());
+            }
+            _ => {
+                terminate_local_vision_child(&mut child).await;
+                return Err("Modellhämtningen skickade ett okänt statusmeddelande.".into());
+            }
+        }
+    }
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("Modellhämtningen avslutades oväntat: {error}"))?;
+    if !status.success() {
+        return Err(
+            "Moondream kunde inte hämtas. Kontrollera internetanslutningen och försök igen.".into(),
+        );
+    }
+    Ok(())
+}
+
 fn local_vision_sidecar(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
     let (python, layout_script) = pp_structure_sidecar(app)?;
     let script = layout_script
@@ -1282,25 +1525,44 @@ async fn start_local_vision_worker(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .kill_on_drop(true)
         .spawn()
         .map_err(|error| format!("Kunde inte starta den lokala Nvidia-bildmotorn: {error}"))?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| "Bildmotorn saknar inmatning.".to_string())?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "Bildmotorn saknar utmatning.".to_string())?;
+    let Some(stdin) = child.stdin.take() else {
+        terminate_local_vision_child(&mut child).await;
+        return Err("Bildmotorn saknar inmatning.".into());
+    };
+    let Some(stdout) = child.stdout.take() else {
+        terminate_local_vision_child(&mut child).await;
+        return Err("Bildmotorn saknar utmatning.".into());
+    };
     let mut stdout = BufReader::new(stdout).lines();
-    let line = time::timeout(Duration::from_secs(180), stdout.next_line())
-        .await
-        .map_err(|_| "Bildmotorn tog för lång tid att starta första gången.".to_string())?
-        .map_err(|error| format!("Bildmotorn kunde inte starta: {error}"))?
-        .ok_or_else(|| "Bildmotorn avslutades under uppstart.".to_string())?;
-    let ready: LocalVisionReady = serde_json::from_str(&line)
-        .map_err(|_| "Bildmotorn skickade ett ogiltigt uppstartssvar.".to_string())?;
+    // Model weights are downloaded explicitly from Settings before inference;
+    // this timeout is only for loading the already-cached model into Photon.
+    let line = match time::timeout(Duration::from_secs(5 * 60), stdout.next_line()).await {
+        Ok(Ok(Some(line))) => line,
+        Ok(Ok(None)) => {
+            terminate_local_vision_child(&mut child).await;
+            return Err("Bildmotorn avslutades under uppstart.".into());
+        }
+        Ok(Err(error)) => {
+            terminate_local_vision_child(&mut child).await;
+            return Err(format!("Bildmotorn kunde inte starta: {error}"));
+        }
+        Err(_) => {
+            terminate_local_vision_child(&mut child).await;
+            return Err("Bildmotorn kunde inte läsa in den redan hämtade modellen inom 5 minuter. Kontrollera tillgängligt GPU-minne och försök igen.".into());
+        }
+    };
+    let ready: LocalVisionReady = match serde_json::from_str(&line) {
+        Ok(ready) => ready,
+        Err(_) => {
+            terminate_local_vision_child(&mut child).await;
+            return Err("Bildmotorn skickade ett ogiltigt uppstartssvar.".into());
+        }
+    };
     if ready.ready != Some(true) {
+        terminate_local_vision_child(&mut child).await;
         return Err(ready
             .error
             .unwrap_or_else(|| "Bildmotorn kunde inte initieras.".into()));
@@ -1319,10 +1581,26 @@ async fn start_local_vision_worker(
     })
 }
 
+async fn terminate_local_vision_child(child: &mut tokio::process::Child) {
+    #[cfg(windows)]
+    if let Some(pid) = child.id() {
+        // The Windows Python app-execution alias can spawn a real interpreter
+        // process. Kill the owned process tree so startup timeouts don't leave
+        // orphaned model workers consuming GPU/RAM in the background.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await;
+    }
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+}
+
 async fn stop_local_vision_worker(worker: &mut Option<LocalVisionWorker>) {
     if let Some(mut worker) = worker.take() {
-        let _ = worker.child.start_kill();
-        let _ = worker.child.wait().await;
+        terminate_local_vision_child(&mut worker.child).await;
     }
 }
 

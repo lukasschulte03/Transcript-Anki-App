@@ -18,6 +18,40 @@ const MAX_BYTES = 1536 * 1024 * 1024;
 type Progress = (value: LibraryTransferProgress) => void;
 let transferring = false;
 
+/** Validate archive media references before materializing blobs or writing any data. */
+export function parseLibraryAssetManifest(
+  raw: unknown,
+  archive: Record<string, Uint8Array>,
+): StoredAsset[] {
+  if (!Array.isArray(raw) || raw.length > 5000)
+    throw new Error("Arkivets fillista är ogiltig.");
+  const ids = new Set<string>();
+  const assets: StoredAsset[] = [];
+  for (const item of raw) {
+    if (
+      !item ||
+      typeof item.id !== "string" ||
+      !item.id ||
+      ids.has(item.id) ||
+      typeof item.path !== "string" ||
+      !item.path.startsWith("media/") ||
+      item.path.includes("..") ||
+      !archive[item.path] ||
+      typeof item.name !== "string" ||
+      typeof item.mimeType !== "string" ||
+      typeof item.lectureId !== "string"
+    )
+      throw new Error("Arkivet innehåller en ogiltig mediafil.");
+    ids.add(item.id);
+    const { path, ...metadata } = item;
+    assets.push({
+      ...metadata,
+      blob: new Blob([archive[path] as BlobPart], { type: item.mimeType }),
+    });
+  }
+  return assets;
+}
+
 async function exclusive<T>(action: () => Promise<T>): Promise<T> {
   if (transferring) throw new Error("En biblioteksöverföring pågår redan.");
   transferring = true;
@@ -127,31 +161,7 @@ export async function importLibraryFile(
       const manifest: unknown = archive["assets.json"]
         ? JSON.parse(strFromU8(archive["assets.json"]))
         : [];
-      if (!Array.isArray(manifest) || manifest.length > 5000)
-        throw new Error("Arkivets fillista är ogiltig.");
-      const ids = new Set<string>();
-      for (const item of manifest) {
-        if (
-          !item ||
-          typeof item.id !== "string" ||
-          !item.id ||
-          ids.has(item.id) ||
-          typeof item.path !== "string" ||
-          !item.path.startsWith("media/") ||
-          item.path.includes("..") ||
-          !archive[item.path] ||
-          typeof item.name !== "string" ||
-          typeof item.mimeType !== "string" ||
-          typeof item.lectureId !== "string"
-        )
-          throw new Error("Arkivet innehåller en ogiltig mediafil.");
-        ids.add(item.id);
-        const { path, ...metadata } = item;
-        assets.push({
-          ...metadata,
-          blob: new Blob([archive[path] as BlobPart], { type: item.mimeType }),
-        });
-      }
+      assets.push(...parseLibraryAssetManifest(manifest, archive));
     } else if (/\.json$/i.test(name)) raw = JSON.parse(await file.text());
     else throw new Error("Välj en ZIP- eller JSON-export från Lectio.");
     const snapshot = parseLibraryTransfer(raw);

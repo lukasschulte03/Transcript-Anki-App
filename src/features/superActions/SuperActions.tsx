@@ -41,6 +41,8 @@ import {
 
 const labels: Record<BatchAction, string> = {
   transcribe: "Transkribera",
+  extractImages: "Extrahera bilder",
+  describeImages: "Beskriv bilder",
   generate: "Skapa Anki-kort",
   approve: "Godkänn kort",
   sync: "Synka till Anki",
@@ -48,6 +50,10 @@ const labels: Record<BatchAction, string> = {
 const descriptions: Record<BatchAction, string> = {
   transcribe:
     "Bearbetar ljudfiler sekventiellt med din valda transkriptionsmetod.",
+  extractImages:
+    "Analyserar slides och lägger bildutklipp i bildbiblioteket, en föreläsning i taget.",
+  describeImages:
+    "Skapar korta AI-beskrivningar för redan extraherade bilder, en föreläsning i taget.",
   generate:
     "API körs automatiskt. Copy/paste ger en handoff-kö, en föreläsning i taget.",
   approve: "Godkänner alla genererade kort i de valda föreläsningarna.",
@@ -125,6 +131,8 @@ export function SuperActions() {
     const lecture = lectures[id];
     if (action === "transcribe")
       return Boolean(lecture?.audioAssetId || lecture?.audioParts?.length);
+    if (action === "extractImages") return Boolean(lecture?.slideAssetId);
+    if (action === "describeImages") return Boolean(lecture?.visualIndex?.length);
     if (action === "generate")
       return Boolean(
         lecture?.notes.trim() ||
@@ -146,19 +154,31 @@ export function SuperActions() {
       ) || pendingAnkiDeletions.some((item) => item.lectureId === id)
     );
   };
-  const alreadyDone = (id: string) =>
-    action === "transcribe"
-      ? segments.some((segment) => segment.lectureId === id)
-      : action === "generate"
-        ? cards.some((card) => card.lectureId === id)
-        : action === "approve"
-          ? !cards.some(
-              (card) => card.lectureId === id && card.status === "generated",
-            ) && cards.some((card) => card.lectureId === id)
-          : !hasInput(id) &&
-            cards.some(
-              (card) => card.lectureId === id && card.status === "synced",
-            );
+  const alreadyDone = (id: string) => {
+    if (action === "extractImages")
+      return Boolean(lectures[id]?.visualIndex?.length);
+    if (action === "describeImages") {
+      const visuals = lectures[id]?.visualIndex ?? [];
+      return (
+        visuals.length > 0 &&
+        visuals.every((item) => item.localVision || item.visualAnalysis)
+      );
+    }
+    if (action === "transcribe")
+      return segments.some((segment) => segment.lectureId === id);
+    if (action === "generate")
+      return cards.some((card) => card.lectureId === id);
+    if (action === "approve")
+      return (
+        !cards.some(
+          (card) => card.lectureId === id && card.status === "generated",
+        ) && cards.some((card) => card.lectureId === id)
+      );
+    return (
+      !hasInput(id) &&
+      cards.some((card) => card.lectureId === id && card.status === "synced")
+    );
+  };
   const latestJob = (id: string) =>
     [...jobs]
       .reverse()

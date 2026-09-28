@@ -96,6 +96,17 @@ export type LocalTranscriptionSetup = {
   nvidiaName?: string | null;
 };
 
+export type LocalVisionSetup = {
+  nvidiaDetected: boolean;
+  nvidiaName?: string | null;
+  nvidiaVramTotalMb?: number | null;
+  runtimeInstalled: boolean;
+  modelInstalled: boolean;
+  modelWeightsReady: boolean;
+  nvidiaRuntimeReady: boolean;
+  ready: boolean;
+};
+
 export type BinaryAssetInput = {
   name: string;
   mimeType: string;
@@ -139,7 +150,13 @@ export interface ReadableValue<T> {
   subscribe(listener: (snapshot: T) => void): () => void;
 }
 
-export type BatchAction = "transcribe" | "generate" | "approve" | "sync";
+export type BatchAction =
+  | "transcribe"
+  | "generate"
+  | "approve"
+  | "sync"
+  | "extractImages"
+  | "describeImages";
 export type ModelCatalogTask = "cards" | "transcription" | "vision";
 export type ModelCatalogEntry = {
   id: string;
@@ -200,6 +217,8 @@ export interface LectioClient {
     removeAudio(lectureId: string, assetId: string): Promise<LectioResult>;
   };
   readonly visuals: {
+    localStatus(): Promise<LectioResult<LocalVisionSetup>>;
+    installLocalVision(): Promise<LectioResult<LocalVisionSetup>>;
     indexLecture(
       lectureId: string,
       progress?: (value: LibraryTransferProgress) => void,

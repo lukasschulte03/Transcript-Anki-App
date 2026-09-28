@@ -251,7 +251,9 @@ export function StudySettings({
             autoComplete="off"
             placeholder="Sök inställningar"
             aria-label="Sök inställningar"
-            aria-controls="study-settings-search-results"
+            aria-controls={
+              normalizedQuery ? "study-settings-search-results" : undefined
+            }
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
