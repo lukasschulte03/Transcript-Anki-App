@@ -95,6 +95,10 @@ test("arbetsytan håller ihop i mörkt och smalt läge", async ({ page }) => {
     {
       animations: "disabled",
       mask: [page.getByText(/Lectio · v/)],
+      // The compact sidebar's version string is not always in the mask's
+      // accessible text form; tolerate the few glyph pixels that change on
+      // release-version bumps while keeping the rest of this baseline exact.
+      maxDiffPixels: 20,
     },
   );
 });

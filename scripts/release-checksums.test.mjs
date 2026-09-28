@@ -44,3 +44,23 @@ test("release checksum generation fails clearly when no installer exists", async
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("release checksums only include artifacts matching the requested version", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "lectio-checksum-version-"));
+  try {
+    const current = path.join(root, "msi", "Lectio_0.4.13_x64_en-US.msi");
+    const old = path.join(root, "nsis", "Lectio_0.4.12_x64-setup.exe");
+    await mkdir(path.dirname(current), { recursive: true });
+    await mkdir(path.dirname(old), { recursive: true });
+    await writeFile(current, "current release");
+    await writeFile(old, "old release");
+
+    const { manifestPath, artifactCount } = await createReleaseChecksums(root, "0.4.13");
+    const manifest = await readFile(manifestPath, "utf8");
+    assert.equal(artifactCount, 1);
+    assert.match(manifest, /Lectio_0\.4\.13_x64_en-US\.msi/);
+    assert.doesNotMatch(manifest, /0\.4\.12/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

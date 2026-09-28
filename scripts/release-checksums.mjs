@@ -1,21 +1,22 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { readdir, writeFile } from "node:fs/promises";
+import { readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const RELEASE_EXTENSIONS = new Set([".exe", ".msi", ".zip"]);
 
-async function listReleaseArtifacts(directory) {
+async function listReleaseArtifacts(directory, version) {
   const entries = await readdir(directory, { withFileTypes: true });
   const artifacts = [];
   for (const entry of entries) {
     const fullPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      artifacts.push(...(await listReleaseArtifacts(fullPath)));
+      artifacts.push(...(await listReleaseArtifacts(fullPath, version)));
     } else if (
       entry.isFile() &&
-      RELEASE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
+      RELEASE_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) &&
+      (!version || entry.name.includes(version))
     ) {
       artifacts.push(fullPath);
     }
@@ -33,11 +34,15 @@ function sha256File(filePath) {
   });
 }
 
-export async function createReleaseChecksums(bundleDirectory) {
+export async function createReleaseChecksums(bundleDirectory, version) {
   const root = path.resolve(bundleDirectory);
-  const artifacts = await listReleaseArtifacts(root);
+  const artifacts = await listReleaseArtifacts(root, version);
   if (artifacts.length === 0) {
-    throw new Error(`Inga .exe, .msi eller .zip-releasefiler hittades i ${root}`);
+    throw new Error(
+      version
+        ? `Inga .exe, .msi eller .zip-releasefiler för ${version} hittades i ${root}`
+        : `Inga .exe, .msi eller .zip-releasefiler hittades i ${root}`,
+    );
   }
 
   const lines = await Promise.all(
@@ -53,8 +58,9 @@ export async function createReleaseChecksums(bundleDirectory) {
 
 async function main() {
   const bundleDirectory = path.resolve("src-tauri/target/release/bundle");
+  const { version } = JSON.parse(await readFile("package.json", "utf8"));
   const { manifestPath, artifactCount } =
-    await createReleaseChecksums(bundleDirectory);
+    await createReleaseChecksums(bundleDirectory, version);
   console.log(
     `SHA-256-checksummor skapade för ${artifactCount} releasefiler: ${manifestPath}`,
   );
