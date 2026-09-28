@@ -106,7 +106,7 @@ export async function seedLibrary(page: Page) {
     // version belongs in a dedicated migration test; migration intentionally
     // routes upgraded libraries to the dashboard, which invalidates workflow
     // tests that expect the seeded lecture to be selected.
-    stored.version = 18;
+    stored.version = 19;
     localStorage.setItem(key, JSON.stringify(stored));
   }, seededNodes);
   await page.evaluate(async (name) => {

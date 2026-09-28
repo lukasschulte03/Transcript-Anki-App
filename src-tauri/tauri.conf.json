@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Lectio",
-  "version": "0.4.12",
+  "version": "0.4.13",
   "identifier": "se.lectio.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' customprotocol: asset:; img-src 'self' asset: http://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost blob:; frame-src 'self' blob:; connect-src ipc: http://ipc.localhost https: http://127.0.0.1:*; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self' customprotocol: asset:; img-src 'self' asset: http://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost blob:; frame-src 'self' blob:; connect-src ipc: http://ipc.localhost http://127.0.0.1:8765 http://localhost:8765 http://127.0.0.1:11434 http://localhost:11434 https://www.googleapis.com https://api.openai.com https://api.anthropic.com https://generativelanguage.googleapis.com https://api.groq.com; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

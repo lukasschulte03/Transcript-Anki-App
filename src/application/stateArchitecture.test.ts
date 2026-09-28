@@ -47,6 +47,31 @@ describe("state architecture", () => {
     );
   });
 
+  it("keeps dismissed terminal jobs hidden when other jobs update", () => {
+    const upsert = (id: string, status: "active" | "error") =>
+      useJobStore.getState().upsertJob({
+        id,
+        kind: "vision",
+        label: id,
+        phase: status,
+        status,
+        current: 0,
+      });
+
+    upsert("old-error", "error");
+    useJobStore.getState().dismissJob("old-error");
+    upsert("new-error", "error");
+    upsert("old-error", "error");
+    expect(useJobStore.getState().jobs.map((job) => job.id)).toEqual([
+      "new-error",
+    ]);
+
+    upsert("old-error", "active");
+    expect(useJobStore.getState().jobs.map((job) => job.id)).toContain(
+      "old-error",
+    );
+  });
+
   it("keeps library moves pure and rejects invalid hierarchy changes", () => {
     const nodes = [
       node("root", "workspace", null),

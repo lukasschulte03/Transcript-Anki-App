@@ -305,27 +305,100 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await expect(
     splitDialog.getByText(/Alla PDF-sidor delas i 4 delar/),
   ).toBeVisible();
-  const originalFirstRegionStyle = await splitDialog
-    .getByRole("button", { name: "Ta bort del 1" })
-    .getAttribute("style");
-  await splitDialog
-    .getByRole("button", { name: "2 rader, 1 kolumn" })
-    .click();
-  const standardTwoByOne = await splitDialog
-    .getByRole("button", { name: "Ta bort del 1" })
-    .evaluate((element) => {
-      const first = element as HTMLButtonElement;
-      const second = first.parentElement?.querySelectorAll("button")[1];
-      const geometry = (button: HTMLButtonElement) => ({
-        left: button.style.left,
-        top: button.style.top,
-        width: button.style.width,
-        height: button.style.height,
-      });
-      return second
-        ? [geometry(first), geometry(second as HTMLButtonElement)]
-        : [];
-    });
+  const regions = splitDialog.locator(".lecture-split-region");
+  const originalFirstRegionStyle = await regions.nth(0).getAttribute("style");
+  const firstResizeHandle = splitDialog
+    .locator(".lecture-split-resize-right")
+    .first();
+  const resizeBounds = await firstResizeHandle.boundingBox();
+  const previewBounds = await splitDialog
+    .locator(".lecture-split-preview")
+    .boundingBox();
+  expect(resizeBounds).not.toBeNull();
+  expect(previewBounds).not.toBeNull();
+  const dragHandle = async (xDelta: number, yDelta = 0) => {
+    const bounds = await splitDialog
+      .locator(".lecture-split-resize-right")
+      .first()
+      .boundingBox();
+    expect(bounds).not.toBeNull();
+    const centerX = bounds!.x + bounds!.width / 2;
+    const centerY = bounds!.y + bounds!.height / 2;
+    await page.mouse.move(centerX, centerY);
+    await page.mouse.down();
+    await page.mouse.move(centerX + xDelta, centerY + yDelta, { steps: 4 });
+    await page.mouse.up();
+  };
+  await dragHandle(24);
+  await expect
+    .poll(() =>
+      regions
+        .nth(0)
+        .evaluate((element) => (element as HTMLElement).style.width),
+    )
+    .not.toBe("50%");
+  const resizedWidths = await regions.evaluateAll((elements) =>
+    elements.map((element) => (element as HTMLElement).style.width),
+  );
+  expect(new Set(resizedWidths).size).toBe(1);
+
+  await page.keyboard.down("Shift");
+  await dragHandle(12);
+  await page.keyboard.up("Shift");
+  const shiftedRatios = await regions.evaluateAll((elements) =>
+    elements.map((element) => {
+      const region = element as HTMLElement;
+      return parseFloat(region.style.width) / parseFloat(region.style.height);
+    }),
+  );
+  for (const ratio of shiftedRatios) expect(ratio).toBeCloseTo(1.08, 1);
+
+  const centerBeforeCtrl = await regions.nth(0).evaluate((element) => {
+    const region = element as HTMLElement;
+    return parseFloat(region.style.left) + parseFloat(region.style.width) / 2;
+  });
+  await page.keyboard.down("Control");
+  await dragHandle(-10);
+  await page.keyboard.up("Control");
+  const centerAfterCtrl = await regions.nth(0).evaluate((element) => {
+    const region = element as HTMLElement;
+    return parseFloat(region.style.left) + parseFloat(region.style.width) / 2;
+  });
+  expect(centerAfterCtrl).toBeCloseTo(centerBeforeCtrl, 2);
+
+  const moveBounds = await regions
+    .nth(0)
+    .getByRole("button", { name: /Välj och flytta ruta 1/ })
+    .boundingBox();
+  expect(moveBounds).not.toBeNull();
+  await page.mouse.move(
+    moveBounds!.x + moveBounds!.width / 2,
+    moveBounds!.y + moveBounds!.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    moveBounds!.x + moveBounds!.width / 2 + 12,
+    moveBounds!.y + moveBounds!.height / 2 + 8,
+    { steps: 4 },
+  );
+  await page.mouse.up();
+  await expect
+    .poll(() =>
+      regions.nth(0).evaluate((element) => (element as HTMLElement).style.left),
+    )
+    .not.toBe("0%");
+  await splitDialog.getByRole("button", { name: "2 rader, 1 kolumn" }).click();
+  const standardTwoByOne = await regions.evaluateAll((elements) =>
+    elements.map((element) => {
+      const region = element as HTMLElement;
+      return {
+        left: region.style.left,
+        top: region.style.top,
+        width: region.style.width,
+        height: region.style.height,
+      };
+    }),
+  );
   expect(standardTwoByOne).toEqual([
     { left: "0%", top: "0%", width: "100%", height: "50%" },
     { left: "0%", top: "50%", width: "100%", height: "50%" },
@@ -338,15 +411,9 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
     await splitDialog
       .getByRole("button", { name: "Standardbeskärning" })
       .click();
-    const restoredGeometry = await splitDialog
-      .getByRole("button", { name: "Ta bort del 1" })
-      .evaluate((element) => {
-        const first = element as HTMLButtonElement;
-        const second = first.parentElement?.querySelectorAll("button")[1];
-        return second
-          ? [first.style.top, (second as HTMLButtonElement).style.top]
-          : [];
-      });
+    const restoredGeometry = await regions.evaluateAll((elements) =>
+      elements.map((element) => (element as HTMLElement).style.top),
+    );
     expect(restoredGeometry).toEqual(["0%", "50%"]);
   }
   await splitDialog
@@ -355,14 +422,15 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await splitDialog
     .getByRole("button", { name: "2 rader, 2 kolumner" })
     .click();
-  await expect(
-    splitDialog.getByRole("button", { name: "Ta bort del 1" }),
-  ).toHaveAttribute("style", originalFirstRegionStyle ?? "");
-  await splitDialog.getByRole("button", { name: "Ta bort del 4" }).click();
+  await expect(regions.nth(0)).toHaveAttribute(
+    "style",
+    originalFirstRegionStyle ?? "",
+  );
+  await splitDialog.getByRole("button", { name: "Ta bort ruta 4" }).click();
   await expect(
     splitDialog.getByText(/Alla PDF-sidor delas i 3 delar/),
   ).toBeVisible();
-  await splitDialog.getByRole("button", { name: "Ta med del 4" }).click();
+  await splitDialog.getByRole("button", { name: "Ta med ruta 4" }).click();
   await splitDialog
     .getByRole("button", { name: "1 rader, 2 kolumner" })
     .click();
@@ -473,14 +541,18 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
     audio.currentTime = 25;
     audio.dispatchEvent(new Event("timeupdate"));
   });
-  await expect(activeTranscriptRow).toHaveAttribute("data-audio-active", "true");
+  await expect(activeTranscriptRow).toHaveAttribute(
+    "data-audio-active",
+    "true",
+  );
   const distanceFromTranscriptCenter = () =>
     activeTranscriptRow.evaluate((row) => {
       const container = row.closest(".lecture-transcript-scroll")!;
       const rowRect = row.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
       return Math.abs(
-        rowRect.top + rowRect.height / 2 -
+        rowRect.top +
+          rowRect.height / 2 -
           (containerRect.top + container.clientHeight / 2),
       );
     });
@@ -516,10 +588,12 @@ test("föreläsningsvyn importerar material, sparar och spelar utan slidekopplin
   await page.getByRole("searchbox").click();
   await expect(page.locator(".lecture-transcript-row")).toHaveCount(1);
   await page.getByRole("searchbox").fill("");
-  await page.getByRole("heading", {
-    name: "Njurfunktion och vätskebalans",
-    exact: true,
-  }).click();
+  await page
+    .getByRole("heading", {
+      name: "Njurfunktion och vätskebalans",
+      exact: true,
+    })
+    .click();
   await page.keyboard.press("Control+Enter");
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Godkänn alla", exact: true }).click();
@@ -686,7 +760,7 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
     return Boolean(canvas);
   });
   await page.getByRole("radio", { name: /Glöd/ }).click();
-  await expect(page.locator(".study-canvas")).toHaveAttribute(
+  await expect(page.locator(".study-shell")).toHaveAttribute(
     "data-tone",
     "dark",
   );
@@ -720,7 +794,7 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
     .toBe("orange-dark");
   await page.screenshot({ path: "test-results/next-settings-themes-dark.png" });
   await page.getByRole("radio", { name: /Himmel/ }).click();
-  await expect(page.locator(".study-canvas")).toHaveAttribute(
+  await expect(page.locator(".study-shell")).toHaveAttribute(
     "data-tone",
     "light",
   );
@@ -781,9 +855,9 @@ test("nya inställningar importerar, exporterar och återställer isolerat", asy
     .getByRole("dialog")
     .getByRole("button", { name: "Importera", exact: true })
     .click();
-  await expect(page.getByRole("alert")).toContainText(
-    "Biblioteket kunde inte importeras.",
-  );
+  await expect(
+    page.getByRole("region", { name: "Inställningar" }).getByRole("alert"),
+  ).toContainText("Biblioteket kunde inte importeras.");
   await expect
     .poll(() =>
       page.evaluate(
@@ -960,6 +1034,11 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
     target: Locator,
     targetPosition = { x: 16, y: 14 },
   ) => {
+    // The tree is independently scrollable; mouse coordinates do not trigger
+    // Playwright's automatic scrolling, so explicitly reveal both endpoints.
+    await source.scrollIntoViewIfNeeded();
+    await target.scrollIntoViewIfNeeded();
+    await source.scrollIntoViewIfNeeded();
     const sourceBox = await source.boundingBox();
     const targetBox = await target.boundingBox();
     expect(sourceBox).not.toBeNull();
@@ -1237,10 +1316,11 @@ test("sidofältets hierarki, sökning och avbrytbara kollaps fungerar", async ({
   await expect(
     page.getByRole("heading", { name: "Superåtgärder", exact: true }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Välj alla", exact: true }).click();
+  await page.getByRole("button", { name: /^Välj alla/ }).click();
   await expect(
     page.getByRole("button", { name: "Starta transkribering nu", exact: true }),
-  ).toBeEnabled();
+  ).toBeDisabled();
+  await expect(page.getByText("0 valda", { exact: true })).toBeVisible();
   await lecture.click();
   await settle();
   await page.screenshot({ path: "test-results/next-sidebar-desktop.png" });
@@ -1336,13 +1416,15 @@ test("kollapsad sidebar har en jämn biblioteksknapp och vänsterställd popup",
   expect(footerBox).not.toBeNull();
   expect(libraryBox!.width).toBeCloseTo(lastDestination!.width, 1);
   expect(libraryBox!.height).toBeCloseTo(lastDestination!.height, 1);
-  const gapCenter = (navigationBox!.y + navigationBox!.height + footerBox!.y) / 2;
+  const gapCenter =
+    (navigationBox!.y + navigationBox!.height + footerBox!.y) / 2;
   expect(
     Math.abs(libraryBox!.y + libraryBox!.height / 2 - gapCenter),
   ).toBeLessThan(3);
   expect(
     Math.abs(
-      libraryBox!.x + libraryBox!.width / 2 -
+      libraryBox!.x +
+        libraryBox!.width / 2 -
         (sidebarBox!.x + sidebarBox!.width / 2),
     ),
   ).toBeLessThan(1);

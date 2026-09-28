@@ -19,6 +19,11 @@ import {
   safeArtifactName,
   STABILITY_FOLDER,
 } from "./stability-lib.mjs";
+import {
+  parseLighthouseScores,
+  parsePlaywrightMatrix,
+  parseStabilityMetrics,
+} from "./stability-report.mjs";
 
 const workspaceDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -68,6 +73,23 @@ async function purgeStaleTestRoots() {
     });
     await rm(candidate, { recursive: true, force: true });
   }
+}
+
+async function countOwnedTempRoots() {
+  let count = 0;
+  for (const entry of await readdir(tempParent, { withFileTypes: true }).catch(
+    () => [],
+  )) {
+    if (!entry.isDirectory()) continue;
+    const marker = path.join(tempParent, entry.name, ".lectio-stability-root");
+    if (
+      await stat(marker)
+        .then(() => true)
+        .catch(() => false)
+    )
+      count += 1;
+  }
+  return count;
 }
 
 await purgeStaleTestRoots();
@@ -187,6 +209,15 @@ async function runPhase({
   phase.durationMs = Date.now() - phaseStarted;
   phase.exitCode = exitCode;
   phase.status = timedOut ? "failed" : exitCode === 0 ? "passed" : "failed";
+  await new Promise((resolve) => log.once("finish", resolve));
+  if (["frontends", "playwright"].includes(id)) {
+    const output = await readFile(logPath, "utf8").catch(() => "");
+    phase.testMatrix = parsePlaywrightMatrix(output);
+    phase.metrics = parseStabilityMetrics(output);
+  } else if (id === "lighthouse") {
+    const output = await readFile(logPath, "utf8").catch(() => "");
+    phase.scores = parseLighthouseScores(output);
+  }
   if (timedOut)
     phase.error = `Tidsgränsen ${Math.round(timeoutMs / 60_000)} minuter överskreds.`;
   console.log(
@@ -299,6 +330,17 @@ function createSummary(status, finishedAt, cleanup) {
       syncSandbox: path.join(testRoot, "sync-sandbox"),
       credentials: "disabled",
     },
+    testMatrix: Object.fromEntries(
+      phases
+        .filter((phase) => phase.testMatrix)
+        .map((phase) => [phase.id, phase.testMatrix]),
+    ),
+    performance: {
+      interactions: phases.find((phase) => phase.id === "playwright")?.metrics
+        ?.interaction ?? null,
+      soak: phases.find((phase) => phase.id === "playwright")?.metrics?.soak ?? null,
+      lighthouse: phases.find((phase) => phase.id === "lighthouse")?.scores ?? null,
+    },
     cleanup,
     phases: phases.map((phase) => ({
       ...phase,
@@ -314,12 +356,35 @@ function summaryMarkdown(summary) {
         `| ${phase.label} | ${phase.status} | ${formatDuration(phase.durationMs)} | ${phase.log ? `[logg](${phase.log.replaceAll("\\", "/")})` : "–"} |`,
     )
     .join("\n");
+  const testMatrix = Object.entries(summary.testMatrix)
+    .map(([phaseId, matrix]) => {
+      const heading = phaseId === "frontends" ? "Next-E2E" : "Legacy/regression";
+      const cases = matrix.tests
+        .map((item) => `  - ${item.status}: ${item.title}${item.duration ? ` (${item.duration})` : ""}`)
+        .join("\n");
+      return `### ${heading}\n\n${matrix.passed} godkända · ${matrix.failed} misslyckade · ${matrix.skipped} överhoppade\n\n${cases}`;
+    })
+    .join("\n\n");
+  const interaction = summary.performance.interactions;
+  const soak = summary.performance.soak;
+  const lighthouse = summary.performance.lighthouse;
   return (
     `# Lectio stability QA\n\n**${summary.status}** · ${summary.runId} · ${formatDuration(summary.durationMs)}\n\n` +
     `Passed ${summary.counts.passed} · Failed ${summary.counts.failed} · Skipped ${summary.counts.skipped} · Flaky ${summary.counts.flaky}\n\n` +
     `| Fas | Resultat | Tid | Artefakt |\n| --- | --- | ---: | --- |\n${rows}\n\n` +
+    (testMatrix ? `## Testmatris\n\n${testMatrix}\n\n` : "") +
+    `## Prestanda och soak\n\n` +
+    (interaction
+      ? `- UI-budgets: första arbetsyta ${interaction.timingsMs.initialWorkspace} ms; vybyte Inkorg ${interaction.timingsMs.inbox} ms, Super Actions ${interaction.timingsMs.superActions} ms, Översikt ${interaction.timingsMs.dashboard} ms, Inställningar ${interaction.timingsMs.settings} ms; DOM ${interaction.renderer.domNodes} noder; längsta task ${interaction.renderer.longestTaskMs} ms; progress-skrivningar ${interaction.persistence.writesDuringJobBurst}.\n`
+      : "- Interaktionsmätningar saknas.\n") +
+    (soak
+      ? `- UI-soak: ${soak.configuredMinutes} min, ${soak.cycles} cykler, p95 ${soak.cycleP95Ms} ms, renderer-heap ${soak.initialHeap?.usedMb ?? "n/a"} → ${soak.finalHeap?.usedMb ?? "n/a"} MB.\n`
+      : "- UI-soak: inte genomförd.\n") +
+    (lighthouse
+      ? `- Lighthouse: prestanda ${lighthouse.performance}, tillgänglighet ${lighthouse.accessibility}, praxis ${lighthouse.bestPractices}.\n\n`
+      : "- Lighthouse-poäng saknas.\n\n") +
     `## Miljö\n\n- App: ${summary.environment.appVersion}\n- OS: ${summary.environment.os}\n- Node: ${summary.environment.node}\n- Rust: ${summary.environment.rust}\n- CPU: ${summary.environment.cpu}\n- GPU: ${summary.environment.gpu}\n\n` +
-    `## Isolering och städning\n\n- Riktiga externa tjänster: avstängda\n- Separat databas: ${summary.isolation.database}\n- Temporär testrot borttagen: ${summary.cleanup.testRootRemoved ? "ja" : "nej"}\n- Kvarvarande child-processer: ${summary.cleanup.remainingChildProcesses}\n`
+    `## Isolering och städning\n\n- Riktiga externa tjänster: avstängda\n- Separat databas: ${summary.isolation.database}\n- Temporär testrot borttagen: ${summary.cleanup.testRootRemoved ? "ja" : "nej"}\n- Kvarvarande stability-temp-rötter: ${summary.cleanup.remainingOwnedTempRoots}\n- Kvarvarande child-processer: ${summary.cleanup.remainingChildProcesses}\n`
   );
 }
 
@@ -331,6 +396,20 @@ try {
     label: "Isoleringsskydd",
     program: "node",
     args: ["--test", "scripts/stability-lib.test.mjs"],
+    timeoutMs: 60_000,
+  });
+  await runPhase({
+    id: "stability-report",
+    label: "QA-rapportens testmatris och mätvärden",
+    program: "node",
+    args: ["--test", "scripts/stability-report.test.mjs"],
+    timeoutMs: 60_000,
+  });
+  await runPhase({
+    id: "security-config",
+    label: "Tauri-behörigheter och externa scopes",
+    program: "pnpm",
+    args: ["test:security-config"],
     timeoutMs: 60_000,
   });
   await runPhase({
@@ -383,7 +462,7 @@ try {
     label: "Playwright-regressioner",
     program: "pnpm",
     args: ["test:e2e"],
-    timeoutMs: 15 * 60_000,
+    timeoutMs: 95 * 60_000,
   });
   await runPhase({
     id: "lighthouse",
@@ -423,6 +502,7 @@ try {
       .then(() => true)
       .catch(() => false)),
     remainingChildProcesses: children.size,
+    remainingOwnedTempRoots: await countOwnedTempRoots(),
     retainedFailureBundle: finalStatus !== "READY",
   };
   summary = createSummary(

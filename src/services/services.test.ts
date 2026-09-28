@@ -86,6 +86,10 @@ import {
   visualPromptLines,
 } from "./visualIndex";
 import { backupSourceFromState, normalizeLibraryBackup } from "./libraryBackup";
+import {
+  parseLibraryAssetManifest,
+  parseLibraryTransfer,
+} from "./libraryTransfer";
 import { extractPptxImages } from "./pptx";
 import { zipSync } from "fflate";
 import {
@@ -217,6 +221,117 @@ describe("biblioteksbackup", () => {
   });
 });
 
+describe("validering av importerade bibliotek", () => {
+  const validSnapshot = () => ({
+    version: 1,
+    nodes: [
+      { id: "workspace", parentId: null, type: "workspace", title: "Studier" },
+      { id: "course", parentId: "workspace", type: "course", title: "KM3" },
+    ],
+    lectures: {},
+    segments: [],
+    markers: [],
+    cards: [],
+    settings: { apiKey: "should-not-import" },
+    syncIdentity: "should-not-import",
+  });
+
+  it("importerar bara biblioteksdata, inte inställningar eller synkidentitet", () => {
+    const snapshot = parseLibraryTransfer(validSnapshot());
+    expect(Object.keys(snapshot).sort()).toEqual([
+      "cards",
+      "lectures",
+      "markers",
+      "nodes",
+      "segments",
+    ]);
+  });
+
+  it.each([
+    ["dubbla ID:n", (value: any) => value.nodes.push({ ...value.nodes[1] })],
+    ["saknad parent", (value: any) => (value.nodes[1].parentId = "missing")],
+    ["cyklisk struktur", (value: any) => (value.nodes[0].parentId = "course")],
+    ["ogiltig nodtyp", (value: any) => (value.nodes[1].type = "action")],
+  ])("avvisar en export med %s", (_label, corrupt) => {
+    const value = validSnapshot();
+    corrupt(value);
+    expect(() => parseLibraryTransfer(value)).toThrow();
+  });
+
+  it("avvisar exportsamlingar över storleksgränsen före strukturvalidering", () => {
+    const value = validSnapshot();
+    value.nodes = Array.from({ length: 5001 }, (_, index) => ({
+      id: `node-${index}`,
+      parentId: null,
+      type: "course",
+      title: `Kurs ${index}`,
+    }));
+    expect(() => parseLibraryTransfer(value)).toThrow("för många objekt");
+  });
+
+  it("accepterar media endast från media-katalogen och ger unika asset-ID:n", () => {
+    const bytes = new TextEncoder().encode("media bytes");
+    const manifest = [
+      {
+        id: "asset-1",
+        path: "media/0-slides.pdf",
+        name: "slides.pdf",
+        mimeType: "application/pdf",
+        lectureId: "lecture-1",
+      },
+    ];
+    const assets = parseLibraryAssetManifest(manifest, {
+      "media/0-slides.pdf": bytes,
+    });
+    expect(assets).toHaveLength(1);
+    expect(assets[0]).toMatchObject({
+      id: "asset-1",
+      name: "slides.pdf",
+      lectureId: "lecture-1",
+    });
+    expect(assets[0]?.blob.size).toBe(bytes.byteLength);
+  });
+
+  it.each([
+    ["zip-slip-sökväg", "media/../../outside.txt"],
+    ["absolut sökväg", "C:/Users/Public/outside.txt"],
+    ["annan katalog", "documents/slides.pdf"],
+  ])("avvisar %s i arkivmanifestet", (_label, path) => {
+    expect(() =>
+      parseLibraryAssetManifest(
+        [
+          {
+            id: "asset-1",
+            path,
+            name: "slides.pdf",
+            mimeType: "application/pdf",
+            lectureId: "lecture-1",
+          },
+        ],
+        { [path]: new Uint8Array([1]) },
+      ),
+    ).toThrow("ogiltig mediafil");
+  });
+
+  it("avvisar dubbla ID:n och saknade ZIP-poster i manifestet", () => {
+    const entry = {
+      id: "asset-1",
+      path: "media/slides.pdf",
+      name: "slides.pdf",
+      mimeType: "application/pdf",
+      lectureId: "lecture-1",
+    };
+    expect(() =>
+      parseLibraryAssetManifest([entry, entry], {
+        "media/slides.pdf": new Uint8Array([1]),
+      }),
+    ).toThrow("ogiltig mediafil");
+    expect(() => parseLibraryAssetManifest([entry], {})).toThrow(
+      "ogiltig mediafil",
+    );
+  });
+});
+
 describe("modulens bildbibliotek", () => {
   it("återanvänder bilder från flera föreläsningar och gömmer lokalt rensade kandidater", () => {
     const nodes = [
@@ -327,25 +442,49 @@ describe("lokal bildbeskrivning", () => {
   });
 
   it("använder sparad OpenAI-nyckel och ber om OCR plus kort beskrivning för ett crop", async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as {
-        model: string;
-        messages: Array<{ content: Array<{ type: string; text?: string; image_url?: { url: string } }> }>;
-      };
-      expect(body.model).toBe("gpt-4.1-mini");
-      expect(body.messages[0]?.content[1]?.image_url?.url).toContain("data:image/png;base64,");
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer saved-key");
-      return new Response(JSON.stringify({
-        choices: [{ message: { content: '{"description":"Prostatans anatomi med märkta strukturer","extractedText":"Prostata; urinrör","keywords":["prostata"]}' } }],
-      }), { status: 200 });
-    });
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          model: string;
+          messages: Array<{
+            content: Array<{
+              type: string;
+              text?: string;
+              image_url?: { url: string };
+            }>;
+          }>;
+        };
+        expect(body.model).toBe("gpt-4.1-mini");
+        expect(body.messages[0]?.content[1]?.image_url?.url).toContain(
+          "data:image/png;base64,",
+        );
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          "Bearer saved-key",
+        );
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content:
+                    '{"description":"Prostatans anatomi med märkta strukturer","extractedText":"Prostata; urinrör","keywords":["prostata"]}',
+                },
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      },
+    );
     vi.stubGlobal("fetch", fetchMock);
 
-    await expect(analyzeVisualCrop(new Blob(["crop"], { type: "image/png" }), {
-      apiKey: "saved-key",
-      model: "gpt-4.1-mini",
-      localOcrText: "Prostata",
-    })).resolves.toEqual({
+    await expect(
+      analyzeVisualCrop(new Blob(["crop"], { type: "image/png" }), {
+        apiKey: "saved-key",
+        model: "gpt-4.1-mini",
+        localOcrText: "Prostata",
+      }),
+    ).resolves.toEqual({
       description: "Prostatans anatomi med märkta strukturer",
       extractedText: "Prostata; urinrör",
       keywords: ["prostata"],
@@ -838,11 +977,7 @@ describe("Google Drive-synk", () => {
       pendingAnkiDeletions: [],
       settings: {} as AppSettings,
     } satisfies LibrarySyncSnapshot;
-    const result = mergeLibrarySnapshots(
-      base,
-      { ...base, lectures: {} },
-      base,
-    );
+    const result = mergeLibrarySnapshots(base, { ...base, lectures: {} }, base);
 
     expect(result.conflicts).toEqual([]);
     expect(result.snapshot.lectures).toEqual({});
@@ -1339,35 +1474,61 @@ describe("transkriptimport", () => {
   });
 
   it("skickar inte Whisper-enbart timestamp-parametrar till GPT-Transcribe", async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = init?.body as FormData;
-      expect(body.get("model")).toBe("gpt-transcribe");
-      expect(body.get("response_format")).toBeNull();
-      expect(body.get("timestamp_granularities[]")).toBeNull();
-      return new Response(JSON.stringify({ text: "Transkriberad text", languages: [{ code: "sv" }] }), { status: 200 });
-    });
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = init?.body as FormData;
+        expect(body.get("model")).toBe("gpt-transcribe");
+        expect(body.get("response_format")).toBeNull();
+        expect(body.get("timestamp_granularities[]")).toBeNull();
+        return new Response(
+          JSON.stringify({
+            text: "Transkriberad text",
+            languages: [{ code: "sv" }],
+          }),
+          { status: 200 },
+        );
+      },
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await cloudApiTranscription.transcribe(
       new Blob(["ljud"], { type: "audio/wav" }),
-      { transcriptionProvider: "openai", transcriptionModel: "gpt-transcribe", transcriptionBaseUrl: "https://mock.example/v1" } as AppSettings,
+      {
+        transcriptionProvider: "openai",
+        transcriptionModel: "gpt-transcribe",
+        transcriptionBaseUrl: "https://mock.example/v1",
+      } as AppSettings,
       "testnyckel",
     );
-    expect(result.segments).toEqual([{ start: 0, end: 0, text: "Transkriberad text" }]);
+    expect(result.segments).toEqual([
+      { start: 0, end: 0, text: "Transkriberad text" },
+    ]);
   });
 
   it("begär segmenttidsstämplar från Whisper 1", async () => {
-    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
-      const body = init?.body as FormData;
-      expect(body.get("response_format")).toBe("verbose_json");
-      expect(body.get("timestamp_granularities[]")).toBe("segment");
-      return new Response(JSON.stringify({ text: "Whisper text", segments: [{ start: 2, end: 4, text: "Whisper text" }] }), { status: 200 });
-    });
+    const fetchMock = vi.fn(
+      async (_url: string | URL | Request, init?: RequestInit) => {
+        const body = init?.body as FormData;
+        expect(body.get("response_format")).toBe("verbose_json");
+        expect(body.get("timestamp_granularities[]")).toBe("segment");
+        return new Response(
+          JSON.stringify({
+            text: "Whisper text",
+            segments: [{ start: 2, end: 4, text: "Whisper text" }],
+          }),
+          { status: 200 },
+        );
+      },
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await cloudApiTranscription.transcribe(
       new Blob(["ljud"], { type: "audio/wav" }),
-      { transcriptionProvider: "openai", transcriptionModel: "whisper-1", transcriptionBaseUrl: "https://mock.example/v1" } as AppSettings,
+      {
+        transcriptionProvider: "openai",
+        transcriptionModel: "whisper-1",
+        transcriptionBaseUrl: "https://mock.example/v1",
+      } as AppSettings,
       "testnyckel",
     );
     expect(result.segments[0]).toMatchObject({ start: 2, end: 4 });
@@ -1565,8 +1726,12 @@ describe("slidekoppling", () => {
 describe("kortformat", () => {
   it("erbjuder modellförslag men lämnar utrymme för egna modell-ID:n", () => {
     expect(aiModelSuggestions.openai).toContain("gpt-5.5");
-    expect(fallbackModelOptions("openai", "transcription").map((model) => model.id)).toContain("gpt-transcribe");
-    expect(fallbackModelOptions("openai", "vision").map((model) => model.id)).toContain("gpt-5.4-mini");
+    expect(
+      fallbackModelOptions("openai", "transcription").map((model) => model.id),
+    ).toContain("gpt-transcribe");
+    expect(
+      fallbackModelOptions("openai", "vision").map((model) => model.id),
+    ).toContain("gpt-5.4-mini");
     expect(aiModelSuggestions.custom).toEqual([]);
     expect(fallbackModelOptions("groq")[0]?.tier).toBe("recommended");
   });
@@ -1595,24 +1760,27 @@ describe("kortformat", () => {
       "https://api.groq.com/openai/v1",
     );
     expect(remote.source).toBe("provider");
-    expect(remote.models.map((model) => model.id)).toContain("qwen/qwen3.8-27b");
+    expect(remote.models.map((model) => model.id)).toContain(
+      "qwen/qwen3.8-27b",
+    );
     expect(remote.models.map((model) => model.id)).not.toContain(
       "whisper-large-v3",
     );
   });
 
   it("filtrerar live OpenAI-modeller efter transkriberingsuppgift", async () => {
-    const fetchMock = vi.fn(async () =>
-      new Response(
-        JSON.stringify({
-          data: [
-            { id: "gpt-transcribe" },
-            { id: "whisper-1" },
-            { id: "gpt-5.5" },
-            { id: "text-embedding-3-large" },
-          ],
-        }),
-      ),
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { id: "gpt-transcribe" },
+              { id: "whisper-1" },
+              { id: "gpt-5.5" },
+              { id: "text-embedding-3-large" },
+            ],
+          }),
+        ),
     );
     vi.stubGlobal("fetch", fetchMock);
     const remote = await fetchProviderModelOptions(
@@ -1624,7 +1792,9 @@ describe("kortformat", () => {
     expect(remote.source).toBe("provider");
     expect(remote.models.map((model) => model.id)).toContain("gpt-transcribe");
     expect(remote.models.map((model) => model.id)).not.toContain("gpt-5.5");
-    expect(remote.models.map((model) => model.id)).not.toContain("text-embedding-3-large");
+    expect(remote.models.map((model) => model.id)).not.toContain(
+      "text-embedding-3-large",
+    );
   });
 
   it("använder en egen OpenAI-kompatibel endpoint och validerar dess URL", async () => {
@@ -1656,6 +1826,53 @@ describe("kortformat", () => {
         "testnyckel",
       ),
     ).rejects.toThrow("bas-URL");
+  });
+
+  it("försöker OpenAI igen utan temperature när modellen bara stöder standardvärdet", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "Unsupported value: 'temperature' does not support 0.2 with this model. Only the default (1) value is supported.",
+              type: "invalid_request_error",
+              param: "temperature",
+              code: "unsupported_value",
+            },
+          }),
+          { status: 400 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"cards":[]}' } }],
+          }),
+          { status: 200 },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await generateCardsWithApi(
+      "Skapa kort",
+      {
+        aiProvider: "openai",
+        aiModel: "gpt-5.4-mini",
+        aiBaseUrl: "",
+      } as AppSettings,
+      "testnyckel",
+    );
+
+    expect(result).toBe('{"cards":[]}');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(firstBody.temperature).toBe(0.2);
+    expect(retryBody).not.toHaveProperty("temperature");
+    expect(retryBody.model).toBe("gpt-5.4-mini");
+    expect(retryBody.messages).toEqual(firstBody.messages);
   });
 
   it("bygger en kompakt prompt utan instruktioner för otillåtna korttyper", () => {

@@ -91,7 +91,7 @@ test("progressuppdateringar ersätter samma jobb och fel kan stängas", async ({
 
   await publish("error", 8, "Testfel");
   await expect(page.getByText("Testfel")).toBeVisible();
-  await page.getByRole("button", { name: "Stäng förlopp" }).click();
+  await page.getByRole("button", { name: "Stäng uppgift" }).click();
   await expect(page.getByText("Livscykeltest", { exact: true })).toHaveCount(0);
 });
 

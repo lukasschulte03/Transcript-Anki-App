@@ -1,7 +1,7 @@
 {
   "name": "transcript-anki-app",
   "private": true,
-  "version": "0.4.12",
+  "version": "0.4.13",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,10 +12,11 @@
     "build:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next pnpm build",
     "lint": "oxlint",
     "test": "vitest run src",
+    "test:security-config": "node --test scripts/security-config.test.mjs scripts/release-checksums.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:legacy": "cross-env LECTIO_FRONTEND=legacy LECTIO_DATA_PROFILE=stability VITE_STABILITY_TEST=true playwright test",
-    "test:e2e:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next VITE_STABILITY_TEST=false VITE_NEXT_E2E=true playwright test e2e/frontend-entrypoints.spec.ts e2e/next-readiness.spec.ts",
-    "qa:browser": "pnpm lint && pnpm test && pnpm build && pnpm test:e2e",
+    "test:e2e:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next VITE_STABILITY_TEST=false VITE_NEXT_E2E=true playwright test e2e/frontend-entrypoints.spec.ts e2e/next-library-overview.spec.ts e2e/next-readiness.spec.ts e2e/next-realistic-workflows.spec.ts e2e/next-user-journeys.spec.ts",
+    "qa:browser": "pnpm lint && pnpm test && pnpm test:security-config && pnpm build && pnpm test:e2e",
     "qa:frontends": "pnpm check:boundaries && pnpm check:frontends && pnpm test:e2e:next",
     "qa:lighthouse": "node scripts/lighthouse-qa.mjs",
     "qa": "pnpm qa:browser && pnpm qa:lighthouse",
@@ -32,7 +33,8 @@
     "desktop:dev:next": "cross-env LECTIO_FRONTEND=next LECTIO_DATA_PROFILE=next tauri dev",
     "desktop:build": "tauri build",
     "release:check": "node scripts/windows-release-gate.mjs",
-    "desktop:release": "pnpm release:check && pnpm desktop:build"
+    "release:checksums": "node scripts/release-checksums.mjs",
+    "desktop:release": "pnpm release:check && pnpm desktop:build && pnpm release:checksums"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
@@ -70,6 +72,7 @@
     "zustand": "^5.0.15"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.11.4",

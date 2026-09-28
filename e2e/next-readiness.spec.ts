@@ -144,11 +144,13 @@ test("bakgrundsjobb staplas, expanderas och blockerar inte navigering", async ({
 
   const center = page.locator(".notification-center");
   await expect(center).toBeVisible();
+  // Collapsed stack shows its oldest entry first; hover reveals the full list.
+  await expect(center.getByText("OCR – testföreläsning")).toBeVisible();
+
+  await center.locator(".notification-entry").first().hover();
   await expect(
     center.getByText("Transkribering – testföreläsning"),
   ).toBeVisible();
-
-  await center.hover();
   await expect(
     center.getByText("OCR – testföreläsning", { exact: true }),
   ).toBeVisible();

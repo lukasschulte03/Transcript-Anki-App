@@ -12,6 +12,8 @@ Gör sedan denna manuella kontroll på en Windows-profil som inte har använt Le
 - Uppgradera en tidigare Lectio-installation med ett befintligt bibliotek. Avinstallera inte den gamla versionen före kontrollen.
 - Kontrollera Windows Credential Manager: API- och Drive-uppgifter ska finnas där, aldrig i exporter eller vanlig appdata.
 
+`pnpm desktop:release` skapar även `src-tauri/target/release/bundle/SHA256SUMS.txt` efter bygget. Bifoga manifestet tillsammans med `.exe`/`.msi`/`.zip`-filerna på releasesidan. Vid nedladdning kan användaren jämföra en fil med manifestet eller köra `certutil -hashfile <fil> SHA256` i PowerShell. Detta verifierar filintegritet mot manifestet, men ersätter inte Authenticode-kodsignering; V1-installern kan fortfarande vara osignerad och Windows kan visa SmartScreen-varning.
+
 ## Återställning vid problem
 
 Biblioteket är local-first. Exportera biblioteket före större test eller release. Om en synk/import går fel: stäng appen, öppna Inställningar → Backup och återställ senaste metadata-backupen, eller importera den exporterade biblioteksfilen i en tom installation. Bifoga diagnostikrapporten via Feedback om felet kvarstår.

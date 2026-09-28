@@ -64,6 +64,44 @@ describe("Super Actions eligibility", () => {
     ).toBeNull();
   });
 
+  it("requires slides for image extraction", () => {
+    expect(
+      buildSuperActionEligibility("extractImages", library()).get("l1"),
+    ).toBe("Saknar slides");
+    const withSlides = library({
+      lectures: { l1: { lectureId: "l1", notes: "", slideAssetId: "slides-1" } },
+    });
+    expect(
+      buildSuperActionEligibility("extractImages", withSlides).get("l1"),
+    ).toBeNull();
+  });
+
+  it("requires indexed crops before describing images", () => {
+    expect(
+      buildSuperActionEligibility("describeImages", library()).get("l1"),
+    ).toBe("Inga extraherade bilder");
+    const withImages = library({
+      lectures: {
+        l1: {
+          lectureId: "l1",
+          notes: "",
+          visualIndex: [
+            {
+              id: "v1",
+              slidePage: 1,
+              description: "Bildutklipp",
+              keywords: [],
+              sourceHash: "hash",
+            },
+          ],
+        },
+      },
+    });
+    expect(
+      buildSuperActionEligibility("describeImages", withImages).get("l1"),
+    ).toBeNull();
+  });
+
   it("accepts any real lecture source for generation", () => {
     expect(
       buildSuperActionEligibility("generate", library()).get("l1"),

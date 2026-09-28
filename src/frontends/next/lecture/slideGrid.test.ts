@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   detectSlideGridFromLuminance,
   makeSlideGrid,
+  moveSlideGridSymmetrically,
+  resizeSlideGrid,
   trimSlideGridFromLuminance,
 } from "./slideGrid";
 
@@ -154,5 +156,92 @@ describe("detektering av sammansatta slides", () => {
     expect(
       detectSlideGridFromLuminance(width, height, whitePage()),
     ).toBeUndefined();
+  });
+});
+
+describe("redigering av gemensamt slide-rutnät", () => {
+  it("ändrar storleken proportionellt för alla rutor", () => {
+    const grid = makeSlideGrid(2, 2);
+    const resized = resizeSlideGrid(grid, 0, "right", { x: 0.04, y: 0 });
+
+    for (const region of resized.regions)
+      expect(region.width).toBeCloseTo(0.54);
+    expect(resized.regions[0].x).toBeCloseTo(grid.regions[0].x);
+    expect(resized.regions[1].x).toBeCloseTo(0.46);
+  });
+
+  it("Shift behåller rutans proportioner", () => {
+    const grid = makeSlideGrid(2, 2);
+    const resized = resizeSlideGrid(
+      grid,
+      0,
+      "right",
+      { x: 0.04, y: 0 },
+      { preserveAspectRatio: true },
+    );
+
+    for (const region of resized.regions)
+      expect(region.width / region.height).toBeCloseTo(1, 5);
+  });
+
+  it("Ctrl skalar från mitten av varje ruta", () => {
+    const grid = makeSlideGrid(2, 2);
+    const resized = resizeSlideGrid(
+      grid,
+      0,
+      "right",
+      { x: -0.04, y: 0 },
+      { fromCenter: true },
+    );
+
+    expect(resized.regions[0].x + resized.regions[0].width / 2).toBeCloseTo(
+      grid.regions[0].x + grid.regions[0].width / 2,
+    );
+    expect(resized.regions[0].width).toBeCloseTo(0.42);
+    expect(resized.regions[3].width).toBeCloseTo(0.42);
+  });
+
+  it("begränsar resize så inga rutor går utanför originalsidan", () => {
+    const resized = resizeSlideGrid(makeSlideGrid(2, 2), 0, "left", {
+      x: -1,
+      y: 0,
+    });
+
+    for (const region of resized.regions) {
+      expect(region.x).toBeGreaterThanOrEqual(0);
+      expect(region.y).toBeGreaterThanOrEqual(0);
+      expect(region.x + region.width).toBeLessThanOrEqual(1);
+      expect(region.y + region.height).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("flyttar motsatta kolumner och rader symmetriskt", () => {
+    const moved = moveSlideGridSymmetrically(makeSlideGrid(2, 2), 0, {
+      x: 0.04,
+      y: 0.03,
+    });
+
+    expect(moved.regions[0].x).toBeCloseTo(0.04);
+    expect(moved.regions[1].x).toBeCloseTo(0.46);
+    expect(moved.regions[2].x).toBeCloseTo(0.04);
+    expect(moved.regions[2].y).toBeCloseTo(0.47);
+    expect(moved.regions[3].x).toBeCloseTo(0.46);
+    expect(moved.regions[3].y).toBeCloseTo(0.47);
+    expect(moved.regions[0].x + moved.regions[1].x).toBeCloseTo(0.5);
+    expect(moved.regions[0].y + moved.regions[2].y).toBeCloseTo(0.5);
+  });
+
+  it("klampar symmetrisk förflyttning vid sidans kanter", () => {
+    const moved = moveSlideGridSymmetrically(makeSlideGrid(2, 2), 0, {
+      x: -1,
+      y: -1,
+    });
+
+    for (const region of moved.regions) {
+      expect(region.x).toBeGreaterThanOrEqual(0);
+      expect(region.y).toBeGreaterThanOrEqual(0);
+      expect(region.x + region.width).toBeLessThanOrEqual(1);
+      expect(region.y + region.height).toBeLessThanOrEqual(1);
+    }
   });
 });

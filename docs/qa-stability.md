@@ -23,6 +23,12 @@ att en regression visar både vilken budget som bröts och det faktiska värdet.
 
 Ett inbyggt säkerhetstest stoppar körningen om testroten överlappar projektet, hemkatalogen, vanlig appdata eller en katalog utanför stability-roten.
 
+QA kontrollerar även att Tauri-capabilityn är bunden till huvudfönstret,
+HTTP-anrop är begränsade till dokumenterade lokala/provider-hosts och
+filesystembehörigheter inte råkar utökas till användarens dokumentmappar.
+Importvalideringen testar ogiltiga biblioteksstrukturer, överstorleksgränser
+och ZIP-mediareferenser som försöker lämna `media/`-katalogen.
+
 Testtäckningen innehåller även regressioner för gränsfall i testrotens
 Windows-sökvägar, transkriberingsköns felåterhämtning och avbrottssignaler,
 trevägsmerge vid radering kontra redigering, rekursiv merge av oberoende
@@ -43,9 +49,28 @@ Frontendfasen kör även Next-slicen med en egen dataprofil och verifierar att e
 andra process inte kan öppna samma skrivprofil. Legacy är fortsatt
 produktionsstandard; Next-testet får aldrig använda huvudprofilen.
 
+Playwright-fasen innehåller ett Windows/WebView-kompatibelt UI-soakflöde som
+som standard kör 30 minuter (konfigurerbart upp till 90 via
+`LECTIO_STABILITY_SOAK_MINUTES`). Det växlar upprepade gånger mellan Inkorg,
+Super Actions, Översikt och föreläsningen, provar sidofält och hjälpdialog,
+kontrollerar renderer-fel och mäter navigeringscykler samt JS-heap när Chromium
+exponerar heapmätning. För en kort lokal smoke-körning kan tiden sättas till
+exempelvis `LECTIO_STABILITY_SOAK_MINUTES=1`; den normala release-rundan ska
+köras med standardvärdet.
+
+Rapporten bevarar även namn och utfall för Playwright-tester, interaktions-
+budgetens uppmätta resultat, soak-sammanfattning och Lighthouse-poäng även när
+råa loggar och stora artefakter städas bort efter en grön körning.
+
 ## Resultat och städning
 
 Den senaste sammanfattningen finns i `test-results/stability/latest-summary.md` och `.json`.
+
+`READY` betyder att samtliga faser som detta kommando körde passerade; det är
+inte i sig ett V1-frisläppningsbeslut. Den slutliga #141-rundan ska köras igen
+efter att UI-reworken i #142 är färdig. Tjänster med riktiga konton,
+betalningsbelagda API:er och en hårdvarumatris körs inte; dessa måste vara
+mockade eller anges som manuellt overifierade i releasebedömningen.
 
 - `READY`: alla faser godkända. Stora artefakter och den temporära testroten tas bort.
 - `WARNINGS`: en plattformsberoende fas hoppades över.

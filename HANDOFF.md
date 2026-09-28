@@ -1,6 +1,6 @@
 # Lectio — projekthandoff
 
-> Ögonblicksbild: **2026-09-25**. Använd detta som orientering, inte som permanent
+> Ögonblicksbild: **2026-09-28**. Använd detta som orientering, inte som permanent
 > sanning. Om filen är mer än några veckor gammal ska all status verifieras mot
 > Git, GitHub-issues och aktuell kod.
 
@@ -24,9 +24,10 @@ granskas före normal synk.
   `LectioClient`-gränsen. Den använder normalt en isolerad `next`-dataprofil.
 - Next har appskal/sidebar, inställningar och en föreläsningsyta under utveckling.
   Utgå inte från full feature parity ännu.
-- Vid denna ögonblicksbild är paketversionen `0.4.12` och arbetskopian innehåller
-  omfattande ocommittade Next-/frontend-boundary-ändringar. **Kasta inte bort
-  dirty files.** Kontrollera alltid med `git status`.
+- Paketversionen är nu `0.4.13`. Next-UI:n är fortsatt under aktiv utveckling,
+  och den fulla 30-minuters lokala stability-QA:n passerade på Windows.
+  GitHub-issue #142 är fortfarande öppen; kör därför slutlig V1-validering igen
+  när den UI-reworken är färdig.
 
 Visuell riktning finns i
 [`src/frontends/next/DESIGN.md`](src/frontends/next/DESIGN.md). Arkitektur och

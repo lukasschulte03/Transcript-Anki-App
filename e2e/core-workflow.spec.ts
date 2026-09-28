@@ -117,6 +117,10 @@ test("exporterar och importerar lokal context och filer", async ({ page }) => {
       mimeType: "application/zip",
       buffer: Buffer.concat(chunks),
     });
+  // Import success is stacked with the recent audio-import notification; pin
+  // the notification stack open before asserting the message is visible.
+  const notificationStack = page.locator(".notification-stack-toggle");
+  if (await notificationStack.isVisible()) await notificationStack.click();
   await expect(page.getByText("Biblioteket importerades")).toBeVisible();
   await page.waitForFunction(() => {
     const stored = JSON.parse(localStorage.getItem("lectio-state-v1") ?? "{}");
